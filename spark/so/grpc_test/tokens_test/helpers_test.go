@@ -123,6 +123,7 @@ type sparkTokenCreationTestParams struct {
 	name             string
 	ticker           string
 	maxSupply        uint64
+	extraMetadata    []byte
 	expectedError    bool // optional, defaults to false
 }
 
@@ -517,13 +518,13 @@ func createTestTokenMintTransactionWithMultipleTokenOutputsTokenPb(t *testing.T,
 	})
 }
 
-// testCoordinatedCreateNativeSparkTokenWithParams creates a native Spark token with custom parameters
-func testCoordinatedCreateNativeSparkTokenWithParams(
+// testCreateNativeSparkTokenWithParams creates a native Spark token with custom parameters
+func testCreateNativeSparkTokenWithParams(
 	t *testing.T,
 	config *wallet.TestWalletConfig,
 	params sparkTokenCreationTestParams,
 ) error {
-	createTx, err := createTestCoordinatedTokenCreateTransactionWithParams(config, params)
+	createTx, err := createTestTokenCreateTransactionWithParams(config, params)
 	if err != nil {
 		return err
 	}
@@ -541,8 +542,8 @@ func testCoordinatedCreateNativeSparkTokenWithParams(
 	return err
 }
 
-// createTestCoordinatedTokenCreateTransactionWithParams creates a token create transaction
-func createTestCoordinatedTokenCreateTransactionWithParams(config *wallet.TestWalletConfig, params sparkTokenCreationTestParams) (*tokenpb.TokenTransaction, error) {
+// createTestTokenCreateTransactionWithParams creates a token create transaction
+func createTestTokenCreateTransactionWithParams(config *wallet.TestWalletConfig, params sparkTokenCreationTestParams) (*tokenpb.TokenTransaction, error) {
 	version := TokenTransactionVersion2
 	if broadcastTokenTestsUseV3 {
 		version = TokenTransactionVersion3
@@ -557,6 +558,7 @@ func createTestCoordinatedTokenCreateTransactionWithParams(config *wallet.TestWa
 				Decimals:        testTokenDecimals,
 				MaxSupply:       getTokenMaxSupplyBytes(params.maxSupply),
 				IsFreezable:     testTokenIsFreezable,
+				ExtraMetadata:   params.extraMetadata,
 			},
 		},
 		TokenOutputs:                    []*tokenpb.TokenOutput{},
@@ -581,12 +583,13 @@ func verifyTokenMetadata(t *testing.T, metadata *tokenpb.TokenMetadata, expected
 	require.Equal(t, testTokenIsFreezable, metadata.IsFreezable, "%s: token freezable flag should match, expected: %t, found: %t", queryMethod, testTokenIsFreezable, metadata.IsFreezable)
 	require.True(t, bytes.Equal(issuerPublicKey, metadata.IssuerPublicKey), "%s: issuer public key should match, expected: %x, found: %x", queryMethod, issuerPublicKey, metadata.IssuerPublicKey)
 	require.True(t, bytes.Equal(getTokenMaxSupplyBytes(expectedParams.maxSupply), metadata.MaxSupply), "%s: max supply should match, expected: %x, found: %x", queryMethod, getTokenMaxSupplyBytes(expectedParams.maxSupply), metadata.MaxSupply)
+	require.True(t, bytes.Equal(expectedParams.extraMetadata, metadata.ExtraMetadata), "%s: extra metadata should match, expected: %x, found: %x", queryMethod, expectedParams.extraMetadata, metadata.ExtraMetadata)
 }
 
 // createNativeToken creates a native token (no verification)
 func createNativeToken(t *testing.T, params sparkTokenCreationTestParams) error {
 	config := wallet.NewTestWalletConfigWithIdentityKey(t, params.issuerPrivateKey)
-	return testCoordinatedCreateNativeSparkTokenWithParams(t, config, params)
+	return testCreateNativeSparkTokenWithParams(t, config, params)
 }
 
 // verifyNativeToken verifies a token exists and returns its identifier
@@ -596,9 +599,20 @@ func verifyNativeToken(t *testing.T, params sparkTokenCreationTestParams) []byte
 	issuerPubKey := params.issuerPrivateKey.Public()
 	resp, err := wallet.QueryTokenMetadata(t.Context(), config, nil, []keys.Public{issuerPubKey})
 	require.NoError(t, err, "failed to query created token metadata")
-	require.Len(t, resp.TokenMetadata, 1, "expected exactly 1 token metadata entry")
+	require.NotEmpty(t, resp.TokenMetadata, "expected at least one token metadata entry")
 
-	return resp.TokenMetadata[0].TokenIdentifier
+	for _, metadata := range resp.TokenMetadata {
+		if params.name == metadata.TokenName &&
+			params.ticker == metadata.TokenTicker &&
+			bytes.Equal(getTokenMaxSupplyBytes(params.maxSupply), metadata.MaxSupply) &&
+			bytes.Equal(params.extraMetadata, metadata.ExtraMetadata) {
+			return metadata.TokenIdentifier
+		}
+	}
+	require.FailNow(t, "no matching token found",
+		"expected to find token with name=%s, ticker=%s, but found %d tokens for issuer",
+		params.name, params.ticker, len(resp.TokenMetadata))
+	return nil
 }
 
 // queryAndVerifyTokenOutputs verifies the token outputs from the given finalTokenTransaction assigned to the owner private key are queryable
@@ -745,7 +759,7 @@ func setupNativeTokenWithMint(
 	issuerPrivKey := keys.GeneratePrivateKey()
 	config := wallet.NewTestWalletConfigWithIdentityKey(t, issuerPrivKey)
 
-	err := testCoordinatedCreateNativeSparkTokenWithParams(t, config, sparkTokenCreationTestParams{
+	err := testCreateNativeSparkTokenWithParams(t, config, sparkTokenCreationTestParams{
 		issuerPrivateKey: issuerPrivKey,
 		name:             name,
 		ticker:           ticker,

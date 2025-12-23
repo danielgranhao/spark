@@ -151,7 +151,15 @@ func (h *SignTokenHandler) CommitTransaction(ctx context.Context, req *tokenpb.C
 	}
 
 	switch inferredTxType {
-	case utils.TokenTransactionTypeCreate, utils.TokenTransactionTypeMint:
+	case utils.TokenTransactionTypeCreate:
+		// We validated the signatures package above, so we know that it is finalized.
+		tokenCreate, err := lockedTokenTransaction.Edges.CreateOrErr()
+		if err != nil {
+			return nil, sparkerrors.InternalDatabaseReadError(fmt.Errorf("token create edge not eager loaded or not found: %w", err))
+		}
+		finalizedCommitTransactionResponse.TokenIdentifier = tokenCreate.TokenIdentifier
+		return finalizedCommitTransactionResponse, nil
+	case utils.TokenTransactionTypeMint:
 		// We validated the signatures package above, so we know that it is finalized.
 		return finalizedCommitTransactionResponse, nil
 	case utils.TokenTransactionTypeTransfer:
@@ -231,14 +239,14 @@ func (h *SignTokenHandler) TryFinalizeRevealedTokenTransaction(ctx context.Conte
 
 	if tokenTransaction.Status != st.TokenTransactionStatusRevealed {
 		return sparkerrors.FailedPreconditionInvalidState(fmt.Errorf(
-			"Failed to finalize revealed token transaction: must be %s (was: %s), txHash: %s, ", st.TokenTransactionStatusRevealed, tokenTransaction.Status, hex.EncodeToString(tokenTransaction.FinalizedTokenTransactionHash)))
+			"failed to finalize revealed token transaction: must be %s (was: %s), txHash: %x, ", st.TokenTransactionStatusRevealed, tokenTransaction.Status, tokenTransaction.FinalizedTokenTransactionHash))
 	}
 
 	// attempt to internally finalize the transaciton
 	internalSignTokenHandler := NewInternalSignTokenHandler(h.config)
 	finalized, err := internalSignTokenHandler.RecoverFullRevocationSecretsAndFinalize(ctx, tokenTransaction)
 	if err != nil {
-		return fmt.Errorf("Failed to internally recover full revocation secrets and finalize token transaction: %w", err)
+		return fmt.Errorf("failed to internally recover full revocation secrets and finalize token transaction: %w", err)
 	}
 	if finalized {
 		logger.Sugar().Infof("Successfully finalized token transaction %s", tokenTransaction.ID)
@@ -265,11 +273,11 @@ func (h *SignTokenHandler) TryFinalizeRevealedTokenTransaction(ctx context.Conte
 	if err != nil {
 		return sparkerrors.InternalDatabaseTransactionLifecycleError(fmt.Errorf("failed to marshal parent transaction: %w", err))
 	}
-	logger.Sugar().Infof("Exchanging revocation secrets and finalizing if possible for token transaction %s with txHash: %s", tokenTransaction.ID, hex.EncodeToString(tokenTransaction.FinalizedTokenTransactionHash))
+	logger.Sugar().Infof("Exchanging revocation secrets and finalizing if possible for token transaction %s with txHash: %x", tokenTransaction.ID, tokenTransaction.FinalizedTokenTransactionHash)
 
 	_, err = h.ExchangeRevocationSecretsAndFinalizeIfPossible(ctx, tokenPb, signaturesPackage, tokenTransaction.FinalizedTokenTransactionHash)
 	if err != nil {
-		return fmt.Errorf("Failed to exchange revocation secrets and finalize %s: %w", tokenTransaction.ID, err)
+		return fmt.Errorf("failed to exchange revocation secrets and finalize %s: %w", tokenTransaction.ID, err)
 	}
 
 	return nil

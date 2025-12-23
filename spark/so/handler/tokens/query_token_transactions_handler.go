@@ -25,14 +25,21 @@ import (
 )
 
 type QueryTokenTransactionsHandler struct {
-	config                     *so.Config
-	includeExpiredTransactions bool
+	config *so.Config
 }
 
 const (
 	maxTokenTransactionFilterValues = 500
 	maxTokenTransactionPageSize     = 100
 	defaultTokenTransactionPageSize = 50
+)
+
+// queryBackend represents the database query implementation used.
+type queryBackend string
+
+const (
+	queryBackendRawSQL queryBackend = "raw_sql"
+	queryBackendEnt    queryBackend = "ent"
 )
 
 type queryParams struct {
@@ -79,8 +86,7 @@ func normalizeQueryParams(req *tokenpb.QueryTokenTransactionsRequest) (*queryPar
 // NewQueryTokenTransactionsHandler creates a new QueryTokenTransactionsHandler.
 func NewQueryTokenTransactionsHandler(config *so.Config) *QueryTokenTransactionsHandler {
 	return &QueryTokenTransactionsHandler{
-		config:                     config,
-		includeExpiredTransactions: false,
+		config: config,
 	}
 }
 
@@ -108,20 +114,24 @@ func (h *QueryTokenTransactionsHandler) QueryTokenTransactions(ctx context.Conte
 	}
 	var transactions []*ent.TokenTransaction
 
-	// Check if we should use the optimized UNION query
-	useOptimizedQuery := h.shouldUseOptimizedQuery(params)
-	if useOptimizedQuery {
+	requestQueryBackend := h.determineQueryBackend(params)
+	metricsRecorder := newQueryMetricsRecorder(params, requestQueryBackend)
+
+	if requestQueryBackend == queryBackendRawSQL {
 		transactions, err = h.queryWithRawSql(ctx, params, db)
 		if err != nil {
+			metricsRecorder.record(ctx, 0, err)
 			return nil, fmt.Errorf("failed to query token transactions with raw sql: %w", err)
 		}
 	} else {
 		transactions, err = h.queryWithEnt(ctx, params, db)
 		if err != nil {
+			metricsRecorder.record(ctx, 0, err)
 			return nil, fmt.Errorf("failed to query token transactions with ent: %w", err)
 		}
 	}
 
+	metricsRecorder.record(ctx, len(transactions), nil)
 	return h.convertTransactionsToResponse(ctx, transactions, params)
 }
 
@@ -159,14 +169,17 @@ func validateQueryTokenTransactionsRequest(req *tokenpb.QueryTokenTransactionsRe
 	return nil
 }
 
-// shouldUseOptimizedQuery determines if we should use the optimized UNION-based query
-func (h *QueryTokenTransactionsHandler) shouldUseOptimizedQuery(params *queryParams) bool {
-	// Use optimized query when we have filters that require token_outputs joins
+// determineQueryBackend determines the query backend to use based on the query parameters
+// We use the raw SQL query when we have filters that require token_outputs joins
+func (h *QueryTokenTransactionsHandler) determineQueryBackend(params *queryParams) queryBackend {
 	hasOutputFilters := len(params.outputIDs) > 0 ||
 		len(params.ownerPublicKeys) > 0 ||
 		len(params.issuerPublicKeys) > 0 ||
 		len(params.tokenIdentifiers) > 0
-	return hasOutputFilters
+	if hasOutputFilters {
+		return queryBackendRawSQL
+	}
+	return queryBackendEnt
 }
 
 // queryTokenTransactionsRawSql uses raw SQL with UNION for better performance
@@ -180,7 +193,7 @@ func (h *QueryTokenTransactionsHandler) queryWithRawSql(ctx context.Context, par
 		return nil, fmt.Errorf("failed to build optimized query: %w", err)
 	}
 
-	// nolint:forbidigo
+	//nolint:forbidigo // We have to use this API to run the optimized query, since it's a string.
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute optimized query: %w", err)

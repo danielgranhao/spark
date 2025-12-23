@@ -20,6 +20,8 @@ import (
 	enttreenode "github.com/lightsparkdev/spark/so/ent/treenode"
 	"github.com/lightsparkdev/spark/so/errors"
 	"github.com/lightsparkdev/spark/so/helper"
+	"github.com/lightsparkdev/spark/so/knobs"
+	"google.golang.org/grpc/codes"
 )
 
 // RenewNodeTransactions encapsulates the return values from constructRenewNodeTransactions
@@ -143,6 +145,9 @@ func (h *RenewLeafHandler) RenewLeaf(ctx context.Context, req *pb.RenewLeafReque
 	// Determine operation type and delegate to appropriate handler
 	switch req.SigningJobs.(type) {
 	case *pb.RenewLeafRequest_RenewNodeTimelockSigningJob:
+		if knobs.GetKnobsService(ctx).GetValue(knobs.KnobShutdownRenewNode, 0) > 0 {
+			return nil, errors.WrapErrorWithCodeAndReason(fmt.Errorf("renew node is currently disabled"), codes.Unavailable, errors.ReasonUnavailableMethodDisabled)
+		}
 		return h.renewNodeTimelock(ctx, req.GetRenewNodeTimelockSigningJob(), leaf)
 	case *pb.RenewLeafRequest_RenewRefundTimelockSigningJob:
 		return h.renewRefundTimelock(ctx, req.GetRenewRefundTimelockSigningJob(), leaf)
@@ -925,11 +930,11 @@ func (h *RenewLeafHandler) signRenewRefunds(
 	// Validate that no signing jobs have empty round1Packages
 	for _, job := range signingJobs {
 		if len(job.Round1Packages) == 0 {
-			return nil, fmt.Errorf("signing job %s has empty round1Packages (message: %x)", job.SigningJob.JobID, job.SigningJob.Message)
+			return nil, fmt.Errorf("signing job %s has empty round1Packages (message: %x)", job.JobID, job.Message)
 		}
 		for key, commitment := range job.Round1Packages {
 			if commitment.IsZero() {
-				return nil, fmt.Errorf("signing job %s has invalid commitment for key %s: hiding or binding is empty (message: %x)", job.SigningJob.JobID, key, job.SigningJob.Message)
+				return nil, fmt.Errorf("signing job %s has invalid commitment for key %s: hiding or binding is empty (message: %x)", job.JobID, key, job.Message)
 			}
 		}
 	}

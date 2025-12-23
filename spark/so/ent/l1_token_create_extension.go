@@ -2,6 +2,7 @@ package ent
 
 import (
 	"github.com/lightsparkdev/spark/common"
+	"github.com/lightsparkdev/spark/common/keys"
 )
 
 func (r *L1TokenCreate) ToTokenMetadata() (*common.TokenMetadata, error) {
@@ -12,7 +13,8 @@ func (r *L1TokenCreate) ToTokenMetadata() (*common.TokenMetadata, error) {
 		Decimals:                r.Decimals,
 		MaxSupply:               r.MaxSupply,
 		IsFreezable:             r.IsFreezable,
-		CreationEntityPublicKey: common.L1CreationEntityPublicKey,
 		Network:                 r.Network,
+		ExtraMetadata:           r.ExtraMetadata,
+		CreationEntityPublicKey: keys.Public{}, // L1 creation entity public key denoted by nil value
 	}, nil
 }

@@ -76,7 +76,7 @@ func (h *CooperativeExitHandler) cooperativeExit(ctx context.Context, req *pb.Co
 	if err != nil {
 		return nil, fmt.Errorf("unable to get database transaction: %w", err)
 	}
-	db := entTx.Client()
+
 	transferUUID, err := uuid.Parse(req.Transfer.TransferId)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse transfer_id as a uuid %s: %w", req.Transfer.TransferId, err)
@@ -93,7 +93,7 @@ func (h *CooperativeExitHandler) cooperativeExit(ctx context.Context, req *pb.Co
 	transfer, leafMap, err := transferHandler.createTransfer(
 		ctx,
 		nil,
-		req.Transfer.TransferId,
+		transferUUID,
 		st.TransferTypeCooperativeExit,
 		req.Transfer.ExpiryTime.AsTime(),
 		reqTransferOwnerIdentityPubKey,
@@ -120,7 +120,7 @@ func (h *CooperativeExitHandler) cooperativeExit(ctx context.Context, req *pb.Co
 		return nil, fmt.Errorf("exit_txid %x is not 32 bytes", req.ExitTxid)
 	}
 
-	db, err = ent.GetDbFromContext(ctx)
+	db, err := ent.GetDbFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get or create current tx for transfer id %s exit txid %x: %w", req.Transfer.TransferId, req.ExitTxid, err)
 	}
@@ -153,7 +153,7 @@ func (h *CooperativeExitHandler) cooperativeExit(ctx context.Context, req *pb.Co
 	err = transferHandler.syncCoopExitInit(ctx, req)
 	if err != nil {
 
-		cancelErr := transferHandler.CreateCancelTransferGossipMessage(ctx, req.Transfer.TransferId)
+		cancelErr := transferHandler.CreateCancelTransferGossipMessage(ctx, transferUUID)
 		if cancelErr != nil {
 			return nil, fmt.Errorf("failed to create cancel transfer gossip message for transfer id %s exit id %s: %w", req.Transfer.TransferId, req.ExitId, err)
 		}
@@ -170,7 +170,7 @@ func (h *CooperativeExitHandler) cooperativeExit(ctx context.Context, req *pb.Co
 
 func (h *TransferHandler) syncCoopExitInit(ctx context.Context, req *pb.CooperativeExitRequest) error {
 	transfer := req.Transfer
-	leaves := make([]*pbinternal.InitiateTransferLeaf, 0)
+	var leaves []*pbinternal.InitiateTransferLeaf
 	for _, leaf := range transfer.LeavesToSend {
 		var directRefundTx []byte
 		var directFromCpfpRefundTx []byte

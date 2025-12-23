@@ -197,7 +197,11 @@ export interface TokenCreateInput {
   /** Decoded uint128 */
   maxSupply: Uint8Array;
   isFreezable: boolean;
-  creationEntityPublicKey?: Uint8Array | undefined;
+  creationEntityPublicKey?:
+    | Uint8Array
+    | undefined;
+  /** If any of the fields below are provided, use protohash to generate the token_identifier */
+  extraMetadata?: Uint8Array | undefined;
 }
 
 /**
@@ -384,7 +388,11 @@ export interface CommitProgress {
 
 export interface CommitTransactionResponse {
   commitStatus: CommitStatus;
-  commitProgress: CommitProgress | undefined;
+  commitProgress:
+    | CommitProgress
+    | undefined;
+  /** The raw token identifier is returned on create transactions */
+  tokenIdentifier?: Uint8Array | undefined;
 }
 
 export interface BroadcastTransactionRequest {
@@ -404,7 +412,11 @@ export interface BroadcastTransactionRequest {
 export interface BroadcastTransactionResponse {
   finalTokenTransaction: FinalTokenTransaction | undefined;
   commitStatus: CommitStatus;
-  commitProgress: CommitProgress | undefined;
+  commitProgress:
+    | CommitProgress
+    | undefined;
+  /** The raw token identifier is returned on create transactions */
+  tokenIdentifier?: Uint8Array | undefined;
 }
 
 export interface QueryTokenMetadataRequest {
@@ -422,6 +434,7 @@ export interface TokenMetadata {
   isFreezable: boolean;
   creationEntityPublicKey?: Uint8Array | undefined;
   tokenIdentifier: Uint8Array;
+  extraMetadata?: Uint8Array | undefined;
 }
 
 export interface QueryTokenMetadataResponse {
@@ -748,6 +761,7 @@ function createBaseTokenCreateInput(): TokenCreateInput {
     maxSupply: new Uint8Array(0),
     isFreezable: false,
     creationEntityPublicKey: undefined,
+    extraMetadata: undefined,
   };
 }
 
@@ -773,6 +787,9 @@ export const TokenCreateInput: MessageFns<TokenCreateInput> = {
     }
     if (message.creationEntityPublicKey !== undefined) {
       writer.uint32(58).bytes(message.creationEntityPublicKey);
+    }
+    if (message.extraMetadata !== undefined) {
+      writer.uint32(66).bytes(message.extraMetadata);
     }
     return writer;
   },
@@ -840,6 +857,14 @@ export const TokenCreateInput: MessageFns<TokenCreateInput> = {
           message.creationEntityPublicKey = reader.bytes();
           continue;
         }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.extraMetadata = reader.bytes();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -860,6 +885,7 @@ export const TokenCreateInput: MessageFns<TokenCreateInput> = {
       creationEntityPublicKey: isSet(object.creationEntityPublicKey)
         ? bytesFromBase64(object.creationEntityPublicKey)
         : undefined,
+      extraMetadata: isSet(object.extraMetadata) ? bytesFromBase64(object.extraMetadata) : undefined,
     };
   },
 
@@ -886,6 +912,9 @@ export const TokenCreateInput: MessageFns<TokenCreateInput> = {
     if (message.creationEntityPublicKey !== undefined) {
       obj.creationEntityPublicKey = base64FromBytes(message.creationEntityPublicKey);
     }
+    if (message.extraMetadata !== undefined) {
+      obj.extraMetadata = base64FromBytes(message.extraMetadata);
+    }
     return obj;
   },
 
@@ -901,6 +930,7 @@ export const TokenCreateInput: MessageFns<TokenCreateInput> = {
     message.maxSupply = object.maxSupply ?? new Uint8Array(0);
     message.isFreezable = object.isFreezable ?? false;
     message.creationEntityPublicKey = object.creationEntityPublicKey ?? undefined;
+    message.extraMetadata = object.extraMetadata ?? undefined;
     return message;
   },
 };
@@ -2707,7 +2737,7 @@ export const CommitProgress: MessageFns<CommitProgress> = {
 };
 
 function createBaseCommitTransactionResponse(): CommitTransactionResponse {
-  return { commitStatus: 0, commitProgress: undefined };
+  return { commitStatus: 0, commitProgress: undefined, tokenIdentifier: undefined };
 }
 
 export const CommitTransactionResponse: MessageFns<CommitTransactionResponse> = {
@@ -2717,6 +2747,9 @@ export const CommitTransactionResponse: MessageFns<CommitTransactionResponse> = 
     }
     if (message.commitProgress !== undefined) {
       CommitProgress.encode(message.commitProgress, writer.uint32(18).fork()).join();
+    }
+    if (message.tokenIdentifier !== undefined) {
+      writer.uint32(26).bytes(message.tokenIdentifier);
     }
     return writer;
   },
@@ -2744,6 +2777,14 @@ export const CommitTransactionResponse: MessageFns<CommitTransactionResponse> = 
           message.commitProgress = CommitProgress.decode(reader, reader.uint32());
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.tokenIdentifier = reader.bytes();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2757,6 +2798,7 @@ export const CommitTransactionResponse: MessageFns<CommitTransactionResponse> = 
     return {
       commitStatus: isSet(object.commitStatus) ? commitStatusFromJSON(object.commitStatus) : 0,
       commitProgress: isSet(object.commitProgress) ? CommitProgress.fromJSON(object.commitProgress) : undefined,
+      tokenIdentifier: isSet(object.tokenIdentifier) ? bytesFromBase64(object.tokenIdentifier) : undefined,
     };
   },
 
@@ -2767,6 +2809,9 @@ export const CommitTransactionResponse: MessageFns<CommitTransactionResponse> = 
     }
     if (message.commitProgress !== undefined) {
       obj.commitProgress = CommitProgress.toJSON(message.commitProgress);
+    }
+    if (message.tokenIdentifier !== undefined) {
+      obj.tokenIdentifier = base64FromBytes(message.tokenIdentifier);
     }
     return obj;
   },
@@ -2780,6 +2825,7 @@ export const CommitTransactionResponse: MessageFns<CommitTransactionResponse> = 
     message.commitProgress = (object.commitProgress !== undefined && object.commitProgress !== null)
       ? CommitProgress.fromPartial(object.commitProgress)
       : undefined;
+    message.tokenIdentifier = object.tokenIdentifier ?? undefined;
     return message;
   },
 };
@@ -2893,7 +2939,7 @@ export const BroadcastTransactionRequest: MessageFns<BroadcastTransactionRequest
 };
 
 function createBaseBroadcastTransactionResponse(): BroadcastTransactionResponse {
-  return { finalTokenTransaction: undefined, commitStatus: 0, commitProgress: undefined };
+  return { finalTokenTransaction: undefined, commitStatus: 0, commitProgress: undefined, tokenIdentifier: undefined };
 }
 
 export const BroadcastTransactionResponse: MessageFns<BroadcastTransactionResponse> = {
@@ -2906,6 +2952,9 @@ export const BroadcastTransactionResponse: MessageFns<BroadcastTransactionRespon
     }
     if (message.commitProgress !== undefined) {
       CommitProgress.encode(message.commitProgress, writer.uint32(26).fork()).join();
+    }
+    if (message.tokenIdentifier !== undefined) {
+      writer.uint32(34).bytes(message.tokenIdentifier);
     }
     return writer;
   },
@@ -2941,6 +2990,14 @@ export const BroadcastTransactionResponse: MessageFns<BroadcastTransactionRespon
           message.commitProgress = CommitProgress.decode(reader, reader.uint32());
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.tokenIdentifier = reader.bytes();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2957,6 +3014,7 @@ export const BroadcastTransactionResponse: MessageFns<BroadcastTransactionRespon
         : undefined,
       commitStatus: isSet(object.commitStatus) ? commitStatusFromJSON(object.commitStatus) : 0,
       commitProgress: isSet(object.commitProgress) ? CommitProgress.fromJSON(object.commitProgress) : undefined,
+      tokenIdentifier: isSet(object.tokenIdentifier) ? bytesFromBase64(object.tokenIdentifier) : undefined,
     };
   },
 
@@ -2970,6 +3028,9 @@ export const BroadcastTransactionResponse: MessageFns<BroadcastTransactionRespon
     }
     if (message.commitProgress !== undefined) {
       obj.commitProgress = CommitProgress.toJSON(message.commitProgress);
+    }
+    if (message.tokenIdentifier !== undefined) {
+      obj.tokenIdentifier = base64FromBytes(message.tokenIdentifier);
     }
     return obj;
   },
@@ -2987,6 +3048,7 @@ export const BroadcastTransactionResponse: MessageFns<BroadcastTransactionRespon
     message.commitProgress = (object.commitProgress !== undefined && object.commitProgress !== null)
       ? CommitProgress.fromPartial(object.commitProgress)
       : undefined;
+    message.tokenIdentifier = object.tokenIdentifier ?? undefined;
     return message;
   },
 };
@@ -3081,6 +3143,7 @@ function createBaseTokenMetadata(): TokenMetadata {
     isFreezable: false,
     creationEntityPublicKey: undefined,
     tokenIdentifier: new Uint8Array(0),
+    extraMetadata: undefined,
   };
 }
 
@@ -3109,6 +3172,9 @@ export const TokenMetadata: MessageFns<TokenMetadata> = {
     }
     if (message.tokenIdentifier.length !== 0) {
       writer.uint32(66).bytes(message.tokenIdentifier);
+    }
+    if (message.extraMetadata !== undefined) {
+      writer.uint32(74).bytes(message.extraMetadata);
     }
     return writer;
   },
@@ -3184,6 +3250,14 @@ export const TokenMetadata: MessageFns<TokenMetadata> = {
           message.tokenIdentifier = reader.bytes();
           continue;
         }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.extraMetadata = reader.bytes();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3205,6 +3279,7 @@ export const TokenMetadata: MessageFns<TokenMetadata> = {
         ? bytesFromBase64(object.creationEntityPublicKey)
         : undefined,
       tokenIdentifier: isSet(object.tokenIdentifier) ? bytesFromBase64(object.tokenIdentifier) : new Uint8Array(0),
+      extraMetadata: isSet(object.extraMetadata) ? bytesFromBase64(object.extraMetadata) : undefined,
     };
   },
 
@@ -3234,6 +3309,9 @@ export const TokenMetadata: MessageFns<TokenMetadata> = {
     if (message.tokenIdentifier.length !== 0) {
       obj.tokenIdentifier = base64FromBytes(message.tokenIdentifier);
     }
+    if (message.extraMetadata !== undefined) {
+      obj.extraMetadata = base64FromBytes(message.extraMetadata);
+    }
     return obj;
   },
 
@@ -3250,6 +3328,7 @@ export const TokenMetadata: MessageFns<TokenMetadata> = {
     message.isFreezable = object.isFreezable ?? false;
     message.creationEntityPublicKey = object.creationEntityPublicKey ?? undefined;
     message.tokenIdentifier = object.tokenIdentifier ?? new Uint8Array(0);
+    message.extraMetadata = object.extraMetadata ?? undefined;
     return message;
   },
 };

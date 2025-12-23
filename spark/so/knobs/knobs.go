@@ -35,17 +35,18 @@ const (
 	KnobSoSigningCommitmentNodeLimit  = "spark.so.signing_commitments.nodes_limit"
 	KnobSoSigningCommitmentCountLimit = "spark.so.signing_commitments.count_limit"
 
-	KnobGrpcServerMethodEnabled       = "spark.so.grpc.server.method.enabled"
-	KnobGrpcServerConnectionTimeout   = "spark.so.grpc.server.connection_timeout"
-	KnobGrpcServerKeepaliveTime       = "spark.so.grpc.server.keepalive_time"
-	KnobGrpcServerKeepaliveTimeout    = "spark.so.grpc.server.keepalive_timeout"
-	KnobGrpcServerUnaryHandlerTimeout = "spark.so.grpc.server.unary_handler_timeout"
+	KnobGrpcServerMethodEnabled         = "spark.so.grpc.server.method.enabled"
+	KnobGrpcServerConnectionTimeout     = "spark.so.grpc.server.connection_timeout"
+	KnobGrpcServerKeepaliveTime         = "spark.so.grpc.server.keepalive_time"
+	KnobGrpcServerKeepaliveTimeout      = "spark.so.grpc.server.keepalive_timeout"
+	KnobGrpcServerMaxConnectionAge      = "spark.so.grpc.server.max_connection_age"
+	KnobGrpcServerMaxConnectionAgeGrace = "spark.so.grpc.server.max_connection_age_grace"
+	KnobGrpcServerUnaryHandlerTimeout   = "spark.so.grpc.server.unary_handler_timeout"
 
 	KnobGrpcServerConcurrencyLimitLimit     = "spark.so.grpc.server.concurrency_limit.limit"
 	KnobGrpcServerConcurrencyExcludeIps     = "spark.so.grpc.server.concurrency_limit.exclude_ips"
 	KnobGrpcServerConcurrencyExcludePubkeys = "spark.so.grpc.server.concurrency_limit.exclude_pubkeys"
 
-	KnobSoGenerateStaticDepositAddressV2    = "spark.so.generate_static_deposit_address_v2"
 	KnobSoMaxTransactionsPerRequest         = "spark.so.max_transactions_per_request"
 	KnobSoMaxKeysharesPerRequest            = "spark.so.max_keyshares_per_request"
 	KnobGRPCClientTimeout                   = "spark.so.grpc.client.timeout"
@@ -75,8 +76,8 @@ const (
 	KnobReclaimRemappedOutputsIfRevealRequested = "spark.so.tokens.reclaim_remapped_outputs_if_reveal_requested"
 	KnobFinalizeCreatedSignedOutputsJustInTime  = "spark.so.tokens.finalize_created_signed_outputs_just_in_time"
 	KnobTokenTransactionV3Enabled               = "spark.so.tokens.token_transaction_v3_enabled"
-	KnobBackfillCreatedFinalizedTxHashEnabled   = "spark.so.tokens.backfill_created_finalized_tx_hash.enabled"
-	KnobBackfillCreatedReversedTokenAmount      = "spark.so.tokens.backfill_created_reversed_token_amount.enabled"
+	KnobAllowMultipleTokenCreatesPerIssuer      = "spark.so.tokens.allow_multiple_token_creates_per_issuer"
+	KnobAllowExtraMetadataOnMainnet             = "spark.so.tokens.allow_extra_metadata_on_mainnet"
 
 	// Number of confirmations required before finalizing tree creation
 	KnobNumRequiredConfirmations = "spark.so.num_required_confirmations"
@@ -89,8 +90,12 @@ const (
 	KnobEnableStrictFinalizeSignature        = "spark.so.enable_strict_finalize_signature"
 	KnobEnableStrictDirectRefundTxValidation = "spark.so.enable_strict_direct_refund_tx_validation"
 
-	KnobEnableDepositFlowValidation   = "spark.so.enable_deposit_flow_validation"
-	KnobSoEnhancedBitcoinTxValidation = "spark.so.enhanced_bitcoin_tx_validation"
+	KnobEnableDepositFlowValidation       = "spark.so.enable_deposit_flow_validation"
+	KnobSoEnhancedBitcoinTxValidation     = "spark.so.enhanced_bitcoin_tx_validation"
+	KnobEnhancedTransferReceiveValidation = "spark.so.enhanced_transfer_receive_validation"
+
+	KnobShutdownRenewNode        = "spark.so.shutdown_renew_node"
+	KnobDirectRefundTxValidation = "spark.so.direct_refund_tx_validation"
 )
 
 type Config struct {

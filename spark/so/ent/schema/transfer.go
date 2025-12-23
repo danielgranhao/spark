@@ -41,6 +41,7 @@ func (Transfer) Fields() []ent.Field {
 		field.Bytes("receiver_identity_pubkey").
 			Immutable().
 			GoType(keys.Public{}).
+			Comment("The identity public key of the receiver of the transfer.").
 			Annotations(entexample.Default(
 				"02e0b8d42c5d3b5fe4c5beb6ea796ab3bc8aaf28a3d3195407482c67e0b58228a5",
 			)),
@@ -50,19 +51,24 @@ func (Transfer) Fields() []ent.Field {
 			Comment("The network on which the transfer is taking place.").
 			Annotations(entexample.Default(btcnetwork.Regtest)),
 		field.Uint64("total_value").
+			Comment("Amount of the transfer in satoshis.").
 			Annotations(entexample.Default(30)),
 		field.Enum("status").
 			GoType(st.TransferStatus("")).
+			Comment("Current state of the transfer through its multi-step lifecycle (e.g., SENDER_INITIATED, SENDER_KEY_TWEAKED, COMPLETED, EXPIRED).").
 			Annotations(entexample.Default(st.TransferStatusCompleted)),
 		field.Enum("type").
 			GoType(st.TransferType("")).
+			Comment("Type of transfer operation (standard, preimage swap, atomic swap, etc.).").
 			Annotations(entexample.Default(st.TransferTypePreimageSwap)),
 		field.Time("expiry_time").
 			Immutable().
+			Comment("Time when the transfer expires if not completed. Expired transfers are cancelled, and their locked leaves are returned to the sender and made available for new transfers.").
 			Annotations(entexample.Default(time.Unix(0, 0))),
 		field.Time("completion_time").
 			Optional().
-			Nillable(),
+			Nillable().
+			Comment("Time when the transfer was successfully completed (null until completion)."),
 		field.UUID("spark_invoice_id", uuid.UUID{}).
 			Optional().
 			Comment("Foreign key to spark_invoice"),
@@ -96,6 +102,10 @@ func (Transfer) Indexes() []ent.Index {
 		index.Fields("receiver_identity_pubkey", "status", "create_time").
 			Annotations(entsql.DescColumns("create_time")).
 			StorageKey("idx_transfers_recv_status_create"),
+
+		index.Fields("sender_identity_pubkey", "status", "create_time").
+			Annotations(entsql.DescColumns("create_time")).
+			StorageKey("idx_transfers_sender_status_create"),
 
 		index.Fields("spark_invoice_id").
 			Unique().

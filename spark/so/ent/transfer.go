@@ -23,25 +23,25 @@ type Transfer struct {
 	config `json:"-"`
 	// ID of the ent.
 	ID uuid.UUID `json:"id,omitempty"`
-	// CreateTime holds the value of the "create_time" field.
+	// The time when the entity was created.
 	CreateTime time.Time `json:"create_time,omitempty"`
-	// UpdateTime holds the value of the "update_time" field.
+	// The time when the entity was last updated.
 	UpdateTime time.Time `json:"update_time,omitempty"`
 	// The identity public key of the sender of the transfer.
 	SenderIdentityPubkey keys.Public `json:"sender_identity_pubkey,omitempty"`
-	// ReceiverIdentityPubkey holds the value of the "receiver_identity_pubkey" field.
+	// The identity public key of the receiver of the transfer.
 	ReceiverIdentityPubkey keys.Public `json:"receiver_identity_pubkey,omitempty"`
 	// The network on which the transfer is taking place.
 	Network btcnetwork.Network `json:"network,omitempty"`
-	// TotalValue holds the value of the "total_value" field.
+	// Amount of the transfer in satoshis.
 	TotalValue uint64 `json:"total_value,omitempty"`
-	// Status holds the value of the "status" field.
+	// Current state of the transfer through its multi-step lifecycle (e.g., SENDER_INITIATED, SENDER_KEY_TWEAKED, COMPLETED, EXPIRED).
 	Status schematype.TransferStatus `json:"status,omitempty"`
-	// Type holds the value of the "type" field.
+	// Type of transfer operation (standard, preimage swap, atomic swap, etc.).
 	Type schematype.TransferType `json:"type,omitempty"`
-	// ExpiryTime holds the value of the "expiry_time" field.
+	// Time when the transfer expires if not completed. Expired transfers are cancelled, and their locked leaves are returned to the sender and made available for new transfers.
 	ExpiryTime time.Time `json:"expiry_time,omitempty"`
-	// CompletionTime holds the value of the "completion_time" field.
+	// Time when the transfer was successfully completed (null until completion).
 	CompletionTime *time.Time `json:"completion_time,omitempty"`
 	// Foreign key to spark_invoice
 	SparkInvoiceID uuid.UUID `json:"spark_invoice_id,omitempty"`

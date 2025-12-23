@@ -27,6 +27,7 @@ import {
   TransferType,
   TreeNode,
 } from "../proto/spark.js";
+import { Timestamp } from "../proto/google/protobuf/timestamp.js";
 import {
   KeyDerivation,
   KeyDerivationType,
@@ -480,87 +481,82 @@ export class BaseTransferService {
         selfSignature: cpfpUserSignature,
       });
 
-      // Sign direct refund transaction
-
+      // Sign direct refund transaction (spends direct tx output).
       let directRefundAggregate: Uint8Array | undefined;
-      let directFromCpfpRefundAggregate: Uint8Array | undefined;
-      if (leafData.directTx) {
+      if (leafData.directTx && leafData.directRefundTx) {
         const directTxOutput = leafData.directTx.getOutput(0);
 
-        if (leafData.directRefundTx) {
-          const directRefundTxSighash = getSigHashFromTx(
-            leafData.directRefundTx,
-            0,
-            directTxOutput,
-          );
+        const directRefundTxSighash = getSigHashFromTx(
+          leafData.directRefundTx,
+          0,
+          directTxOutput,
+        );
 
-          const directUserSignature = await this.config.signer.signFrost({
-            message: directRefundTxSighash,
-            publicKey,
-            keyDerivation: leafData.keyDerivation,
-            selfCommitment: leafData.directSigningNonceCommitment,
-            statechainCommitments:
-              operatorSigningResult.directRefundTxSigningResult
-                ?.signingNonceCommitments,
-            verifyingKey: operatorSigningResult.verifyingKey,
-          });
+        const directUserSignature = await this.config.signer.signFrost({
+          message: directRefundTxSighash,
+          publicKey,
+          keyDerivation: leafData.keyDerivation,
+          selfCommitment: leafData.directSigningNonceCommitment,
+          statechainCommitments:
+            operatorSigningResult.directRefundTxSigningResult
+              ?.signingNonceCommitments,
+          verifyingKey: operatorSigningResult.verifyingKey,
+        });
 
-          directRefundAggregate = await this.config.signer.aggregateFrost({
-            message: directRefundTxSighash,
+        directRefundAggregate = await this.config.signer.aggregateFrost({
+          message: directRefundTxSighash,
+          statechainSignatures:
+            operatorSigningResult.directRefundTxSigningResult?.signatureShares,
+          statechainPublicKeys:
+            operatorSigningResult.directRefundTxSigningResult?.publicKeys,
+          verifyingKey: operatorSigningResult.verifyingKey,
+          statechainCommitments:
+            operatorSigningResult.directRefundTxSigningResult
+              ?.signingNonceCommitments,
+          selfCommitment: leafData.directSigningNonceCommitment,
+          publicKey,
+          selfSignature: directUserSignature,
+        });
+      }
+
+      // Sign direct-from-CPFP refund transaction (spends CPFP tx output).
+      let directFromCpfpRefundAggregate: Uint8Array | undefined;
+      if (leafData.directFromCpfpRefundTx) {
+        const directFromCpfpRefundTxSighash = getSigHashFromTx(
+          leafData.directFromCpfpRefundTx,
+          0,
+          txOutput,
+        );
+
+        const directFromCpfpUserSignature = await this.config.signer.signFrost({
+          message: directFromCpfpRefundTxSighash,
+          publicKey,
+          keyDerivation: leafData.keyDerivation,
+          selfCommitment: leafData.directFromCpfpRefundSigningNonceCommitment,
+          statechainCommitments:
+            operatorSigningResult.directFromCpfpRefundTxSigningResult
+              ?.signingNonceCommitments,
+          verifyingKey: operatorSigningResult.verifyingKey,
+        });
+
+        directFromCpfpRefundAggregate = await this.config.signer.aggregateFrost(
+          {
+            message: directFromCpfpRefundTxSighash,
             statechainSignatures:
-              operatorSigningResult.directRefundTxSigningResult
+              operatorSigningResult.directFromCpfpRefundTxSigningResult
                 ?.signatureShares,
             statechainPublicKeys:
-              operatorSigningResult.directRefundTxSigningResult?.publicKeys,
+              operatorSigningResult.directFromCpfpRefundTxSigningResult
+                ?.publicKeys,
             verifyingKey: operatorSigningResult.verifyingKey,
             statechainCommitments:
-              operatorSigningResult.directRefundTxSigningResult
+              operatorSigningResult.directFromCpfpRefundTxSigningResult
                 ?.signingNonceCommitments,
-            selfCommitment: leafData.directSigningNonceCommitment,
+            selfCommitment: leafData.directFromCpfpRefundSigningNonceCommitment,
             publicKey,
-            selfSignature: directUserSignature,
-          });
-        }
-
-        if (leafData.directFromCpfpRefundTx) {
-          const directFromCpfpRefundTxSighash = getSigHashFromTx(
-            leafData.directFromCpfpRefundTx,
-            0,
-            txOutput,
-          );
-
-          const directFromCpfpUserSignature =
-            await this.config.signer.signFrost({
-              message: directFromCpfpRefundTxSighash,
-              publicKey,
-              keyDerivation: leafData.keyDerivation,
-              selfCommitment:
-                leafData.directFromCpfpRefundSigningNonceCommitment,
-              statechainCommitments:
-                operatorSigningResult.directFromCpfpRefundTxSigningResult
-                  ?.signingNonceCommitments,
-              verifyingKey: operatorSigningResult.verifyingKey,
-            });
-
-          directFromCpfpRefundAggregate =
-            await this.config.signer.aggregateFrost({
-              message: directFromCpfpRefundTxSighash,
-              statechainSignatures:
-                operatorSigningResult.directFromCpfpRefundTxSigningResult
-                  ?.signatureShares,
-              statechainPublicKeys:
-                operatorSigningResult.directFromCpfpRefundTxSigningResult
-                  ?.publicKeys,
-              verifyingKey: operatorSigningResult.verifyingKey,
-              statechainCommitments:
-                operatorSigningResult.directFromCpfpRefundTxSigningResult
-                  ?.signingNonceCommitments,
-              selfCommitment:
-                leafData.directFromCpfpRefundSigningNonceCommitment,
-              publicKey,
-              selfSignature: directFromCpfpUserSignature,
-            });
-        }
+            selfSignature: directFromCpfpUserSignature,
+          },
+        );
       }
 
       nodeSignatures.push({
@@ -756,32 +752,68 @@ export class TransferService extends BaseTransferService {
     return pendingTransfersResp;
   }
 
+  /**
+   * Queries all transfers for the authenticated user with optional time filtering.
+   *
+   * @param limit - Maximum number of transfers to return
+   * @param offset - Pagination offset
+   * @param createdAfter - Optional: Return transfers created strictly after this time (exclusive). Mutually exclusive with createdBefore.
+   * @param createdBefore - Optional: Return transfers created strictly before this time (exclusive). Mutually exclusive with createdAfter.
+   * @returns Promise containing the query response with transfers
+   */
   async queryAllTransfers(
     limit: number,
     offset: number,
+    createdAfter?: Date,
+    createdBefore?: Date,
   ): Promise<QueryTransfersResponse> {
+    // Validate that only one time filter is provided (mutually exclusive)
+    if (createdAfter && createdBefore) {
+      throw new Error(
+        "createdAfter and createdBefore are mutually exclusive - only one can be specified",
+      );
+    }
+
     const sparkClient = await this.connectionManager.createSparkClient(
       this.config.getCoordinatorAddress(),
     );
 
+    // Build filter object
+    const filter: any = {
+      participant: {
+        $case: "senderOrReceiverIdentityPublicKey",
+        senderOrReceiverIdentityPublicKey:
+          await this.config.signer.getIdentityPublicKey(),
+      },
+      limit,
+      offset,
+      types: [
+        TransferType.TRANSFER,
+        TransferType.PREIMAGE_SWAP,
+        TransferType.COOPERATIVE_EXIT,
+        TransferType.UTXO_SWAP,
+      ],
+      network: NetworkToProto[this.config.getNetwork()],
+    };
+
+    // Add optional time filter (mutually exclusive - only one can be set)
+    if (createdAfter) {
+      const seconds = Math.floor(createdAfter.getTime() / 1000);
+      filter.timeFilter = {
+        $case: "createdAfter",
+        createdAfter: { seconds, nanos: 0 } as Timestamp,
+      };
+    } else if (createdBefore) {
+      const seconds = Math.floor(createdBefore.getTime() / 1000);
+      filter.timeFilter = {
+        $case: "createdBefore",
+        createdBefore: { seconds, nanos: 0 } as Timestamp,
+      };
+    }
+
     let allTransfersResp: QueryTransfersResponse;
     try {
-      allTransfersResp = await sparkClient.query_all_transfers({
-        participant: {
-          $case: "senderOrReceiverIdentityPublicKey",
-          senderOrReceiverIdentityPublicKey:
-            await this.config.signer.getIdentityPublicKey(),
-        },
-        limit,
-        offset,
-        types: [
-          TransferType.TRANSFER,
-          TransferType.PREIMAGE_SWAP,
-          TransferType.COOPERATIVE_EXIT,
-          TransferType.UTXO_SWAP,
-        ],
-        network: NetworkToProto[this.config.getNetwork()],
-      });
+      allTransfersResp = await sparkClient.query_all_transfers(filter);
     } catch (error) {
       throw new Error(`Error querying all transfers: ${error}`);
     }

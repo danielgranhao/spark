@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lightsparkdev/spark/common"
 	"github.com/lightsparkdev/spark/common/keys"
 	"github.com/lightsparkdev/spark/testing/wallet"
 	"github.com/stretchr/testify/require"
@@ -78,6 +79,25 @@ func TestQueryTokenMetadataNativeSparkToken(t *testing.T) {
 	queryAndVerifyTokenMetadata(t, config, nativeTokenParams)
 }
 
+func TestQueryTokenMetadataNativeSparkTokenWithExtensions(t *testing.T) {
+	nativeTokenParams := sparkTokenCreationTestParams{
+		issuerPrivateKey: keys.GeneratePrivateKey(),
+		name:             "Native Test Token",
+		ticker:           "NATIVE",
+		maxSupply:        5000000,
+		extraMetadata:    make([]byte, common.MaxExtraMetadataLength),
+		expectedError:    false,
+	}
+
+	err := createNativeToken(t, nativeTokenParams)
+	require.NoError(t, err, "failed to create native token")
+
+	config := wallet.NewTestWalletConfigWithIdentityKey(t, nativeTokenParams.issuerPrivateKey)
+	require.NoError(t, err, "failed to create wallet config")
+
+	queryAndVerifyTokenMetadata(t, config, nativeTokenParams)
+}
+
 func TestQueryTokenMetadataMixedParams(t *testing.T) {
 	config := wallet.NewTestWalletConfigWithIdentityKey(t, staticLocalIssuerKey.IdentityPrivateKey())
 
@@ -125,7 +145,7 @@ func TestQueryTokenMetadataMixedParams(t *testing.T) {
 	require.True(t, foundL1Token, "L1 token should be found in mixed query results")
 }
 
-func TestCoordinatedCreateNativeSparkTokenScenarios(t *testing.T) {
+func TestCreateNativeSparkTokenScenarios(t *testing.T) {
 	fixedRandomKey := keys.GeneratePrivateKey()
 
 	testCases := []struct {
@@ -134,7 +154,7 @@ func TestCoordinatedCreateNativeSparkTokenScenarios(t *testing.T) {
 		secondTokenParams *sparkTokenCreationTestParams
 	}{
 		{
-			name: "create second token with same issuer key should fail",
+			name: "create second token with same issuer key should succeed",
 			firstTokenParams: &sparkTokenCreationTestParams{
 				issuerPrivateKey: fixedRandomKey,
 				name:             testTokenName,
@@ -146,6 +166,21 @@ func TestCoordinatedCreateNativeSparkTokenScenarios(t *testing.T) {
 				name:             "Different Name",
 				ticker:           "DIFF",
 				maxSupply:        testTokenMaxSupply + 1000,
+			},
+		},
+		{
+			name: "create second token with same issuer key should fail if params are the same",
+			firstTokenParams: &sparkTokenCreationTestParams{
+				issuerPrivateKey: fixedRandomKey,
+				name:             "same params token",
+				ticker:           "SPT",
+				maxSupply:        testTokenMaxSupply,
+			},
+			secondTokenParams: &sparkTokenCreationTestParams{
+				issuerPrivateKey: fixedRandomKey,
+				name:             "same params token",
+				ticker:           "SPT",
+				maxSupply:        testTokenMaxSupply,
 				expectedError:    true,
 			},
 		},
@@ -219,6 +254,39 @@ func TestCoordinatedCreateNativeSparkTokenScenarios(t *testing.T) {
 				expectedError:    true,
 			},
 		},
+		{
+			name: "create token with extra metadata should succeed",
+			firstTokenParams: &sparkTokenCreationTestParams{
+				issuerPrivateKey: keys.GeneratePrivateKey(),
+				name:             testTokenName,
+				ticker:           "EXTMD",
+				maxSupply:        testTokenMaxSupply,
+				extraMetadata:    make([]byte, common.MaxExtraMetadataLength),
+				expectedError:    false,
+			},
+		},
+		{
+			name: "create token with extra metadata shorter than allowed length should succeed",
+			firstTokenParams: &sparkTokenCreationTestParams{
+				issuerPrivateKey: keys.GeneratePrivateKey(),
+				name:             testTokenName,
+				ticker:           "<EXTMD",
+				maxSupply:        testTokenMaxSupply,
+				extraMetadata:    make([]byte, common.MaxExtraMetadataLength-1),
+				expectedError:    false,
+			},
+		},
+		{
+			name: "create token with extra metadata longer than allowed length should fail",
+			firstTokenParams: &sparkTokenCreationTestParams{
+				issuerPrivateKey: keys.GeneratePrivateKey(),
+				name:             testTokenName,
+				ticker:           ">EXTMD",
+				maxSupply:        testTokenMaxSupply,
+				extraMetadata:    make([]byte, common.MaxExtraMetadataLength+1),
+				expectedError:    true,
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -238,7 +306,7 @@ func TestCoordinatedCreateNativeSparkTokenScenarios(t *testing.T) {
 			if tc.secondTokenParams != nil {
 				secondTokenConfig := wallet.NewTestWalletConfigWithIdentityKey(t, tc.secondTokenParams.issuerPrivateKey)
 
-				err = testCoordinatedCreateNativeSparkTokenWithParams(t, secondTokenConfig, *tc.secondTokenParams)
+				err = testCreateNativeSparkTokenWithParams(t, secondTokenConfig, *tc.secondTokenParams)
 				if tc.secondTokenParams.expectedError {
 					require.Error(t, err, "expected error but got none for second token creation")
 					stat, ok := status.FromError(err)
@@ -260,7 +328,7 @@ func TestCoordinatedCreateNativeSparkTokenScenarios(t *testing.T) {
 	}
 }
 
-func TestCoordinatedNativeTokenMaxSupplyEnforcement(t *testing.T) {
+func TestNativeTokenMaxSupplyEnforcement(t *testing.T) {
 	testCases := []struct {
 		name                 string
 		maxSupply            uint64
@@ -311,7 +379,7 @@ func TestCoordinatedNativeTokenMaxSupplyEnforcement(t *testing.T) {
 		config := wallet.NewTestWalletConfigWithIdentityKey(t, staticLocalIssuerKey.IdentityPrivateKey())
 
 		tokenPrivKey := keys.GeneratePrivateKey()
-		err := testCoordinatedCreateNativeSparkTokenWithParams(t, config, sparkTokenCreationTestParams{
+		err := testCreateNativeSparkTokenWithParams(t, config, sparkTokenCreationTestParams{
 			issuerPrivateKey: tokenPrivKey,
 			name:             "MaxTest",
 			ticker:           "MAXT",

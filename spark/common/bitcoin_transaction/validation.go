@@ -30,7 +30,7 @@ func VerifyTransactionWithDatabase(clientRawTxBytes []byte, dbLeaf *ent.TreeNode
 
 	cpfpRefundTxTimelock, err := GetCpfpTimelockFromLeaf(dbLeaf)
 	if err != nil {
-		return fmt.Errorf("failed to get CPFP timelock from leaf: %w", err)
+		return fmt.Errorf("failed to get CPFP timelock from leaf: %w, tx type: %d", err, txType)
 	}
 
 	switch txType {
@@ -55,40 +55,45 @@ func VerifyTransactionWithDatabase(clientRawTxBytes []byte, dbLeaf *ent.TreeNode
 func VerifyTransactionWithSource(clientRawTxBytes []byte, sourceRawTxBytes []byte, vout uint32, cpfpRefundTxTimelock uint32, txType TxType, destPubkey keys.Public) error {
 	clientTx, err := common.TxFromRawTxBytes(clientRawTxBytes)
 	if err != nil {
-		return fmt.Errorf("failed to parse client tx: %w", err)
+		return fmt.Errorf("failed to parse client tx: %w, tx type: %d", err, txType)
 	}
 
 	clientSequence, err := GetAndValidateUserSequence(clientRawTxBytes)
 	if err != nil {
-		return fmt.Errorf("failed to validate user sequence: %w", err)
+		return fmt.Errorf("failed to validate user sequence: %w, tx type: %d", err, txType)
 	}
 
 	// Allow only V2 or V3 client transactions and use the client's version for construction.
 	if clientTx.Version != 2 && clientTx.Version != 3 {
-		return fmt.Errorf("unsupported transaction version: %d", clientTx.Version)
+		return fmt.Errorf("unsupported transaction version: %d, tx type: %d", clientTx.Version, txType)
 	}
 
 	// Construct the expected transaction based on the type
 	expectedTx, err := constructExpectedTransaction(sourceRawTxBytes, vout, cpfpRefundTxTimelock, txType, destPubkey, clientSequence, clientTx.Version)
 	if err != nil {
-		return fmt.Errorf("failed to construct expected transaction: %w", err)
+		return fmt.Errorf("failed to construct expected transaction: %w, tx type: %d", err, txType)
 	}
 
 	// Compare the expected and client transactions with CompareTransactions first to return a more helpful error message
 	err = common.CompareTransactions(expectedTx, clientTx)
 	if err != nil {
-		return fmt.Errorf("transaction does not match expected construction: %w", err)
+		return fmt.Errorf("transaction does not match expected construction: %w, tx type: %d", err, txType)
 	}
 
-	// Serialize the expected and client transactions to compare the raw bytes for more extensive validation
-	expectedTxBytes, err := common.SerializeTx(expectedTx)
+	// Serialize the expected and client transactions to compare the raw bytes for more extensive validation.
+	expectedTxBytes, err := common.SerializeTxNoWitness(expectedTx)
 	if err != nil {
-		return fmt.Errorf("failed to serialize expected transaction: %w", err)
+		return fmt.Errorf("failed to serialize expected transaction: %w, tx type: %d", err, txType)
 	}
 
-	if !bytes.Equal(expectedTxBytes, clientRawTxBytes) {
-		diff := cmp.Diff(expectedTxBytes, clientRawTxBytes)
-		return fmt.Errorf("transaction does not match expected construction: %s", diff)
+	clientTxBytes, err := common.SerializeTxNoWitness(clientTx)
+
+	if err != nil {
+		return fmt.Errorf("failed to serialize client transaction: %w, tx type: %d", err, txType)
+	}
+	if !bytes.Equal(expectedTxBytes, clientTxBytes) {
+		diff := cmp.Diff(expectedTxBytes, clientTxBytes)
+		return fmt.Errorf("transaction does not match expected construction: %s, tx type: %d", diff, txType)
 	}
 
 	return nil
@@ -254,17 +259,19 @@ func validateSequence(cpfpTimelock uint32, txType TxType, clientSequence uint32)
 
 	var expectedCPFPTimelock uint32
 
+	roundedCpfpTimelock := roundDownToTimelockInterval(cpfpTimelock)
+
 	// For node transaction, we don't need to subtract TimeLockInterval
 	if (txType == TxTypeNodeCPFP) || (txType == TxTypeNodeDirect) {
-		expectedCPFPTimelock = cpfpTimelock
+		expectedCPFPTimelock = roundedCpfpTimelock
 	} else {
 		// For refund transaction, validate that the timelock is large enough to subtract TimeLockInterval
-		if cpfpTimelock < spark.TimeLockInterval {
-			return 0, fmt.Errorf("current timelock %d in CPFP refund transaction is too small to subtract TimeLockInterval %d",
-				cpfpTimelock, spark.TimeLockInterval)
+		if roundedCpfpTimelock < spark.TimeLockInterval {
+			return 0, fmt.Errorf("current timelock %d (rounded from %d) in CPFP refund transaction is too small to subtract TimeLockInterval %d",
+				roundedCpfpTimelock, cpfpTimelock, spark.TimeLockInterval)
 		}
 		// Calculate the expected new timelock (should be TimeLockInterval shorter)
-		expectedCPFPTimelock = cpfpTimelock - spark.TimeLockInterval
+		expectedCPFPTimelock = roundedCpfpTimelock - spark.TimeLockInterval
 	}
 
 	// Get the expected timelock based on transaction type
@@ -342,6 +349,11 @@ func GetTimelockFromSequence(sequence uint32) uint32 {
 	return sequence & wire.SequenceLockTimeMask
 }
 
+// roundDownToTimelockInterval handles leaves that have non-aligned timelocks (e.g., 740 instead of 700)
+func roundDownToTimelockInterval(timelock uint32) uint32 {
+	return timelock - (timelock % spark.TimeLockInterval)
+}
+
 // Decrement the timelock in the provided sequence by one step, preserving any other bits that are set.
 // Use GetAndValidateUserSequence to get the valid currSequence for this function.
 func NextSequence(currSequence uint32) (nextSequence uint32, nextDirectSequence uint32, err error) {
@@ -369,4 +381,17 @@ func GetCpfpTimelockFromLeaf(dbLeaf *ent.TreeNode) (uint32, error) {
 	}
 	cpfpRefundTxTimelock := GetTimelockFromSequence(rawRefundTx.TxIn[0].Sequence)
 	return cpfpRefundTxTimelock, nil
+}
+
+func IsZeroNode(leaf *ent.TreeNode) (bool, error) {
+	nodeTxBytes := leaf.RawTx
+	nodeTx, err := common.TxFromRawTxBytes(nodeTxBytes)
+	if err != nil {
+		return false, fmt.Errorf("unable to load node tx for leaf %s: %w", leaf.ID.String(), err)
+	}
+	if len(nodeTx.TxIn) == 0 {
+		return false, fmt.Errorf("no tx inputs for node tx %s", leaf.ID.String())
+	}
+	nodeTxTimelock := GetTimelockFromSequence(nodeTx.TxIn[0].Sequence)
+	return nodeTxTimelock == 0, nil
 }

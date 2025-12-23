@@ -1,5 +1,58 @@
 # @buildonspark/spark-sdk
 
+## 0.5.4
+
+### Patch Changes
+
+- **Token transactions utilities**
+  - Added `broadcastTokenTransactionDetailed()` method that returns detailed transaction information including `tokenIdentifier`, `commitStatus`, `commitProgress`, `finalTokenTransaction`, and `finalTokenTransactionHash`
+  - Added `broadcastTokenTransactionV3Detailed()` method that returns the full `BroadcastTransactionResponse` including `tokenIdentifier` and `finalTokenTransaction`
+  - Exported `hashFinalTokenTransaction` utility function from package utils for computing transaction hashes
+  - Updated existing `broadcastTokenTransaction()` and `broadcastTokenTransactionV3()` to internally use the detailed methods and extract just the transaction hash for backward compatibility
+
+## 0.5.3
+
+### Patch Changes
+
+- - Transfers: SparkWallet.getTransfers() now supports optional time filtering via createdAfter?: Date or createdBefore?: Date (mutually exclusive; providing both throws).
+  - TypeScript packaging: subpath exports now include explicit types mappings (notably @buildonspark/spark-sdk/types, /test-utils, /proto/spark, /proto/spark_token) to improve TS type resolution across ESM/CJS.
+
+## 0.5.2
+
+### Patch Changes
+
+- **getBalance**
+  - Return extraMetadata in token metadata fields on getBalance()
+
+  **error handling**
+  - Add a public getContext() method
+
+## 0.5.1
+
+### Patch Changes
+
+- **Retry gateway errors**
+  - Retry on 502, 503, 504 errors as these can temporarily occur when the service is autoscaling
+  - Includes exponential backoff with a max of 5 retries and a base delay of 1000ms
+
+  **Direct refund transactions**
+  - Do not construct the directRefundTx if the node timelock is 0
+
+  **Lightning**
+  - Added missing lightning send status
+
+  **Token transaction v3**
+  - Default to token transaction v3
+
+  **Query token transcations**
+  - Lower the default page size to 50
+
+  **Miscellaneous tweaks**
+  - Remove unused proof map in claim transfer flow
+  - Only derive the public key once when signing
+  - Update sats transfer flows to use Promise.all instead of looping through sequentially
+  - Update grpc HTTP/2 header parsing
+
 ## 0.5.0
 
 ### Minor Changes

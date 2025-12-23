@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lightsparkdev/spark/common/uint128"
-	"github.com/lightsparkdev/spark/so/ent/tokenoutput"
 	"go.uber.org/zap"
 
 	"entgo.io/ent/dialect/sql"
@@ -38,22 +36,21 @@ import (
 	"github.com/lightsparkdev/spark/so/helper"
 	"github.com/lightsparkdev/spark/so/knobs"
 	tokenslogging "github.com/lightsparkdev/spark/so/tokens"
+	transferHelper "github.com/lightsparkdev/spark/so/transfer"
 )
 
 var (
-	confirmPendingDKGKeysCutoffAge        = 15 * time.Minute
-	defaultTaskTimeout                    = 1 * time.Minute
-	dkgTaskTimeout                        = 3 * time.Minute
-	deleteStaleTreeNodesTaskTimeout       = 10 * time.Minute
-	backfillCreatedFinalizedTxHashTimeout = 24 * time.Hour
-	backfillTokenAmountTimeout            = 24 * time.Hour
+	confirmPendingDKGKeysCutoffAge  = 15 * time.Minute
+	defaultTaskTimeout              = 1 * time.Minute
+	dkgTaskTimeout                  = 3 * time.Minute
+	deleteStaleTreeNodesTaskTimeout = 10 * time.Minute
 )
 
 // Task contains common fields for all task types.
 type Task func(context.Context, *so.Config) error
 
 // BaseTaskSpec is a task that is scheduled to run.
-type BaseTaskSpec struct { //nolint:revive
+type BaseTaskSpec struct {
 	// Name is the human-readable name of the task.
 	Name string
 	// Timeout is the maximum time the task is allowed to run before it will be cancelled.
@@ -198,7 +195,7 @@ func AllScheduledTasks() []ScheduledTaskSpec {
 								transfer.ExpiryTimeLT(time.Now()),
 								transfer.ExpiryTimeNEQ(time.Unix(0, 0)),
 							),
-						))
+						)).Limit(1000)
 
 					transfers, err := query.All(ctx)
 					if err != nil {
@@ -207,7 +204,7 @@ func AllScheduledTasks() []ScheduledTaskSpec {
 
 					for _, dbTransfer := range transfers {
 						logger.Sugar().Infof("Cancelling transfer %s", dbTransfer.ID)
-						err := h.CancelTransferInternal(ctx, dbTransfer.ID.String())
+						err := h.CancelTransferInternal(ctx, dbTransfer.ID)
 						if err != nil {
 							logger.With(zap.Error(err)).Sugar().Errorf("failed to cancel transfer %s", dbTransfer.ID)
 						}
@@ -255,7 +252,7 @@ func AllScheduledTasks() []ScheduledTaskSpec {
 						// Checking for an active counter transfer is not required since a counter
 						// transfer creation will move both transfer to a non-cancellable status
 						// `TransferStatusApplyingSenderKeyTweak`.
-						err := h.CancelTransferInternal(ctx, dbTransfer.ID.String())
+						err := h.CancelTransferInternal(ctx, dbTransfer.ID)
 						if err != nil {
 							logger.With(zap.Error(err)).Sugar().Errorf("failed to cancel transfer %s", dbTransfer.ID)
 						}
@@ -412,13 +409,13 @@ func AllScheduledTasks() []ScheduledTaskSpec {
 					if err != nil {
 						return err
 					}
-					logger.Info(fmt.Sprintf("[cron] Found %d token transactions to finalize", len(tokenTransactions)))
+					logger.Sugar().Infof("[cron] Found %d token transactions to finalize", len(tokenTransactions))
 
 					var errs []error
 					signTokenHandler := tokens.NewSignTokenHandler(config)
 
 					for _, tokenTransaction := range tokenTransactions {
-						ctx, logger = logging.WithAttrs(ctx, tokenslogging.GetEntTokenTransactionZapAttrs(ctx, tokenTransaction)...)
+						ctx, _ = logging.WithAttrs(ctx, tokenslogging.GetEntTokenTransactionZapAttrs(ctx, tokenTransaction)...)
 						err := signTokenHandler.TryFinalizeRevealedTokenTransaction(ctx, tokenTransaction)
 						if err != nil {
 							errs = append(errs, fmt.Errorf("[cron] failed to finalize revealed token transaction %s: %w", tokenTransaction.ID, err))
@@ -476,6 +473,9 @@ func AllScheduledTasks() []ScheduledTaskSpec {
 					query := tx.UtxoSwap.Query().
 						Where(utxoswap.StatusEQ(st.UtxoSwapStatusCreated)).
 						Where(utxoswap.CoordinatorIdentityPublicKeyEQ(config.IdentityPublicKey())).
+						// Only try to auto complete utxo swaps older than 300 seconds
+						// allowing the core flow to complete the utxo swap first.
+						Where(utxoswap.CreateTimeLT(time.Now().Add(-5 * time.Minute))).
 						Order(utxoswap.ByCreateTime(sql.OrderDesc())).
 						Limit(100)
 
@@ -494,7 +494,14 @@ func AllScheduledTasks() []ScheduledTaskSpec {
 							logger.Sugar().Debugf("No transfer found for a non-refund utxo swap %s", utxoSwap.ID)
 							continue
 						}
-						if utxoSwap.RequestType == st.UtxoSwapRequestTypeRefund || dbTransfer.Status == st.TransferStatusCompleted {
+
+						// If the utxo swap is a refund or the transfer is sent, mark the utxo swap as completed.
+						// Generally, if utxo swap has a transfer, then it means the transfer is sent,
+						// we just double check that it was not accidentally cancelled.
+						// Checking if the transfer is Completed is not enough because the
+						// transfer can be not yet claimed by the user, but utxo swap is
+						// completed as far as the SE is concerned.
+						if utxoSwap.RequestType == st.UtxoSwapRequestTypeRefund || transferHelper.IsTransferSent(dbTransfer) {
 							logger.Sugar().Debugf("Marking utxo swap %s as completed", utxoSwap.ID)
 
 							utxo, err := utxoSwap.QueryUtxo().Only(ctx)
@@ -624,7 +631,7 @@ func AllScheduledTasks() []ScheduledTaskSpec {
 						if shouldCancel {
 							logger.Sugar().Infof("Cancelling transfer %s", pendingSendTransfer.TransferID)
 							transferHandler := handler.NewTransferHandler(config)
-							err := transferHandler.CreateCancelTransferGossipMessage(ctx, pendingSendTransfer.TransferID.String())
+							err := transferHandler.CreateCancelTransferGossipMessage(ctx, pendingSendTransfer.TransferID)
 							if err != nil {
 								logger.Sugar().Errorw("failed to cancel transfer", zap.Error(err))
 							} else {
@@ -735,7 +742,7 @@ func AllStartupTasks() []StartupTaskSpec {
 							return fmt.Errorf("failed to query for entity DKG key: %w", err)
 						}
 						// No existing entity DKG key found, create a new one
-						entityDkgKey, err = ent.CreateEntityDkgKeyWithUnusedSigningKeyshare(ctx, config)
+						_, err = ent.CreateEntityDkgKeyWithUnusedSigningKeyshare(ctx, config)
 						if err != nil {
 							return fmt.Errorf("failed to create entity DKG key with unused signing keyshare: %w", err)
 						}
@@ -772,20 +779,6 @@ func AllStartupTasks() []StartupTaskSpec {
 					logger.Sugar().Infof("Successfully verified reserved entity DKG key %s in all operators", keyshare.ID)
 					return nil
 				},
-			},
-		},
-		{
-			BaseTaskSpec: BaseTaskSpec{
-				Name:    "backfill_created_finalized_tx_hash",
-				Timeout: &backfillCreatedFinalizedTxHashTimeout,
-				Task:    backfillCreatedFinalizedTxHash,
-			},
-		},
-		{
-			BaseTaskSpec: BaseTaskSpec{
-				Name:    "backfill_token_amounts",
-				Timeout: &backfillTokenAmountTimeout,
-				Task:    backfillTokenAmounts,
 			},
 		},
 	}
@@ -895,166 +888,11 @@ func RunStartupTasks(ctx context.Context, config *so.Config, db *ent.Client, run
 					}
 				}(task)
 			} else {
-				task.RunOnce(ctx, config, db, knobsService) // nolint: errcheck
+				// This is already logged in `LogMiddleware`, so no need to also log it here.
+				_ = task.RunOnce(ctx, config, db, knobsService)
 			}
 		}
 	}
 	logger.Info("All startup tasks completed")
-	return nil
-}
-
-const backfillCreatedFinalizedTxHashBatchSize = 1000
-
-// backfillCreatedFinalizedTxHash backfills the created_finalized_tx_hash field on token_outputs
-// by fetching the finalized_token_transaction_hash from the linked token_transaction.
-// Uses bulk UPDATE with JOIN for performance. Commits after each batch.
-// Re-checks the knob every minute so the job can be disabled mid-run.
-// Controlled by knob: spark.so.tokens.backfill_created_finalized_tx_hash.enabled
-func backfillCreatedFinalizedTxHash(ctx context.Context, config *so.Config, knobsService knobs.Knobs) error {
-	logger := logging.GetLoggerFromContext(ctx)
-	totalUpdated := int64(0)
-	var lastKnobCheck time.Time
-
-	const bulkUpdateQuery = `
-		WITH batch AS (
-			SELECT id
-			FROM token_outputs
-			WHERE created_transaction_finalized_hash IS NULL
-			  AND token_output_output_created_token_transaction IS NOT NULL
-			LIMIT $1
-		)
-		UPDATE token_outputs to_update
-		SET created_transaction_finalized_hash = tt.finalized_token_transaction_hash
-		FROM token_transactions tt, batch
-		WHERE to_update.id = batch.id
-		  AND to_update.token_output_output_created_token_transaction = tt.id
-	`
-
-	for {
-		if time.Since(lastKnobCheck) > time.Minute {
-			lastKnobCheck = time.Now()
-			if knobsService.GetValue(knobs.KnobBackfillCreatedFinalizedTxHashEnabled, 0) == 0 {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(time.Minute):
-				}
-				continue
-			}
-		}
-
-		tx, err := ent.GetTxFromContext(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get tx from context: %w", err)
-		}
-
-		// nolint:forbidigo
-		result, err := tx.ExecContext(ctx, bulkUpdateQuery, backfillCreatedFinalizedTxHashBatchSize)
-		if err != nil {
-			return fmt.Errorf("failed to execute bulk update: %w", err)
-		}
-
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("failed to get rows affected: %w", err)
-		}
-
-		if rowsAffected == 0 {
-			break
-		}
-
-		totalUpdated += rowsAffected
-
-		ent.MarkTxDirty(ctx)
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("failed to commit batch: %w", err)
-		}
-
-		logger.Sugar().Infof("Backfilled %d token outputs so far (batch of %d)", totalUpdated, rowsAffected)
-
-		if rowsAffected < backfillCreatedFinalizedTxHashBatchSize {
-			break
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-
-	if totalUpdated > 0 {
-		logger.Sugar().Infof("Successfully backfilled %d total token outputs", totalUpdated)
-	}
-	return nil
-}
-
-func backfillTokenAmounts(ctx context.Context, config *so.Config, knobsService knobs.Knobs) error {
-	logger := logging.GetLoggerFromContext(ctx)
-	totalUpdated := int64(0)
-	const batchSize = 1000
-	var lastKnobCheck time.Time
-
-	for {
-		if time.Since(lastKnobCheck) > time.Minute {
-			lastKnobCheck = time.Now()
-			if knobsService.GetValue(knobs.KnobBackfillCreatedReversedTokenAmount, 0) == 0 {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(time.Minute):
-				}
-				continue
-			}
-		}
-
-		tx, err := ent.GetTxFromContext(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get tx from context: %w", err)
-		}
-
-		rows, err := tx.TokenOutput.Query().
-			Where(tokenoutput.UpdateTimeGT(time.Now().Add(-4 * 24 * time.Hour))).
-			ForUpdate().
-			Limit(batchSize).
-			All(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get rows: %w", err)
-		}
-
-		rowsAffected := int64(0)
-		for _, row := range rows {
-			fixedAmount, err := uint128.FromBytes(row.TokenAmount)
-			if err != nil {
-				return fmt.Errorf("failed to get token amount: %w", err)
-			}
-			if fixedAmount == row.Amount {
-				continue
-			}
-			_, err = tx.TokenOutput.
-				UpdateOneID(row.ID).
-				SetAmount(fixedAmount).
-				Save(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to update token amount: %w", err)
-			}
-			rowsAffected++
-		}
-
-		if rowsAffected == 0 {
-			break
-		}
-		totalUpdated += rowsAffected
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-
-	if totalUpdated > 0 {
-		logger.Sugar().Infof("Successfully backfilled %d total token output amounts", totalUpdated)
-	}
 	return nil
 }

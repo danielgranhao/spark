@@ -21,9 +21,9 @@ type L1TokenCreate struct {
 	config `json:"-"`
 	// ID of the ent.
 	ID uuid.UUID `json:"id,omitempty"`
-	// CreateTime holds the value of the "create_time" field.
+	// The time when the entity was created.
 	CreateTime time.Time `json:"create_time,omitempty"`
-	// UpdateTime holds the value of the "update_time" field.
+	// The time when the entity was last updated.
 	UpdateTime time.Time `json:"update_time,omitempty"`
 	// IssuerPublicKey holds the value of the "issuer_public_key" field.
 	IssuerPublicKey keys.Public `json:"issuer_public_key,omitempty"`
@@ -39,6 +39,8 @@ type L1TokenCreate struct {
 	IsFreezable bool `json:"is_freezable,omitempty"`
 	// Network holds the value of the "network" field.
 	Network btcnetwork.Network `json:"network,omitempty"`
+	// Extra metadata is used to store user-defined metadata about the token.
+	ExtraMetadata []byte `json:"extra_metadata,omitempty"`
 	// TokenIdentifier holds the value of the "token_identifier" field.
 	TokenIdentifier []byte `json:"token_identifier,omitempty"`
 	// TransactionID holds the value of the "transaction_id" field.
@@ -51,7 +53,7 @@ func (*L1TokenCreate) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case l1tokencreate.FieldMaxSupply, l1tokencreate.FieldTokenIdentifier:
+		case l1tokencreate.FieldMaxSupply, l1tokencreate.FieldExtraMetadata, l1tokencreate.FieldTokenIdentifier:
 			values[i] = new([]byte)
 		case l1tokencreate.FieldNetwork:
 			values[i] = new(btcnetwork.Network)
@@ -144,6 +146,12 @@ func (lc *L1TokenCreate) assignValues(columns []string, values []any) error {
 			} else if value != nil {
 				lc.Network = *value
 			}
+		case l1tokencreate.FieldExtraMetadata:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field extra_metadata", values[i])
+			} else if value != nil {
+				lc.ExtraMetadata = *value
+			}
 		case l1tokencreate.FieldTokenIdentifier:
 			if value, ok := values[i].(*[]byte); !ok {
 				return fmt.Errorf("unexpected type %T for field token_identifier", values[i])
@@ -218,6 +226,9 @@ func (lc *L1TokenCreate) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("network=")
 	builder.WriteString(fmt.Sprintf("%v", lc.Network))
+	builder.WriteString(", ")
+	builder.WriteString("extra_metadata=")
+	builder.WriteString(fmt.Sprintf("%v", lc.ExtraMetadata))
 	builder.WriteString(", ")
 	builder.WriteString("token_identifier=")
 	builder.WriteString(fmt.Sprintf("%v", lc.TokenIdentifier))

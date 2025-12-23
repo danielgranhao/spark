@@ -59,7 +59,7 @@ func (o *DepositHandler) GenerateDepositAddress(ctx context.Context, config *so.
 	ctx, span := tracer.Start(ctx, "DepositHandler.GenerateDepositAddress")
 	defer span.End()
 
-	if req.GetIsStatic() && knobs.GetKnobsService(ctx).GetValue(knobs.KnobSoGenerateStaticDepositAddressV2, 0) > 0 {
+	if req.GetIsStatic() {
 		res, err := o.GenerateStaticDepositAddress(ctx, config, &pb.GenerateStaticDepositAddressRequest{
 			IdentityPublicKey: req.IdentityPublicKey,
 			SigningPublicKey:  req.SigningPublicKey,
@@ -92,29 +92,6 @@ func (o *DepositHandler) GenerateDepositAddress(ctx context.Context, config *so.
 	reqSigningPubKey, err := keys.ParsePublicKey(req.SigningPublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("invalid signing public key: %w", err)
-	}
-
-	// TODO(LIG-8000): remove when we have a way to support multiple static deposit addresses per (identity, network).
-	if req.GetIsStatic() {
-		db, err := ent.GetDbFromContext(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get or create current tx for request: %w", err)
-		}
-		depositAddresses, err := db.DepositAddress.Query().
-			Where(
-				depositaddress.OwnerIdentityPubkey(reqIDPubKey),
-				depositaddress.IsStatic(true),
-			).
-			All(ctx)
-		if err != nil {
-			return nil, err
-		}
-		// Find if there is already a static deposit address for this identity and network.
-		for _, depositAddress := range depositAddresses {
-			if utils.IsBitcoinAddressForNetwork(depositAddress.Address, network) {
-				return nil, fmt.Errorf("static deposit address already exists: %s", depositAddress.Address)
-			}
-		}
 	}
 
 	logger.Sugar().Infof("Generating deposit address for public key %s (signing %s)", reqIDPubKey, reqSigningPubKey)
@@ -164,11 +141,7 @@ func (o *DepositHandler) GenerateDepositAddress(ctx context.Context, config *so.
 		SetAddress(depositAddress)
 	// Confirmation height is not set since nothing has been confirmed yet.
 
-	if req.GetIsStatic() {
-		depositAddressMutator.SetIsStatic(true).SetIsDefault(true)
-	} else if req.LeafId != nil {
-		// Static deposit addresses are not allowed to have a leaf ID
-		// because it would be meaningless.
+	if req.LeafId != nil {
 		leafID, err := uuid.Parse(req.GetLeafId())
 		if err != nil {
 			return nil, err
@@ -314,6 +287,7 @@ func (o *DepositHandler) GenerateStaticDepositAddress(ctx context.Context, confi
 					AddressSignatures:          addressSignatures,
 					ProofOfPossessionSignature: proofOfPossessionSignature,
 				},
+				IsStatic: true,
 			},
 		}, nil
 	}
@@ -448,6 +422,7 @@ func (o *DepositHandler) GenerateStaticDepositAddress(ctx context.Context, confi
 				AddressSignatures:          addressSignatures,
 				ProofOfPossessionSignature: proofOfPossessionSignatures[0],
 			},
+			IsStatic: true,
 		},
 	}, nil
 }
@@ -538,345 +513,6 @@ func generateStaticDepositAddressProofs(ctx context.Context, config *so.Config, 
 			)
 	}
 	return addressSignatures, proofOfPossessionSignatures[0], nil
-}
-
-func (o *DepositHandler) StartTreeCreation(ctx context.Context, config *so.Config, req *pb.StartTreeCreationRequest) (*pb.StartTreeCreationResponse, error) {
-	ctx, span := tracer.Start(ctx, "DepositHandler.StartTreeCreation")
-	defer span.End()
-
-	reqIDPubKey, err := keys.ParsePublicKey(req.IdentityPublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("invalid identity public key: %w", err)
-	}
-	if err := authz.EnforceSessionIdentityPublicKeyMatches(ctx, o.config, reqIDPubKey); err != nil {
-		return nil, err
-	}
-	// Get the on chain tx
-	onChainTx, err := common.TxFromRawTxBytes(req.OnChainUtxo.RawTx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get on-chain tx for request %s: %w", logging.FormatProto("start_tree_creation_request", req), err)
-	}
-	if len(onChainTx.TxOut) <= int(req.OnChainUtxo.Vout) {
-		return nil, fmt.Errorf("utxo index out of bounds for request %s", logging.FormatProto("start_tree_creation_request", req))
-	}
-
-	// Verify that the on chain utxo is paid to the registered deposit address
-	if len(onChainTx.TxOut) <= int(req.OnChainUtxo.Vout) {
-		return nil, fmt.Errorf("utxo index out of bounds for request %s", logging.FormatProto("start_tree_creation_request", req))
-	}
-	onChainOutput := onChainTx.TxOut[req.OnChainUtxo.Vout]
-	network, err := btcnetwork.FromProtoNetwork(req.OnChainUtxo.Network)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get network for request %s: %w", logging.FormatProto("start_tree_creation_request", req), err)
-	}
-	if !config.IsNetworkSupported(network) {
-		return nil, fmt.Errorf("network not supported for request %s", logging.FormatProto("start_tree_creation_request", req))
-	}
-	utxoAddress, err := common.P2TRAddressFromPkScript(onChainOutput.PkScript, network)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get P2TR address from pk script for request %s: %w", logging.FormatProto("start_tree_creation_request", req), err)
-	}
-	db, err := ent.GetDbFromContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get or create current tx for request: %w", err)
-	}
-
-	depositAddress, err := db.DepositAddress.Query().Where(depositaddress.Address(*utxoAddress)).WithTree().ForUpdate().First(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query deposit address for request %s: %w", logging.FormatProto("start_tree_creation_request", req), err)
-	}
-	if !depositAddress.OwnerIdentityPubkey.Equals(reqIDPubKey) {
-		return nil, fmt.Errorf("deposit address not found for address: %s", *utxoAddress)
-	}
-	rootSigningPubKey, err := keys.ParsePublicKey(req.GetRootTxSigningJob().GetSigningPublicKey())
-	if err != nil {
-		return nil, fmt.Errorf("invalid root signing public key: %w", err)
-	}
-	refundSigningPubKey, err := keys.ParsePublicKey(req.GetRefundTxSigningJob().GetSigningPublicKey())
-	if err != nil {
-		return nil, fmt.Errorf("invalid root signing public key: %w", err)
-	}
-
-	if !depositAddress.OwnerSigningPubkey.Equals(rootSigningPubKey) || !depositAddress.OwnerSigningPubkey.Equals(refundSigningPubKey) {
-		return nil, fmt.Errorf("unexpected signing public key")
-	}
-
-	txConfirmed := depositAddress.ConfirmationHeight != 0
-
-	if txConfirmed && depositAddress.ConfirmationTxid != "" {
-		onChainTxid := onChainTx.TxHash().String()
-		if onChainTxid != depositAddress.ConfirmationTxid {
-			return nil, fmt.Errorf("transaction ID does not match confirmed transaction ID")
-		}
-	}
-
-	// Verify the root transactions
-	cpfpRootTx, err := common.TxFromRawTxBytes(req.RootTxSigningJob.RawTx)
-	if err != nil {
-		return nil, err
-	}
-	if len(cpfpRootTx.TxOut) <= 0 {
-		return nil, fmt.Errorf("vout out of bounds, root tx has no outputs")
-	}
-	err = o.verifyRootTransaction(cpfpRootTx, onChainTx, req.OnChainUtxo.Vout, false)
-	if err != nil {
-		return nil, err
-	}
-	cpfpRootTxSigHash, err := common.SigHashFromTx(cpfpRootTx, 0, onChainOutput)
-	if err != nil {
-		return nil, err
-	}
-
-	// Verify the refund transactions
-	cpfpRefundTx, err := common.TxFromRawTxBytes(req.RefundTxSigningJob.RawTx)
-	if err != nil {
-		return nil, err
-	}
-	err = o.verifyRefundTransaction(cpfpRootTx, cpfpRefundTx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Sign the root and refund transactions
-	signingKeyShare, err := depositAddress.QuerySigningKeyshare().Only(ctx)
-	if err != nil {
-		return nil, err
-	}
-	verifyingKey := signingKeyShare.PublicKey.Add(depositAddress.OwnerSigningPubkey)
-
-	userCpfpRootTxNonceCommitment := frost.SigningCommitment{}
-	if err := userCpfpRootTxNonceCommitment.UnmarshalProto(req.GetRootTxSigningJob().GetSigningNonceCommitment()); err != nil {
-		return nil, err
-	}
-
-	cpfpRefundTxSigHash, err := common.SigHashFromTx(cpfpRefundTx, 0, cpfpRootTx.TxOut[0])
-	if err != nil {
-		return nil, err
-	}
-
-	userCpfpRefundTxNonceCommitment := frost.SigningCommitment{}
-	if err := userCpfpRefundTxNonceCommitment.UnmarshalProto(req.GetRefundTxSigningJob().GetSigningNonceCommitment()); err != nil {
-		return nil, err
-	}
-	signingJobs := []*helper.SigningJob{
-		{
-			JobID:             uuid.New().String(),
-			SigningKeyshareID: signingKeyShare.ID,
-			Message:           cpfpRootTxSigHash,
-			VerifyingKey:      &verifyingKey,
-			UserCommitment:    &userCpfpRootTxNonceCommitment,
-		},
-		{
-			JobID:             uuid.New().String(),
-			SigningKeyshareID: signingKeyShare.ID,
-			Message:           cpfpRefundTxSigHash,
-			VerifyingKey:      &verifyingKey,
-			UserCommitment:    &userCpfpRefundTxNonceCommitment,
-		},
-	}
-
-	directRootTxSigningJob := req.GetDirectRootTxSigningJob()
-	directRefundTxSigningJob := req.GetDirectRefundTxSigningJob()
-	directFromCpfpRefundTxSigningJob := req.GetDirectFromCpfpRefundTxSigningJob()
-
-	if directFromCpfpRefundTxSigningJob == nil {
-		networkString := network.String()
-		if knobs.GetKnobsService(ctx).GetValueTarget(knobs.KnobRequireDirectFromCPFPRefund, &networkString, 0) > 0 {
-			return nil, fmt.Errorf("DirectFromCpfpRefundTxSigningJob is required. Please upgrade to the latest SDK version")
-		}
-	} else {
-		directFromCpfpRefundTx, err := common.TxFromRawTxBytes(directFromCpfpRefundTxSigningJob.GetRawTx())
-		if err != nil {
-			return nil, err
-		}
-		err = o.verifyRefundTransaction(cpfpRootTx, directFromCpfpRefundTx)
-		if err != nil {
-			return nil, err
-		}
-		directFromCpfpRefundTxSigHash, err := common.SigHashFromTx(directFromCpfpRefundTx, 0, cpfpRootTx.TxOut[0])
-		if err != nil {
-			return nil, err
-		}
-		userDirectFromCpfpRefundTxNonceCommitment := frost.SigningCommitment{}
-		if err := userDirectFromCpfpRefundTxNonceCommitment.UnmarshalProto(directFromCpfpRefundTxSigningJob.GetSigningNonceCommitment()); err != nil {
-			return nil, err
-		}
-		signingJobs = append(
-			signingJobs,
-			&helper.SigningJob{
-				JobID:             uuid.New().String(),
-				SigningKeyshareID: signingKeyShare.ID,
-				Message:           directFromCpfpRefundTxSigHash,
-				VerifyingKey:      &verifyingKey,
-				UserCommitment:    &userDirectFromCpfpRefundTxNonceCommitment,
-			},
-		)
-	}
-
-	// Process direct root and refund txs if both are provided
-	if directRootTxSigningJob != nil && directRefundTxSigningJob != nil {
-		directRootTx, err := common.TxFromRawTxBytes(directRootTxSigningJob.RawTx)
-		if err != nil {
-			return nil, err
-		}
-		err = o.verifyRootTransaction(directRootTx, onChainTx, req.OnChainUtxo.Vout, true)
-		if err != nil {
-			return nil, err
-		}
-		directRootTxSigHash, err := common.SigHashFromTx(directRootTx, 0, onChainOutput)
-		if err != nil {
-			return nil, err
-		}
-
-		directRefundTx, err := common.TxFromRawTxBytes(directRefundTxSigningJob.GetRawTx())
-		if err != nil {
-			return nil, err
-		}
-		err = o.verifyRefundTransaction(directRootTx, directRefundTx)
-		if err != nil {
-			return nil, err
-		}
-		directRefundTxSigHash, err := common.SigHashFromTx(directRefundTx, 0, directRootTx.TxOut[0])
-		if err != nil {
-			return nil, err
-		}
-		userDirectRootTxNonceCommitment := frost.SigningCommitment{}
-		if err := userDirectRootTxNonceCommitment.UnmarshalProto(directRootTxSigningJob.GetSigningNonceCommitment()); err != nil {
-			return nil, err
-		}
-		userDirectRefundTxNonceCommitment := frost.SigningCommitment{}
-		if err := userDirectRefundTxNonceCommitment.UnmarshalProto(directRefundTxSigningJob.GetSigningNonceCommitment()); err != nil {
-			return nil, err
-		}
-		signingJobs = append(
-			signingJobs,
-			&helper.SigningJob{
-				JobID:             uuid.New().String(),
-				SigningKeyshareID: signingKeyShare.ID,
-				Message:           directRootTxSigHash,
-				VerifyingKey:      &verifyingKey,
-				UserCommitment:    &userDirectRootTxNonceCommitment,
-			},
-			&helper.SigningJob{
-				JobID:             uuid.New().String(),
-				SigningKeyshareID: signingKeyShare.ID,
-				Message:           directRefundTxSigHash,
-				VerifyingKey:      &verifyingKey,
-				UserCommitment:    &userDirectRefundTxNonceCommitment,
-			},
-		)
-	} else if directRootTxSigningJob != nil || directRefundTxSigningJob != nil {
-		return nil, fmt.Errorf("direct root tx signing job and direct refund tx signing job must both be provided or neither of them")
-	}
-
-	signingResults, err := helper.SignFrost(ctx, config, signingJobs)
-	if err != nil {
-		return nil, err
-	}
-	if len(signingResults) < 2 {
-		return nil, fmt.Errorf("expected at least 2 signing results, got %d", len(signingResults))
-	}
-
-	cpfpNodeTxSigningResult, err := signingResults[0].MarshalProto()
-	if err != nil {
-		return nil, err
-	}
-	cpfpRefundTxSigningResult, err := signingResults[1].MarshalProto()
-	if err != nil {
-		return nil, err
-	}
-
-	var directNodeTxSigningResult, directRefundTxSigningResult, directFromCpfpRefundTxSigningResult *pb.SigningResult
-	resultIndex := 2
-	if req.GetDirectFromCpfpRefundTxSigningJob() != nil {
-		directFromCpfpRefundTxSigningResult, err = signingResults[resultIndex].MarshalProto()
-		if err != nil {
-			return nil, err
-		}
-		resultIndex++
-	}
-	if req.GetDirectRootTxSigningJob() != nil && req.GetDirectRefundTxSigningJob() != nil {
-		directNodeTxSigningResult, err = signingResults[resultIndex].MarshalProto()
-		if err != nil {
-			return nil, err
-		}
-		directRefundTxSigningResult, err = signingResults[resultIndex+1].MarshalProto()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if depositAddress.Edges.Tree != nil {
-		return nil, errors.AlreadyExistsDuplicateOperation(fmt.Errorf("deposit address already has a tree"))
-	}
-
-	// Create the tree
-	txid := onChainTx.TxHash()
-	treeMutator := db.Tree.
-		Create().
-		SetOwnerIdentityPubkey(depositAddress.OwnerIdentityPubkey).
-		SetNetwork(network).
-		SetBaseTxid(st.NewTxID(txid)).
-		SetVout(int16(req.OnChainUtxo.Vout)).
-		SetDepositAddress(depositAddress)
-	if txConfirmed {
-		treeMutator.SetStatus(st.TreeStatusAvailable)
-	} else {
-		treeMutator.SetStatus(st.TreeStatusPending)
-	}
-	entTree, err := treeMutator.Save(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var directTx []byte
-	if req.DirectRootTxSigningJob != nil {
-		directTx = req.DirectRootTxSigningJob.RawTx
-	}
-	var directRefundTx []byte
-	if req.DirectRefundTxSigningJob != nil {
-		directRefundTx = req.DirectRefundTxSigningJob.RawTx
-	}
-	var directFromCpfpRefundTx []byte
-	if req.DirectFromCpfpRefundTxSigningJob != nil {
-		directFromCpfpRefundTx = req.DirectFromCpfpRefundTxSigningJob.RawTx
-	}
-	root, err := db.TreeNode.
-		Create().
-		SetTree(entTree).
-		SetNetwork(entTree.Network).
-		SetStatus(st.TreeNodeStatusCreating).
-		SetOwnerIdentityPubkey(depositAddress.OwnerIdentityPubkey).
-		SetOwnerSigningPubkey(depositAddress.OwnerSigningPubkey).
-		SetValue(uint64(onChainOutput.Value)).
-		SetVerifyingPubkey(verifyingKey).
-		SetSigningKeyshare(signingKeyShare).
-		SetRawTx(req.RootTxSigningJob.RawTx).
-		SetRawRefundTx(req.RefundTxSigningJob.RawTx).
-		SetDirectTx(directTx).
-		SetDirectRefundTx(directRefundTx).
-		SetDirectFromCpfpRefundTx(directFromCpfpRefundTx).
-		SetVout(int16(req.OnChainUtxo.Vout)).
-		Save(ctx)
-	if err != nil {
-		return nil, err
-	}
-	entTree, err = entTree.Update().SetRoot(root).Save(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &pb.StartTreeCreationResponse{
-		TreeId: entTree.ID.String(),
-		RootNodeSignatureShares: &pb.NodeSignatureShares{
-			NodeId:                              root.ID.String(),
-			NodeTxSigningResult:                 cpfpNodeTxSigningResult,
-			RefundTxSigningResult:               cpfpRefundTxSigningResult,
-			VerifyingKey:                        verifyingKey.Serialize(),
-			DirectNodeTxSigningResult:           directNodeTxSigningResult,
-			DirectRefundTxSigningResult:         directRefundTxSigningResult,
-			DirectFromCpfpRefundTxSigningResult: directFromCpfpRefundTxSigningResult,
-		},
-	}, nil
 }
 
 // StartDepositTreeCreation verifies the on chain utxo, and then verifies and signs the offchain root and refund transactions.
@@ -1024,8 +660,7 @@ func (o *DepositHandler) StartDepositTreeCreation(ctx context.Context, config *s
 		if err != nil {
 			return nil, err
 		}
-		err = o.verifyRefundTransaction(cpfpRootTx, directFromCpfpRefundTx)
-		if err != nil {
+		if err := o.verifyRefundTransaction(cpfpRootTx, directFromCpfpRefundTx); err != nil {
 			return nil, err
 		}
 		if len(cpfpRootTx.TxOut) <= 0 {
@@ -1114,7 +749,7 @@ func (o *DepositHandler) StartDepositTreeCreation(ctx context.Context, config *s
 		return nil, fmt.Errorf("direct root tx signing job and direct refund tx signing job must both be provided or neither of them")
 	}
 
-	if knobs.GetKnobsService(ctx).GetValue(knobs.KnobEnableDepositFlowValidation, 0) > 0 {
+	if knobs.GetKnobsService(ctx).RolloutRandom(knobs.KnobEnableDepositFlowValidation, 0) {
 		combinedPublicKey := signingKeyShare.PublicKey.Add(depositAddress.OwnerSigningPubkey)
 		err = o.validateBitcoinTransactions(req, combinedPublicKey)
 		if err != nil {
@@ -1655,7 +1290,7 @@ func (h *DepositHandler) validateBitcoinTransactions(req *pb.StartDepositTreeCre
 	// set to InitialTimeLock
 	cpfpTimelock := spark.InitialTimeLock + spark.TimeLockInterval
 	// Validate cpfp refund tx based on cpfp root tx
-	err = bitcointransaction.VerifyTransactionWithSource(cpfpRefundTx, cpfpRootTx, vout, cpfpTimelock, bitcointransaction.TxTypeRefundCPFP, refundDestPubkey)
+	err = bitcointransaction.VerifyTransactionWithSource(cpfpRefundTx, cpfpRootTx, 0, cpfpTimelock, bitcointransaction.TxTypeRefundCPFP, refundDestPubkey)
 	if err != nil {
 		return fmt.Errorf("cpfp refund transaction verification failed: %w", err)
 	}
@@ -1664,7 +1299,7 @@ func (h *DepositHandler) validateBitcoinTransactions(req *pb.StartDepositTreeCre
 	if req.DirectFromCpfpRefundTxSigningJob != nil {
 		directFromCpfpRefundTx := req.DirectFromCpfpRefundTxSigningJob.RawTx
 
-		err = bitcointransaction.VerifyTransactionWithSource(directFromCpfpRefundTx, cpfpRootTx, vout, cpfpTimelock, bitcointransaction.TxTypeRefundDirectFromCPFP, refundDestPubkey)
+		err = bitcointransaction.VerifyTransactionWithSource(directFromCpfpRefundTx, cpfpRootTx, 0, cpfpTimelock, bitcointransaction.TxTypeRefundDirectFromCPFP, refundDestPubkey)
 		if err != nil {
 			return fmt.Errorf("direct-from-cpfp refund transaction verification failed: %w", err)
 		}
@@ -1680,7 +1315,7 @@ func (h *DepositHandler) validateBitcoinTransactions(req *pb.StartDepositTreeCre
 		}
 
 		directRefundTx := req.DirectRefundTxSigningJob.RawTx
-		err = bitcointransaction.VerifyTransactionWithSource(directRefundTx, directRootTx, vout, cpfpTimelock, bitcointransaction.TxTypeRefundDirect, refundDestPubkey)
+		err = bitcointransaction.VerifyTransactionWithSource(directRefundTx, directRootTx, 0, cpfpTimelock, bitcointransaction.TxTypeRefundDirect, refundDestPubkey)
 		if err != nil {
 			return fmt.Errorf("direct refund transaction verification failed: %w", err)
 		}

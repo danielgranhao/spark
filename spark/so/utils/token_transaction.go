@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -18,11 +19,11 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightsparkdev/spark/common"
-	pb "github.com/lightsparkdev/spark/proto/spark"
 	sparkpb "github.com/lightsparkdev/spark/proto/spark"
 	tokenpb "github.com/lightsparkdev/spark/proto/spark_token"
 	st "github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	sparkerrors "github.com/lightsparkdev/spark/so/errors"
+	"github.com/lightsparkdev/spark/so/knobs"
 	"github.com/lightsparkdev/spark/so/protoconverter"
 )
 
@@ -527,7 +528,7 @@ func HashTokenTransactionV0(tokenTransaction *sparkpb.TokenTransaction, partialH
 	return finalHash, nil
 }
 
-func hashTransferInputV0(h hash.Hash, transferSource *pb.TokenTransferInput) ([]byte, error) {
+func hashTransferInputV0(h hash.Hash, transferSource *sparkpb.TokenTransferInput) ([]byte, error) {
 	var allHashes []byte
 	if transferSource == nil {
 		return nil, fmt.Errorf("transfer input cannot be nil when hashing transfer transaction")
@@ -557,7 +558,7 @@ func hashTransferInputV0(h hash.Hash, transferSource *pb.TokenTransferInput) ([]
 	return allHashes, nil
 }
 
-func hashCreateInputV0(h hash.Hash, createInput *pb.TokenCreateInput, partialHash bool) ([]byte, error) {
+func hashCreateInputV0(h hash.Hash, createInput *sparkpb.TokenCreateInput, partialHash bool) ([]byte, error) {
 	if createInput == nil {
 		return nil, sparkerrors.InternalObjectMissingField(fmt.Errorf("create input cannot be nil when hashing create transaction"))
 	}
@@ -633,7 +634,7 @@ func hashCreateInputV0(h hash.Hash, createInput *pb.TokenCreateInput, partialHas
 	return allHashes, nil
 }
 
-func hashMintInputV0(h hash.Hash, mintInput *pb.TokenMintInput) ([]byte, error) {
+func hashMintInputV0(h hash.Hash, mintInput *sparkpb.TokenMintInput) ([]byte, error) {
 	if mintInput == nil {
 		return nil, sparkerrors.InternalObjectMissingField(fmt.Errorf("mint input cannot be nil when hashing mint transaction"))
 	}
@@ -657,7 +658,7 @@ func hashMintInputV0(h hash.Hash, mintInput *pb.TokenMintInput) ([]byte, error) 
 	return allHashes, nil
 }
 
-func hashTokenOutputs(h hash.Hash, tokenOutputs []*pb.TokenOutput, partialHash bool) ([]byte, error) {
+func hashTokenOutputs(h hash.Hash, tokenOutputs []*sparkpb.TokenOutput, partialHash bool) ([]byte, error) {
 	var allHashes []byte
 	for i, output := range tokenOutputs {
 		if output == nil {
@@ -749,7 +750,7 @@ func hashOperators(h hash.Hash, operatorPublicKeys [][]byte) ([]byte, error) {
 	return allHashes, nil
 }
 
-func hashNetwork(h hash.Hash, network pb.Network) []byte {
+func hashNetwork(h hash.Hash, network sparkpb.Network) []byte {
 	h.Reset()
 	networkBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(networkBytes, uint32(network))
@@ -931,8 +932,14 @@ func InferTokenTransactionTypeSparkProtos(tokenTransaction *sparkpb.TokenTransac
 	return inputType, nil
 }
 
+type InferrableTokenTransaction interface {
+	GetCreateInput() *tokenpb.TokenCreateInput
+	GetMintInput() *tokenpb.TokenMintInput
+	GetTransferInput() *tokenpb.TokenTransferInput
+}
+
 // InferTokenTransactionType validates that exactly one input type is present and returns it
-func InferTokenTransactionType(tokenTransaction *tokenpb.TokenTransaction) (TokenTransactionType, error) {
+func InferTokenTransactionType(tokenTransaction InferrableTokenTransaction) (TokenTransactionType, error) {
 	hasCreateInput := tokenTransaction.GetCreateInput() != nil
 	hasMintInput := tokenTransaction.GetMintInput() != nil
 
@@ -1021,8 +1028,10 @@ func validateBaseCreateTransaction(
 		return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("failed to create token metadata: %w", err))
 	}
 	if err := tokenMetadata.ValidatePartial(); err != nil {
-		// Wrap internal error to an InvalidArgumentMalformedField error because this is direct user-provided data.
-		return fmt.Errorf("failed to validate token metadata: %w", err)
+		return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("failed to validate token metadata: %w", err))
+	}
+	if err := tokenMetadata.ValidateExtensions(); err != nil {
+		return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("failed to validate token metadata extensions: %w", err))
 	}
 
 	return nil
@@ -1116,6 +1125,7 @@ func validateBaseTransferTransaction(
 // It checks the transaction structure, signatures, and token amounts for create, mint and transfer operations.
 // It also ensures that SO-filled fields are not set, as these will be filled by the SOs to form the final transaction.
 func ValidatePartialTokenTransaction(
+	ctx context.Context,
 	tokenTransaction *tokenpb.TokenTransaction,
 	inputSignatures []*tokenpb.SignatureWithIndex,
 	sparkOperatorsFromConfig map[string]*sparkpb.SigningOperatorInfo,
@@ -1166,6 +1176,17 @@ func ValidatePartialTokenTransaction(
 		createInput := tokenTransaction.GetCreateInput()
 		if createInput.GetCreationEntityPublicKey() != nil {
 			return sparkerrors.FailedPreconditionTokenRulesViolation(fmt.Errorf("creation entity public key will be added by the SO - do not set this field when starting transactions"))
+		}
+		if len(createInput.GetExtraMetadata()) > 0 {
+			network, err := btcnetwork.FromProtoNetwork(tokenTransaction.Network)
+			if err != nil {
+				return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("invalid network: %w", err))
+			}
+			if network == btcnetwork.Mainnet &&
+				knobs.GetKnobsService(ctx).GetValue(knobs.KnobAllowExtraMetadataOnMainnet, 0) != 1 {
+				return sparkerrors.UnimplementedMethodDisabled(
+					fmt.Errorf("extra metadata is not allowed on mainnet"))
+			}
 		}
 	case TokenTransactionTypeMint, TokenTransactionTypeTransfer:
 		for i, output := range tokenTransaction.TokenOutputs {

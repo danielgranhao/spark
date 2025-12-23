@@ -513,6 +513,21 @@ func (m *TokenCreateInput) validate(all bool) error {
 
 	}
 
+	if m.ExtraMetadata != nil {
+
+		if len(m.GetExtraMetadata()) > 1024 {
+			err := TokenCreateInputValidationError{
+				field:  "ExtraMetadata",
+				reason: "value length must be at most 1024 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
 	if len(errors) > 0 {
 		return TokenCreateInputMultiError(errors)
 	}
@@ -3342,6 +3357,21 @@ func (m *CommitTransactionResponse) validate(all bool) error {
 		}
 	}
 
+	if m.TokenIdentifier != nil {
+
+		if len(m.GetTokenIdentifier()) != 32 {
+			err := CommitTransactionResponseValidationError{
+				field:  "TokenIdentifier",
+				reason: "value length must be 32 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
 	if len(errors) > 0 {
 		return CommitTransactionResponseMultiError(errors)
 	}
@@ -3681,6 +3711,21 @@ func (m *BroadcastTransactionResponse) validate(all bool) error {
 		}
 	}
 
+	if m.TokenIdentifier != nil {
+
+		if len(m.GetTokenIdentifier()) != 32 {
+			err := BroadcastTransactionResponseValidationError{
+				field:  "TokenIdentifier",
+				reason: "value length must be 32 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
 	if len(errors) > 0 {
 		return BroadcastTransactionResponseMultiError(errors)
 	}
@@ -3992,6 +4037,21 @@ func (m *TokenMetadata) validate(all bool) error {
 			err := TokenMetadataValidationError{
 				field:  "CreationEntityPublicKey",
 				reason: "value length must be 33 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	if m.ExtraMetadata != nil {
+
+		if len(m.GetExtraMetadata()) > 1024 {
+			err := TokenMetadataValidationError{
+				field:  "ExtraMetadata",
+				reason: "value length must be at most 1024 bytes",
 			}
 			if !all {
 				return err

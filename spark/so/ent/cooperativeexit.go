@@ -20,13 +20,13 @@ type CooperativeExit struct {
 	config `json:"-"`
 	// ID of the ent.
 	ID uuid.UUID `json:"id,omitempty"`
-	// CreateTime holds the value of the "create_time" field.
+	// The time when the entity was created.
 	CreateTime time.Time `json:"create_time,omitempty"`
-	// UpdateTime holds the value of the "update_time" field.
+	// The time when the entity was last updated.
 	UpdateTime time.Time `json:"update_time,omitempty"`
-	// ExitTxid holds the value of the "exit_txid" field.
+	// The transaction ID of the cooperative exit transaction.
 	ExitTxid schematype.TxID `json:"exit_txid,omitempty"`
-	// ConfirmationHeight holds the value of the "confirmation_height" field.
+	// The block height at which the cooperative exit transaction was confirmed. If null, the transaction is unconfirmed.
 	ConfirmationHeight int64 `json:"confirmation_height,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the CooperativeExitQuery when eager-loading is set.

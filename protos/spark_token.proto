@@ -58,6 +58,9 @@ message TokenCreateInput {
     bytes max_supply = 5 [(validate.rules).bytes.len = 16]; // Decoded uint128
     bool is_freezable = 6;
     optional bytes creation_entity_public_key = 7 [(validate.rules).bytes.len = 33];
+
+    // If any of the fields below are provided, use protohash to generate the token_identifier
+    optional bytes extra_metadata = 8 [(validate.rules).bytes = {max_len: 1024}];
 }
 
 // This proto is constructed by the wallet to specify outputs it wants to create
@@ -236,6 +239,8 @@ message CommitProgress {
 message CommitTransactionResponse {
     CommitStatus commit_status = 1;
     CommitProgress commit_progress = 2;
+    // The raw token identifier is returned on create transactions
+    optional bytes token_identifier = 3 [(validate.rules).bytes.len = 32];
 }
 
 
@@ -253,6 +258,8 @@ message BroadcastTransactionResponse {
     FinalTokenTransaction final_token_transaction = 1;
     CommitStatus commit_status = 2;
     CommitProgress commit_progress = 3;
+    // The raw token identifier is returned on create transactions
+    optional bytes token_identifier = 4 [(validate.rules).bytes.len = 32];
 }
 
 
@@ -270,6 +277,7 @@ message TokenMetadata {
     bool is_freezable = 6;
     optional bytes creation_entity_public_key = 7 [(validate.rules).bytes.len = 33];
     bytes token_identifier = 8 [(validate.rules).bytes.len = 32];
+    optional bytes extra_metadata = 9 [(validate.rules).bytes = {max_len: 1024}];
 }
 
 message QueryTokenMetadataResponse {

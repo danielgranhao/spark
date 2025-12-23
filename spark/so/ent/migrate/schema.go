@@ -200,6 +200,7 @@ var (
 		{Name: "max_supply", Type: field.TypeBytes},
 		{Name: "is_freezable", Type: field.TypeBool},
 		{Name: "network", Type: field.TypeEnum, Enums: []string{"UNSPECIFIED", "MAINNET", "REGTEST", "TESTNET", "SIGNET"}},
+		{Name: "extra_metadata", Type: field.TypeBytes, Nullable: true},
 		{Name: "token_identifier", Type: field.TypeBytes, Unique: true},
 		{Name: "transaction_id", Type: field.TypeBytes, Unique: true},
 	}
@@ -283,8 +284,11 @@ var (
 		Indexes: []*schema.Index{
 			{
 				Name:    "preimagerequest_payment_hash_receiver_identity_pubkey",
-				Unique:  false,
+				Unique:  true,
 				Columns: []*schema.Column{PreimageRequestsColumns[3], PreimageRequestsColumns[5]},
+				Annotation: &entsql.IndexAnnotation{
+					Where: "status != 'RETURNED'",
+				},
 			},
 			{
 				Name:    "preimagerequest_sender_identity_pubkey",
@@ -436,6 +440,7 @@ var (
 		{Name: "max_supply", Type: field.TypeBytes},
 		{Name: "is_freezable", Type: field.TypeBool},
 		{Name: "network", Type: field.TypeEnum, Enums: []string{"UNSPECIFIED", "MAINNET", "REGTEST", "TESTNET", "SIGNET"}},
+		{Name: "extra_metadata", Type: field.TypeBytes, Nullable: true},
 		{Name: "token_identifier", Type: field.TypeBytes, Unique: true},
 		{Name: "issuer_signature", Type: field.TypeBytes, Unique: true, Nullable: true},
 		{Name: "operator_specific_issuer_signature", Type: field.TypeBytes, Unique: true, Nullable: true},
@@ -451,7 +456,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "token_creates_l1token_creates_l1_token_create",
-				Columns:    []*schema.Column{TokenCreatesColumns[15]},
+				Columns:    []*schema.Column{TokenCreatesColumns[16]},
 				RefColumns: []*schema.Column{L1tokenCreatesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -556,7 +561,7 @@ var (
 		{Name: "token_amount", Type: field.TypeBytes},
 		{Name: "amount", Type: field.TypeOther, Nullable: true, SchemaType: map[string]string{"postgres": "NUMERIC(39,0)", "sqlite3": "TEXT"}},
 		{Name: "created_transaction_output_vout", Type: field.TypeInt32},
-		{Name: "created_transaction_finalized_hash", Type: field.TypeBytes, Nullable: true},
+		{Name: "created_transaction_finalized_hash", Type: field.TypeBytes},
 		{Name: "spent_ownership_signature", Type: field.TypeBytes, Nullable: true},
 		{Name: "spent_operator_specific_ownership_signature", Type: field.TypeBytes, Nullable: true},
 		{Name: "spent_transaction_input_vout", Type: field.TypeInt32, Nullable: true},
@@ -566,7 +571,7 @@ var (
 		{Name: "token_identifier", Type: field.TypeBytes},
 		{Name: "token_create_id", Type: field.TypeUUID},
 		{Name: "token_output_revocation_keyshare", Type: field.TypeUUID},
-		{Name: "token_output_output_created_token_transaction", Type: field.TypeUUID, Nullable: true},
+		{Name: "token_output_output_created_token_transaction", Type: field.TypeUUID},
 		{Name: "token_output_output_spent_token_transaction", Type: field.TypeUUID, Nullable: true},
 	}
 	// TokenOutputsTable holds the schema information for the "token_outputs" table.
@@ -591,7 +596,7 @@ var (
 				Symbol:     "token_outputs_token_transactions_output_created_token_transaction",
 				Columns:    []*schema.Column{TokenOutputsColumns[22]},
 				RefColumns: []*schema.Column{TokenTransactionsColumns[0]},
-				OnDelete:   schema.SetNull,
+				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "token_outputs_token_transactions_output_spent_token_transaction",
@@ -882,6 +887,16 @@ var (
 				Name:    "idx_transfers_recv_status_create",
 				Unique:  false,
 				Columns: []*schema.Column{TransfersColumns[4], TransfersColumns[7], TransfersColumns[1]},
+				Annotation: &entsql.IndexAnnotation{
+					DescColumns: map[string]bool{
+						TransfersColumns[1].Name: true,
+					},
+				},
+			},
+			{
+				Name:    "idx_transfers_sender_status_create",
+				Unique:  false,
+				Columns: []*schema.Column{TransfersColumns[3], TransfersColumns[7], TransfersColumns[1]},
 				Annotation: &entsql.IndexAnnotation{
 					DescColumns: map[string]bool{
 						TransfersColumns[1].Name: true,

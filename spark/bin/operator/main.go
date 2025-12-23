@@ -594,6 +594,8 @@ func main() {
 	grpcConnTimeout := knobsService.GetDuration(knobs.KnobGrpcServerConnectionTimeout, config.GRPC.ServerConnectionTimeout)
 	grpcKeepaliveTime := knobsService.GetDuration(knobs.KnobGrpcServerKeepaliveTime, config.GRPC.ServerKeepaliveTime)
 	grpcKeepaliveTimeout := knobsService.GetDuration(knobs.KnobGrpcServerKeepaliveTimeout, config.GRPC.ServerKeepaliveTimeout)
+	grpcMaxConnectionAge := knobsService.GetDuration(knobs.KnobGrpcServerMaxConnectionAge, config.GRPC.ServerMaxConnectionAge)
+	grpcMaxConnectionAgeGrace := knobsService.GetDuration(knobs.KnobGrpcServerMaxConnectionAgeGrace, config.GRPC.ServerMaxConnectionAgeGrace)
 
 	// This uses SetDeadline in net.Conn to set the timeout for the connection
 	// establishment, after which the connection is closed with error
@@ -606,11 +608,14 @@ func main() {
 	// Time is the interval between keepalive pings.
 	// Timeout is the interval between keepalive pings after which the connection is closed.
 	serverOpts = append(serverOpts, grpc.KeepaliveParams(keepalive.ServerParameters{
-		Time:    grpcKeepaliveTime,
-		Timeout: grpcKeepaliveTimeout,
+		Time:                  grpcKeepaliveTime,
+		Timeout:               grpcKeepaliveTimeout,
+		MaxConnectionAge:      grpcMaxConnectionAge,
+		MaxConnectionAgeGrace: grpcMaxConnectionAgeGrace,
 	}))
 
-	concurrencyGuard := sparkgrpc.NewConcurrencyGuard(knobsService)
+	concurrencyGuard := sparkgrpc.NewConcurrencyGuard(knobsService, sparkgrpc.KnobTargetName_UnaryGlobalLimit)
+	concurrencyStreamGuard := sparkgrpc.NewConcurrencyGuard(knobsService, sparkgrpc.KnobTargetName_StreamGlobalLimit)
 
 	var eventsRouter *events.EventRouter
 	if config.Database.DBEventsEnabled != nil && *config.Database.DBEventsEnabled {
@@ -674,6 +679,16 @@ func main() {
 			}(),
 			sparkgrpc.PanicRecoveryStreamInterceptor(),
 			authn.NewInterceptor(sessionTokenCreatorVerifier).StreamAuthnInterceptor,
+			sparkgrpc.ConcurrencyStreamInterceptor(concurrencyStreamGuard, clientInfoProvider, knobsService),
+			func() grpc.StreamServerInterceptor {
+
+				if rateLimiter != nil {
+					return rateLimiter.StreamServerInterceptor()
+				}
+				return func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+					return handler(srv, ss)
+				}
+			}(),
 			authz.NewAuthzInterceptor(authz.NewAuthzConfig(
 				authz.WithMode(config.ServiceAuthz.Mode),
 				authz.WithAllowedIPs(config.ServiceAuthz.IPAllowlist),

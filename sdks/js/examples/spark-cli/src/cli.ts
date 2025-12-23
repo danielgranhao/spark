@@ -138,129 +138,6 @@ async function signPsbtWithExternalKey(
   return bytesToHex(tx.toBytes(true, true));
 }
 
-// Helper function to sign a transaction with an external private key
-async function signTransactionWithExternalKey(
-  txHex: string,
-  privateKeyInput: string,
-): Promise<string> {
-  try {
-    // Parse the transaction
-    const tx = Transaction.fromRaw(hexToBytes(txHex));
-
-    let privateKey: Uint8Array;
-
-    // Check if input is WIF format (starts with L, K, 5, c, or 9) or hex
-    if (privateKeyInput.match(/^[LK5c9]/)) {
-      console.log("Detected WIF format, converting to hex...");
-      const privateKeyHex = wifToHex(privateKeyInput);
-      console.log(`Converted WIF to hex: ${privateKeyHex}`);
-      privateKey = hexToBytes(privateKeyHex);
-    } else if (/^[0-9A-Fa-f]{64}$/.test(privateKeyInput)) {
-      console.log("Detected hex format private key");
-      privateKey = hexToBytes(privateKeyInput);
-    } else {
-      throw new Error(
-        "Invalid private key format. Must be 64 hex characters or WIF format (starting with L, K, 5, c, or 9)",
-      );
-    }
-
-    console.log(`Signing transaction with external private key...`);
-    console.log(`Number of inputs: ${tx.inputsLength}`);
-    console.log(`Number of outputs: ${tx.outputsLength}`);
-
-    // Get the public key from the private key
-    const publicKey = secp256k1.getPublicKey(privateKey, true);
-
-    // Create the P2WPKH script for this key
-    const pubKeyHash = hash160(publicKey);
-    const p2wpkhScript = new Uint8Array([0x00, 0x14, ...pubKeyHash]); // OP_0 + 20-byte hash
-
-    console.log(`Public key: ${bytesToHex(publicKey)}`);
-    console.log(`P2WPKH script: ${bytesToHex(p2wpkhScript)}`);
-
-    // Check each input to determine which ones need signing
-    let inputsSigned = 0;
-    for (let i = 0; i < tx.inputsLength; i++) {
-      const input = tx.getInput(i);
-
-      // If witnessUtxo is missing, we need to add it
-      if (!input?.witnessUtxo?.script) {
-        console.log(
-          `Input ${i}: No witnessUtxo script, attempting to add P2WPKH script`,
-        );
-
-        // For now, we'll assume this input should use our P2WPKH script
-        // In a real scenario, you'd need to know the actual UTXO amount
-        // Let's use a placeholder amount - you'll need to provide the correct amount
-        const placeholderAmount = 10534n; // You'll need to replace this with actual UTXO amounts
-
-        tx.updateInput(i, {
-          witnessUtxo: {
-            script: p2wpkhScript,
-            amount: placeholderAmount,
-          },
-        });
-
-        console.log(
-          `Input ${i}: Added P2WPKH witnessUtxo with amount ${placeholderAmount}`,
-        );
-      }
-
-      const script = tx.getInput(i)?.witnessUtxo?.script;
-      if (!script) {
-        console.log(`Input ${i}: Still no script after update, skipping`);
-        continue;
-      }
-
-      // Check if this is an ephemeral anchor (OP_TRUE script)
-      if (script.length === 1 && script[0] === 0x51) {
-        console.log(
-          `Input ${i}: Ephemeral anchor (OP_TRUE), skipping signature`,
-        );
-        continue;
-      }
-
-      // Check if this script matches our P2WPKH script
-      if (bytesToHex(script) === bytesToHex(p2wpkhScript)) {
-        console.log(`Input ${i}: Matches our P2WPKH script, signing`);
-
-        // Sign this specific input
-        try {
-          tx.signIdx(privateKey, i);
-          tx.finalizeIdx(i);
-          inputsSigned++;
-          console.log(`✅ Successfully signed input ${i}`);
-        } catch (error) {
-          console.log(`❌ Failed to sign input ${i}: ${error}`);
-        }
-      } else {
-        console.log(
-          `Input ${i}: Script doesn't match our P2WPKH script, skipping`,
-        );
-        console.log(`  Expected: ${bytesToHex(p2wpkhScript)}`);
-        console.log(`  Actual:   ${bytesToHex(script)}`);
-      }
-    }
-
-    if (inputsSigned === 0) {
-      throw new Error(
-        "No inputs were signed. Check that the transaction contains inputs controlled by the provided private key, or provide the correct UTXO amounts.",
-      );
-    }
-
-    const signedTxHex = tx.hex;
-    console.log("✅ Transaction signed successfully!");
-    console.log(`Signed ${inputsSigned} out of ${tx.inputsLength} inputs`);
-    console.log(`Signed transaction size: ${signedTxHex.length / 2} bytes`);
-    console.log(`Transaction ID: ${tx.id}`);
-
-    return signedTxHex;
-  } catch (error) {
-    console.error("❌ Error signing transaction with external key:", error);
-    throw error;
-  }
-}
-
 // Helper function to convert hex private key to WIF
 function hexToWif(hexPrivateKey: string): string {
   try {
@@ -533,6 +410,7 @@ function parseQueryTokenTransactionsArgsWithYargs(
     throw error;
   }
 }
+
 function parseCreateSparkInvoiceArgsWithYargs(
   args: string[],
 ): CreateSparkInvoiceArgs | null {
@@ -703,11 +581,11 @@ async function runCLI() {
   getissuertokenmetadata                                              - Get the issuer's token metadata
   getissuertokenidentifier                                            - Get the issuer's token identifier
   getissuertokenpublickey                                             - Get the issuer's token public key
-  minttokens <amount>                                                 - Mint new tokens. If the token was created with 2 decimals, minttokens 1 would transfer 0.01 tokens.
-  burntokens <amount>                                                 - Burn tokens
-  freezetokens <sparkAddress>                                         - Freeze tokens for a specific address
-  unfreezetokens <sparkAddress>                                       - Unfreeze tokens for a specific address
-  createtoken <tokenName> <tokenTicker> <decimals> <maxSupply> <isFreezable> - Create a new token.
+  minttokens <amount> <tokenIdentifier>                                - Mint new tokens. If the token was created with 2 decimals, minttokens 1 would transfer 0.01 tokens.
+  burntokens <amount> <tokenIdentifier>                               - Burn tokens. If the token was created with 2 decimals, burntokens 1 would burn 0.01 tokens.
+  freezetokens <sparkAddress> <tokenIdentifier>                       - Freeze tokens for a specific address
+  unfreezetokens <sparkAddress> <tokenIdentifier>                     - Unfreeze tokens for a specific address
+  createtoken <tokenName> <tokenTicker> <decimals> <maxSupply> <isFreezable> <extraMetadata> - Create a new token. Use "_", or leave blank, to denote empty extra metadata.
   decodetokenidentifier <tokenIdentifier>                             - Returns the raw token identifier as a hex string
 
   enablelogging <true|false>                                          - Enable or disable logging
@@ -1899,9 +1777,12 @@ async function runCLI() {
             console.log("Please initialize a wallet first");
             break;
           }
-          const balance = await wallet.getIssuerTokenBalance();
-          console.log("Issuer Token Identifier:", balance.tokenIdentifier);
-          console.log("Issuer Token Balance:", balance.balance.toString());
+          const balances = await wallet.getIssuerTokenBalances();
+          for (const balance of balances) {
+            console.log("--------------------------------");
+            console.log("Token Identifier:", balance.tokenIdentifier);
+            console.log("Balance:", balance.balance.toString());
+          }
           break;
         }
         case "getissuertokenidentifier": {
@@ -1909,8 +1790,18 @@ async function runCLI() {
             console.log("Please initialize a wallet first");
             break;
           }
-          const tokenIdentifier = await wallet.getIssuerTokenIdentifier();
-          console.log("Issuer Token Identifier:", tokenIdentifier);
+          const metadataArray = await wallet.getIssuerTokensMetadata();
+          for (const md of metadataArray) {
+            console.log("--------------------------------");
+
+            console.log("Token Metadata:", {
+              tokenName: md.tokenName,
+              tokenIdentifier: encodeBech32mTokenIdentifier({
+                tokenIdentifier: md.rawTokenIdentifier,
+                network: (wallet as any).config.getNetworkType(),
+              }),
+            });
+          }
           break;
         }
         case "getissuertokenmetadata": {
@@ -1918,19 +1809,25 @@ async function runCLI() {
             console.log("Please initialize a wallet first");
             break;
           }
-          const metadata = await wallet.getIssuerTokenMetadata();
-          console.log("Token Metadata:", {
-            tokenIdentifier: encodeBech32mTokenIdentifier({
-              tokenIdentifier: metadata.rawTokenIdentifier,
-              network: (wallet as any).config.getNetworkType(),
-            }),
-            tokenPublicKey: metadata.tokenPublicKey,
-            tokenName: metadata.tokenName,
-            tokenTicker: metadata.tokenTicker,
-            decimals: metadata.decimals,
-            maxSupply: metadata.maxSupply.toString(),
-            isFreezable: metadata.isFreezable,
-          });
+          const metadataArray = await wallet.getIssuerTokensMetadata();
+          for (const md of metadataArray) {
+            console.log("--------------------------------");
+            console.log("Token Metadata:", {
+              tokenIdentifier: encodeBech32mTokenIdentifier({
+                tokenIdentifier: md.rawTokenIdentifier,
+                network: (wallet as any).config.getNetworkType(),
+              }),
+              tokenPublicKey: md.tokenPublicKey,
+              tokenName: md.tokenName,
+              tokenTicker: md.tokenTicker,
+              decimals: md.decimals,
+              maxSupply: md.maxSupply.toString(),
+              isFreezable: md.isFreezable,
+              extraMetadata: md.extraMetadata
+                ? hex.encode(md.extraMetadata)
+                : undefined,
+            });
+          }
           break;
         }
         case "getissuertokenpublickey": {
@@ -1948,8 +1845,17 @@ async function runCLI() {
             break;
           }
           const amount = BigInt(parseInt(args[0]));
-          const result = await wallet.mintTokens(amount);
-          console.log("Mint Transaction ID:", result);
+          const tokenIdentifier = args[1] as Bech32mTokenIdentifier | undefined;
+          let result: string;
+          if (!tokenIdentifier) {
+            result = await wallet.mintTokens(amount);
+          } else {
+            result = await wallet.mintTokens({
+              tokenAmount: amount,
+              tokenIdentifier: tokenIdentifier,
+            });
+          }
+          console.log("Mint Transaction Hash:", result);
           break;
         }
         case "burntokens": {
@@ -1958,8 +1864,17 @@ async function runCLI() {
             break;
           }
           const amount = BigInt(parseInt(args[0]));
-          const result = await wallet.burnTokens(amount);
-          console.log("Burn Transaction ID:", result);
+          const tokenIdentifier = args[1] as Bech32mTokenIdentifier | undefined;
+          let result: string;
+          if (!tokenIdentifier) {
+            result = await wallet.burnTokens(amount);
+          } else {
+            result = await wallet.burnTokens({
+              tokenAmount: amount,
+              tokenIdentifier: tokenIdentifier,
+            });
+          }
+          console.log("Burn Transaction Hash:", result);
           break;
         }
         case "freezetokens": {
@@ -1967,7 +1882,20 @@ async function runCLI() {
             console.log("Please initialize a wallet first");
             break;
           }
-          const result = await wallet.freezeTokens(args[0]);
+          const sparkAddress = args[0];
+          const tokenIdentifier = args[1] as Bech32mTokenIdentifier | undefined;
+          let result: {
+            impactedOutputIds: string[];
+            impactedTokenAmount: bigint;
+          };
+          if (!tokenIdentifier) {
+            result = await wallet.freezeTokens(sparkAddress);
+          } else {
+            result = await wallet.freezeTokens({
+              tokenIdentifier: tokenIdentifier,
+              sparkAddress: sparkAddress,
+            });
+          }
           console.log("Freeze Result:", {
             impactedOutputIds: result.impactedOutputIds,
             impactedTokenAmount: result.impactedTokenAmount.toString(),
@@ -1979,7 +1907,20 @@ async function runCLI() {
             console.log("Please initialize a wallet first");
             break;
           }
-          const result = await wallet.unfreezeTokens(args[0]);
+          const sparkAddress = args[0];
+          const tokenIdentifier = args[1] as Bech32mTokenIdentifier | undefined;
+          let result: {
+            impactedOutputIds: string[];
+            impactedTokenAmount: bigint;
+          };
+          if (!tokenIdentifier) {
+            result = await wallet.unfreezeTokens(sparkAddress);
+          } else {
+            result = await wallet.unfreezeTokens({
+              tokenIdentifier: tokenIdentifier,
+              sparkAddress: sparkAddress,
+            });
+          }
           console.log("Unfreeze Result:", {
             impactedOutputIds: result.impactedOutputIds,
             impactedTokenAmount: result.impactedTokenAmount.toString(),
@@ -1991,16 +1932,37 @@ async function runCLI() {
             console.log("Please initialize a wallet first");
             break;
           }
-          const [tokenName, tokenTicker, decimals, maxSupply, isFreezable] =
-            args;
+          const [
+            tokenName,
+            tokenTicker,
+            decimals,
+            maxSupply,
+            isFreezable,
+            extraMetadata,
+          ] = args;
+          let extraMetadataBytes: Uint8Array | undefined;
+
+          if (
+            !extraMetadata ||
+            extraMetadata === "_" ||
+            extraMetadata === "undefined"
+          ) {
+            extraMetadataBytes = undefined;
+          } else {
+            extraMetadataBytes = hexToBytes(extraMetadata);
+          }
+
           const result = await wallet.createToken({
             tokenName,
             tokenTicker,
             decimals: parseInt(decimals),
             maxSupply: BigInt(maxSupply),
             isFreezable: isFreezable.toLowerCase() === "true",
+            extraMetadata: extraMetadataBytes,
+            returnIdentifierForCreate: true,
           });
-          console.log("Create Token Transaction ID:", result);
+          console.log("Create Token Transaction Hash:", result.transactionHash);
+          console.log("Create Token Token Identifier:", result.tokenIdentifier);
           break;
         }
         case "querytokentransactions": {
