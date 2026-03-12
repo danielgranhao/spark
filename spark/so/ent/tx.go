@@ -26,8 +26,20 @@ type Tx struct {
 	EventMessage *EventMessageClient
 	// Gossip is the client for interacting with the Gossip builders.
 	Gossip *GossipClient
+	// IdempotencyKey is the client for interacting with the IdempotencyKey builders.
+	IdempotencyKey *IdempotencyKeyClient
 	// L1TokenCreate is the client for interacting with the L1TokenCreate builders.
 	L1TokenCreate *L1TokenCreateClient
+	// L1TokenJusticeTransaction is the client for interacting with the L1TokenJusticeTransaction builders.
+	L1TokenJusticeTransaction *L1TokenJusticeTransactionClient
+	// L1TokenOutputWithdrawal is the client for interacting with the L1TokenOutputWithdrawal builders.
+	L1TokenOutputWithdrawal *L1TokenOutputWithdrawalClient
+	// L1WithdrawalTransaction is the client for interacting with the L1WithdrawalTransaction builders.
+	L1WithdrawalTransaction *L1WithdrawalTransactionClient
+	// MultisigConfig is the client for interacting with the MultisigConfig builders.
+	MultisigConfig *MultisigConfigClient
+	// MultisigMember is the client for interacting with the MultisigMember builders.
+	MultisigMember *MultisigMemberClient
 	// PaymentIntent is the client for interacting with the PaymentIntent builders.
 	PaymentIntent *PaymentIntentClient
 	// PendingSendTransfer is the client for interacting with the PendingSendTransfer builders.
@@ -62,6 +74,10 @@ type Tx struct {
 	Transfer *TransferClient
 	// TransferLeaf is the client for interacting with the TransferLeaf builders.
 	TransferLeaf *TransferLeafClient
+	// TransferReceiver is the client for interacting with the TransferReceiver builders.
+	TransferReceiver *TransferReceiverClient
+	// TransferSender is the client for interacting with the TransferSender builders.
+	TransferSender *TransferSenderClient
 	// Tree is the client for interacting with the Tree builders.
 	Tree *TreeClient
 	// TreeNode is the client for interacting with the TreeNode builders.
@@ -211,7 +227,13 @@ func (tx *Tx) init() {
 	tx.EntityDkgKey = NewEntityDkgKeyClient(tx.config)
 	tx.EventMessage = NewEventMessageClient(tx.config)
 	tx.Gossip = NewGossipClient(tx.config)
+	tx.IdempotencyKey = NewIdempotencyKeyClient(tx.config)
 	tx.L1TokenCreate = NewL1TokenCreateClient(tx.config)
+	tx.L1TokenJusticeTransaction = NewL1TokenJusticeTransactionClient(tx.config)
+	tx.L1TokenOutputWithdrawal = NewL1TokenOutputWithdrawalClient(tx.config)
+	tx.L1WithdrawalTransaction = NewL1WithdrawalTransactionClient(tx.config)
+	tx.MultisigConfig = NewMultisigConfigClient(tx.config)
+	tx.MultisigMember = NewMultisigMemberClient(tx.config)
 	tx.PaymentIntent = NewPaymentIntentClient(tx.config)
 	tx.PendingSendTransfer = NewPendingSendTransferClient(tx.config)
 	tx.PreimageRequest = NewPreimageRequestClient(tx.config)
@@ -229,6 +251,8 @@ func (tx *Tx) init() {
 	tx.TokenTransactionPeerSignature = NewTokenTransactionPeerSignatureClient(tx.config)
 	tx.Transfer = NewTransferClient(tx.config)
 	tx.TransferLeaf = NewTransferLeafClient(tx.config)
+	tx.TransferReceiver = NewTransferReceiverClient(tx.config)
+	tx.TransferSender = NewTransferSenderClient(tx.config)
 	tx.Tree = NewTreeClient(tx.config)
 	tx.TreeNode = NewTreeNodeClient(tx.config)
 	tx.UserSignedTransaction = NewUserSignedTransactionClient(tx.config)

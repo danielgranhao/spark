@@ -1,13 +1,16 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
 
+	"github.com/lightsparkdev/spark/common"
 	"github.com/lightsparkdev/spark/common/btcnetwork"
 	"go.uber.org/zap"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 	"github.com/lightsparkdev/spark/common/logging"
 	pbgossip "github.com/lightsparkdev/spark/proto/gossip"
@@ -27,6 +30,27 @@ import (
 // The StaticDepositHandler is responsible for handling static deposit related requests.
 type StaticDepositHandler struct {
 	config *so.Config
+}
+
+func schemaToProtoUtxoSwapStatus(s st.UtxoSwapStatus) pb.UtxoSwapStatus {
+	switch s {
+	case st.UtxoSwapStatusCreated:
+		return pb.UtxoSwapStatus_UTXO_SWAP_STATUS_CREATED
+	case st.UtxoSwapStatusCompleted:
+		return pb.UtxoSwapStatus_UTXO_SWAP_STATUS_COMPLETED
+	case st.UtxoSwapStatusCancelled:
+		return pb.UtxoSwapStatus_UTXO_SWAP_STATUS_CANCELLED
+	default:
+		return pb.UtxoSwapStatus_UTXO_SWAP_STATUS_UNSPECIFIED
+	}
+}
+
+func schemaToProtoUtxoSwapStatuses(statuses []st.UtxoSwapStatus) []pb.UtxoSwapStatus {
+	result := make([]pb.UtxoSwapStatus, len(statuses))
+	for i, s := range statuses {
+		result[i] = schemaToProtoUtxoSwapStatus(s)
+	}
+	return result
 }
 
 // NewStaticDepositHandler creates a new StaticDepositHandler.
@@ -141,6 +165,107 @@ func (o *StaticDepositHandler) rollbackUtxoSwapUsingGossip(ctx context.Context, 
 	logger.Sugar().Infof("UTXO swap rollback for %x:%d with gossip completed", utxo.Txid, utxo.Vout)
 }
 
+func (o *StaticDepositHandler) CreateInstantStaticDepositUtxoSwapForAllOperators(ctx context.Context, config *so.Config, request *pbinternal.CreateInstantStaticDepositUtxoSwapRequest) error {
+	ctx, span := tracer.Start(ctx, "StaticDepositHandler.CreateInstantStaticDepositUtxoSwapForAllOperators")
+	defer span.End()
+
+	logger := logging.GetLoggerFromContext(ctx)
+
+	// Try to complete with other operators first.
+	_, err := helper.ExecuteTaskWithAllOperators(ctx, config, &helper.OperatorSelection{Option: helper.OperatorSelectionOptionExcludeSelf}, func(ctx context.Context, operator *so.SigningOperator) (*pbinternal.CreateInstantStaticDepositUtxoSwapResponse, error) {
+		conn, err := operator.NewOperatorGRPCConnection()
+		if err != nil {
+			logger.With(zap.Error(err)).Sugar().Errorf("Failed to connect to operator %s", operator.Identifier)
+			return nil, err
+		}
+		defer conn.Close()
+
+		client := pbinternal.NewSparkInternalServiceClient(conn)
+		internalResp, err := client.CreateInstantStaticDepositUtxoSwap(ctx, request)
+		if err != nil {
+			logger.With(zap.Error(err)).Sugar().Errorf(
+				"Failed to execute instant utxo swap creation task with operator %s",
+				operator.Identifier,
+			)
+			return nil, err
+		}
+		return internalResp, err
+	})
+	if err != nil {
+		return err
+	}
+	// If other operators return success, we can complete the swap in self.
+	internalDepositHandler := NewStaticDepositInternalHandler(config)
+	_, err = internalDepositHandler.CreateInstantStaticDepositUtxoSwap(ctx, config, request)
+	return err
+}
+
+func (o *StaticDepositHandler) SaveUtxoForInstantStaticDepositForAllOperators(ctx context.Context, config *so.Config, request *pbinternal.SaveUtxoForInstantStaticDepositRequest) error {
+	ctx, span := tracer.Start(ctx, "StaticDepositHandler.SaveUtxoForInstantStaticDepositForAllOperators")
+	defer span.End()
+
+	logger := logging.GetLoggerFromContext(ctx)
+
+	_, err := helper.ExecuteTaskWithAllOperators(ctx, config, &helper.OperatorSelection{Option: helper.OperatorSelectionOptionExcludeSelf}, func(ctx context.Context, operator *so.SigningOperator) (*pbinternal.SaveUtxoForInstantStaticDepositResponse, error) {
+		conn, err := operator.NewOperatorGRPCConnection()
+		if err != nil {
+			logger.With(zap.Error(err)).Sugar().Errorf("Failed to connect to operator %s", operator.Identifier)
+			return nil, err
+		}
+		defer conn.Close()
+
+		client := pbinternal.NewSparkInternalServiceClient(conn)
+		internalResp, err := client.SaveUtxoForInstantStaticDeposit(ctx, request)
+		if err != nil {
+			logger.With(zap.Error(err)).Sugar().Errorf(
+				"Failed to save utxo for instant static deposit with operator %s",
+				operator.Identifier,
+			)
+			return nil, err
+		}
+		return internalResp, err
+	})
+	if err != nil {
+		return err
+	}
+	internalDepositHandler := NewStaticDepositInternalHandler(config)
+	_, err = internalDepositHandler.SaveUtxoForInstantStaticDeposit(ctx, config, request)
+	return err
+}
+
+func (o *StaticDepositHandler) rollbackInstantStaticDepositUtxoSwapUsingGossip(ctx context.Context, config *so.Config, utxo *pb.UTXO, rollbackFromStatus []st.UtxoSwapStatus, rollbackToStatus st.UtxoSwapStatus) {
+	logger := logging.GetLoggerFromContext(ctx)
+
+	selection := helper.OperatorSelection{Option: helper.OperatorSelectionOptionExcludeSelf}
+	participants, err := selection.OperatorIdentifierList(config)
+	if err != nil {
+		logger.With(zap.Error(err)).Sugar().Errorf("Failed to get operator list for rollback instant utxo swap %x:%d", utxo.Txid, utxo.Vout)
+		return
+	}
+	rollbackRequest, err := GenerateRollbackStaticDepositUtxoSwapForUtxoRequest(ctx, config, utxo)
+	if err != nil {
+		logger.With(zap.Error(err)).Sugar().Errorf("Failed to create rollback request for rollback utxo swap %x:%d", utxo.Txid, utxo.Vout)
+		return
+	}
+	sendGossipHandler := NewSendGossipHandler(config)
+	_, err = sendGossipHandler.CreateAndSendGossipMessage(ctx, &pbgossip.GossipMessage{
+		Message: &pbgossip.GossipMessage_RollbackInstantUtxoSwap{
+			RollbackInstantUtxoSwap: &pbgossip.GossipMessageRollbackInstantUtxoSwap{
+				OnChainUtxo:          utxo,
+				Signature:            rollbackRequest.Signature,
+				CoordinatorPublicKey: rollbackRequest.CoordinatorPublicKey,
+				RollbackFromStatuses: schemaToProtoUtxoSwapStatuses(rollbackFromStatus),
+				RollbackToStatus:     schemaToProtoUtxoSwapStatus(rollbackToStatus),
+			},
+		},
+	}, participants)
+	if err != nil {
+		logger.With(zap.Error(err)).Sugar().Errorf("Failed to create and send gossip message for rollback utxo swap %x:%d", utxo.Txid, utxo.Vout)
+		return
+	}
+	logger.Sugar().Infof("UTXO swap rollback for %x:%d with gossip completed", utxo.Txid, utxo.Vout)
+}
+
 // InitiateStaticDepositUtxoRefund processes a request to refund a UTXO back to the User.
 func (o *StaticDepositHandler) InitiateStaticDepositUtxoRefund(ctx context.Context, config *so.Config, req *pb.InitiateStaticDepositUtxoRefundRequest) (*pb.InitiateStaticDepositUtxoRefundResponse, error) {
 	ctx, span := tracer.Start(ctx, "StaticDepositHandler.InitiateStaticDepositUtxoRefund", trace.WithAttributes(
@@ -161,16 +286,19 @@ func (o *StaticDepositHandler) InitiateStaticDepositUtxoRefund(ctx context.Conte
 		return nil, err
 	}
 	// Validate the on-chain UTXO
-	onChainUtxoTxId, err := NewValidatedTxID(req.OnChainUtxo.Txid)
-	if err != nil {
-		return nil, fmt.Errorf("failed to validate on-chain UTXO txid: %w", err)
-	}
-	targetUtxo, err := VerifiedTargetUtxo(ctx, config, db, schemaNetwork, onChainUtxoTxId, req.OnChainUtxo.Vout)
+
+	targetUtxo, err := VerifiedTargetUtxoFromRequest(ctx, config, db, schemaNetwork, req.OnChainUtxo, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	utxoSwap, err := staticdeposit.GetRegisteredUtxoSwapForUtxo(ctx, db, targetUtxo)
+	// Validate that the refund transaction actually spends the requested UTXO.
+	// Also validated in CreateStaticDepositUtxoRefund in each SO.
+	if err := validateStaticDepositRefundTx(targetUtxo, req.RefundTxSigningJob.GetRawTx()); err != nil {
+		return nil, err
+	}
+
+	utxoSwap, err := staticdeposit.GetRegisteredUtxoSwapForUtxo(ctx, db, targetUtxo.inner)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +306,7 @@ func (o *StaticDepositHandler) InitiateStaticDepositUtxoRefund(ctx context.Conte
 		// Once a static deposit has been refunded it can no longer be used in a
 		// swap and must be claimed on L1. The owner can sign multiple refund
 		// transactions after this point.
-		depositAddress, err := targetUtxo.QueryDepositAddress().Only(ctx)
+		depositAddress, err := targetUtxo.inner.QueryDepositAddress().Only(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get deposit address: %w", err)
 		}
@@ -188,7 +316,7 @@ func (o *StaticDepositHandler) InitiateStaticDepositUtxoRefund(ctx context.Conte
 			if err := authz.EnforceSessionIdentityPublicKeyMatches(ctx, config, userIDPubKey); err != nil {
 				return nil, fmt.Errorf("utxo swap is already completed by another user")
 			}
-			spendTxSigningResult, depositAddressQueryResult, err := GetSpendTxSigningResult(ctx, config, req.OnChainUtxo, req.RefundTxSigningJob)
+			spendTxSigningResult, depositAddressQueryResult, err := GetSpendTxSigningResult(ctx, config, req.OnChainUtxo, req.RefundTxSigningJob, nil)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get spend tx signing result: %w", err)
 			}
@@ -212,7 +340,7 @@ func (o *StaticDepositHandler) InitiateStaticDepositUtxoRefund(ctx context.Conte
 		return nil, fmt.Errorf("failed to create utxo swap: %w", err)
 	}
 
-	utxoSwap, err = staticdeposit.GetRegisteredUtxoSwapForUtxo(ctx, db, targetUtxo)
+	utxoSwap, err = staticdeposit.GetRegisteredUtxoSwapForUtxo(ctx, db, targetUtxo.inner)
 	if err != nil || utxoSwap == nil {
 		return nil, fmt.Errorf("unable to get utxo swap: %w", err)
 	}
@@ -220,7 +348,7 @@ func (o *StaticDepositHandler) InitiateStaticDepositUtxoRefund(ctx context.Conte
 	// **********************************************************************************************
 	// Signing the spend transactions.
 	// **********************************************************************************************
-	spendTxSigningResult, depositAddressQueryResult, err := GetSpendTxSigningResult(ctx, config, req.OnChainUtxo, req.RefundTxSigningJob)
+	spendTxSigningResult, depositAddressQueryResult, err := GetSpendTxSigningResult(ctx, config, req.OnChainUtxo, req.RefundTxSigningJob, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get spend tx signing result: %w", err)
 	}
@@ -336,4 +464,47 @@ func (o *StaticDepositHandler) CreateSwapRefundForAllOperators(ctx context.Conte
 	internalDepositHandler := NewStaticDepositInternalHandler(config)
 	_, err := internalDepositHandler.CreateStaticDepositUtxoRefund(ctx, config, request)
 	return err
+}
+
+// Verifies the refund transaction, specifically that it spends the expected UTXO.
+// This prevents attacks where a caller requests a refund for UTXO A but provides a transaction
+// that actually spends UTXO B.
+func validateStaticDepositRefundTx(targetUtxo *VerifiedTargetUtxo, rawTx []byte) error {
+	if targetUtxo == nil {
+		return fmt.Errorf("target UTXO is nil")
+	}
+
+	if len(rawTx) == 0 {
+		return fmt.Errorf("refund transaction is empty")
+	}
+
+	refundTx, err := common.TxFromRawTxBytes(rawTx)
+	if err != nil {
+		return fmt.Errorf("failed to parse refund transaction: %w", err)
+	}
+
+	// Create refund transaction internally using user provided outputs
+	tx := wire.NewMsgTx(3)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  *targetUtxo.Hash(),
+			Index: targetUtxo.Vout(),
+		},
+		Sequence: wire.MaxTxInSequenceNum,
+	})
+	for _, txOut := range refundTx.TxOut {
+		tx.AddTxOut(txOut)
+	}
+
+	var buf bytes.Buffer
+	err = tx.Serialize(&buf)
+	if err != nil {
+		return fmt.Errorf("unable to serialize expected transaction")
+	}
+	expectedTxBytes := buf.Bytes()
+	if !bytes.Equal(expectedTxBytes, rawTx) {
+		return fmt.Errorf("unexpected refund transaction structure: expected %x, got %x", expectedTxBytes, rawTx)
+	}
+
+	return nil
 }

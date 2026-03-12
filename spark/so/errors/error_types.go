@@ -12,12 +12,14 @@ const (
 	ReasonInternalDatabaseRead                 = "DATABASE_READ"
 	ReasonInternalTypeConversion               = "TYPE_CONVERSION"
 	ReasonInternalUnhandled                    = "UNHANDLED"
+	ReasonInternalDataInconsistency            = "DATA_INCONSISTENCY"
 	ReasonInternalObjectNull                   = "INTERNAL_OBJECT_NULL"
 	ReasonInternalObjectMissingField           = "INTERNAL_OBJECT_MISSING_FIELD"
 	ReasonInternalObjectMalformedField         = "INTERNAL_OBJECT_MALFORMED_FIELD"
 	ReasonInternalObjectOutOfRange             = "INTERNAL_OBJECT_OUT_OF_RANGE"
 	ReasonInternalKeyshareError                = "INTERNAL_KEYSHARE_ERROR"
 	ReasonInternalInvalidOperatorResponse      = "INVALID_OPERATOR_RESPONSE"
+	ReasonInternalOperationTooSlow             = "OPERATION_TOO_SLOW"
 
 	ReasonInvalidArgumentMissingField      = "MISSING_FIELD"
 	ReasonInvalidArgumentMalformedField    = "MALFORMED_FIELD"
@@ -35,14 +37,18 @@ const (
 	ReasonFailedPreconditionReplay                    = "REPLAY"
 	ReasonFailedPreconditionHashMismatch              = "HASH_MISMATCH"
 
-	ReasonAbortedTransactionPreempted = "TRANSACTION_PREEMPTED"
+	ReasonAbortedTransactionPreempted    = "TRANSACTION_PREEMPTED"
+	ReasonAbortedConcurrentClaimConflict = "CONCURRENT_CLAIM_CONFLICT"
 
 	ReasonAlreadyExistsDuplicateOperation = "DUPLICATE_OPERATION"
+	ReasonAlreadyExistsExpiredTransaction = "EXPIRED_TRANSACTION"
 
 	ReasonNotFoundMissingEntity = "MISSING_ENTITY"
 
 	ReasonResourceExhaustedRateLimitExceeded        = "RATE_LIMIT_EXCEEDED"
 	ReasonResourceExhaustedConcurrencyLimitExceeded = "CONCURRENCY_LIMIT_EXCEEDED"
+
+	ReasonPermissionDeniedNoReadAccess = "NO_READ_ACCESS"
 
 	ReasonUnavailableMethodDisabled   = "METHOD_DISABLED"
 	ReasonUnavailableDataStore        = "DATA_STORE_UNAVAILABLE"
@@ -60,6 +66,10 @@ func InternalTypeConversionError(err error) error {
 
 func InternalUnhandledError(err error) error {
 	return newGRPCError(codes.Internal, err, ReasonInternalUnhandled)
+}
+
+func InternalDataInconsistency(err error) error {
+	return newGRPCError(codes.Internal, err, ReasonInternalDataInconsistency)
 }
 
 func InternalDatabaseTransactionLifecycleError(err error) error {
@@ -103,6 +113,10 @@ func InternalKeyshareError(err error) error {
 
 func InternalObjectOutOfRange(err error) error {
 	return newGRPCError(codes.Internal, err, ReasonInternalObjectOutOfRange)
+}
+
+func InternalOperationTooSlow(err error) error {
+	return newGRPCError(codes.Internal, err, ReasonInternalOperationTooSlow)
 }
 
 // Use for external objects provided by the caller
@@ -171,8 +185,16 @@ func AbortedTransactionPreempted(err error) error {
 	return newGRPCError(codes.Aborted, err, ReasonAbortedTransactionPreempted)
 }
 
+func AbortedConcurrentClaimConflict(err error) error {
+	return newGRPCError(codes.Aborted, err, ReasonAbortedConcurrentClaimConflict)
+}
+
 func AlreadyExistsDuplicateOperation(err error) error {
 	return newGRPCError(codes.AlreadyExists, err, ReasonAlreadyExistsDuplicateOperation)
+}
+
+func AlreadyExistsExpiredTransaction(err error) error {
+	return newGRPCError(codes.AlreadyExists, err, ReasonAlreadyExistsExpiredTransaction)
 }
 
 func NotFoundMissingEntity(err error) error {
@@ -187,8 +209,16 @@ func ResourceExhaustedConcurrencyLimitExceeded(err error) error {
 	return newGRPCError(codes.ResourceExhausted, err, ReasonResourceExhaustedConcurrencyLimitExceeded)
 }
 
+func PermissionDeniedNoReadAccess(err error) error {
+	return newGRPCError(codes.PermissionDenied, err, ReasonPermissionDeniedNoReadAccess)
+}
+
 func UnimplementedMethodDisabled(err error) error {
 	return newGRPCError(codes.Unimplemented, err, ReasonUnavailableMethodDisabled)
+}
+
+func UnavailableMethodDisabled(err error) error {
+	return newGRPCError(codes.Unavailable, err, ReasonUnavailableMethodDisabled)
 }
 
 func UnavailableDatabaseTimeout(err error) error {

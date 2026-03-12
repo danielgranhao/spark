@@ -1,5 +1,7 @@
 import { schnorr, secp256k1 } from "@noble/curves/secp256k1";
 import { bytesToHex, hexToBytes } from "@noble/curves/utils";
+import { sha256 } from "@noble/hashes/sha2";
+import { concatBytes, utf8ToBytes } from "@noble/hashes/utils";
 import * as btc from "@scure/btc-signer";
 import { Address, OutScript, SigHash, Transaction } from "@scure/btc-signer";
 import { TransactionInput, TransactionOutput } from "@scure/btc-signer/psbt";
@@ -25,6 +27,32 @@ const STATIC_MINING_KEY = hexToBytes(
   "1337cafe4242deadbeef4242424242421337cafe4242deadbeef424242424242",
 );
 const SATS_PER_BTC = 100_000_000;
+const DEFAULT_FAUCET_NAMESPACE = "spark-sdk";
+
+function getFaucetNamespace() {
+  const suffix =
+    process.env.SPARK_TEST_FAUCET_NAMESPACE ||
+    (process.env.GITHUB_RUN_ID
+      ? `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT || "1"}`
+      : "local");
+  return `${DEFAULT_FAUCET_NAMESPACE}:${suffix}`;
+}
+
+function derivePrivateKey(
+  baseKey: Uint8Array,
+  namespace: string,
+  role: "faucet" | "miner",
+) {
+  let material = concatBytes(baseKey, utf8ToBytes(`|${namespace}|${role}|v1`));
+  for (let i = 0; i < 1024; i++) {
+    const candidate = sha256(material);
+    if (secp256k1.utils.isValidPrivateKey(candidate)) {
+      return candidate;
+    }
+    material = concatBytes(candidate, utf8ToBytes(`|retry:${i}`));
+  }
+  throw new Error("Failed to derive a valid secp256k1 private key");
+}
 
 export type FaucetCoin = {
   key: Uint8Array;
@@ -43,14 +71,19 @@ export class BitcoinFaucet {
   private static instance: BitcoinFaucet | null = null;
   private miningAddress: string;
   private lock: Promise<void> = Promise.resolve();
+  private readonly faucetKey: Uint8Array;
+  private readonly miningKey: Uint8Array;
 
   private constructor(
     private url: string,
     private username: string,
     private password: string,
   ) {
+    const namespace = getFaucetNamespace();
+    this.faucetKey = derivePrivateKey(STATIC_FAUCET_KEY, namespace, "faucet");
+    this.miningKey = derivePrivateKey(STATIC_MINING_KEY, namespace, "miner");
     this.miningAddress = getP2TRAddressFromPublicKey(
-      secp256k1.getPublicKey(STATIC_MINING_KEY),
+      secp256k1.getPublicKey(this.miningKey),
       Network.LOCAL,
     );
   }
@@ -98,11 +131,12 @@ export class BitcoinFaucet {
   }
 
   private async refill(): Promise<void> {
-    const minerPubKey = secp256k1.getPublicKey(STATIC_MINING_KEY);
+    const minerPubKey = secp256k1.getPublicKey(this.miningKey);
     const address = getP2TRAddressFromPublicKey(minerPubKey, Network.LOCAL);
 
-    // Use scantxoutset to find UTXOs
-    const scanResult = await this.call("scantxoutset", [
+    // Use scantxoutset to find UTXOs. Retry on "Scan already in progress" (-8)
+    // which happens when concurrent test processes hit the same bitcoind.
+    const scanResult = await this.callWithRetry("scantxoutset", [
       "start",
       [`addr(${address})`],
     ]);
@@ -182,7 +216,7 @@ export class BitcoinFaucet {
       index: selectedUtxo.vout,
     });
 
-    const faucetPubKey = secp256k1.getPublicKey(STATIC_FAUCET_KEY);
+    const faucetPubKey = secp256k1.getPublicKey(this.faucetKey);
     const script = getP2TRScriptFromPublicKey(faucetPubKey, Network.LOCAL);
     for (let i = 0; i < numCoinsToCreate; i++) {
       splitTx.addOutput({
@@ -209,7 +243,7 @@ export class BitcoinFaucet {
         amount: selectedUtxoAmountSats,
         script: minerScript,
       },
-      STATIC_MINING_KEY,
+      this.miningKey,
     );
 
     await this.broadcastTx(bytesToHex(signedSplitTx.extract()));
@@ -217,7 +251,7 @@ export class BitcoinFaucet {
     const splitTxId = signedSplitTx.id;
     for (let i = 0; i < numCoinsToCreate; i++) {
       this.coins.push({
-        key: STATIC_FAUCET_KEY,
+        key: this.faucetKey,
         outpoint: {
           txid: hexToBytes(splitTxId),
           index: i,
@@ -323,6 +357,27 @@ export class BitcoinFaucet {
     });
   }
 
+  private async callWithRetry(
+    method: string,
+    params: any[],
+    { maxAttempts = 5, baseDelayMs = 200, maxDelayMs = 3000 } = {},
+  ) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.call(method, params);
+      } catch (err) {
+        const isRetryable =
+          err instanceof SparkRequestError &&
+          err.message?.includes("Scan already in progress");
+        if (!isRetryable || attempt === maxAttempts) throw err;
+        const delay =
+          Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs) +
+          Math.random() * 100;
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+
   private async call(method: string, params: any[]) {
     try {
       const { fetch, Headers } = getFetch();
@@ -387,7 +442,7 @@ export class BitcoinFaucet {
     startBlock,
     expectedIncrease,
     timeoutMs = 30000,
-    intervalMs = 5000,
+    intervalMs = 100,
   }: {
     startBlock: number;
     expectedIncrease: number;
@@ -496,5 +551,33 @@ export class BitcoinFaucet {
 
   async getRawTransaction(txid: string) {
     return await this.call("getrawtransaction", [txid, 2]);
+  }
+
+  async getRawMempool() {
+    return await this.call("getrawmempool", []);
+  }
+
+  async getMempoolEntry(txid: string) {
+    return await this.call("getmempoolentry", [txid]);
+  }
+
+  async waitForMempoolEntry(
+    txid: string,
+    timeoutMs: number = 30000,
+    intervalMs: number = 5000,
+  ) {
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      try {
+        const mempoolEntry = await this.getMempoolEntry(txid);
+        if (mempoolEntry) {
+          return mempoolEntry;
+        }
+      } catch (error) {
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+    }
+    throw new Error(`Timed out waiting for mempool entry for txid ${txid}`);
   }
 }

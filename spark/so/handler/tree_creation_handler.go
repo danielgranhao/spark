@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"entgo.io/ent/dialect/sql/sqlgraph"
 	"github.com/lightsparkdev/spark/common/btcnetwork"
 	"github.com/lightsparkdev/spark/common/keys"
 
@@ -21,6 +22,7 @@ import (
 	st "github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	"github.com/lightsparkdev/spark/so/ent/tree"
 	"github.com/lightsparkdev/spark/so/ent/treenode"
+	sparkerrors "github.com/lightsparkdev/spark/so/errors"
 	"github.com/lightsparkdev/spark/so/helper"
 )
 
@@ -560,7 +562,10 @@ func (h *TreeCreationHandler) prepareSigningJobs(ctx context.Context, req *pb.Cr
 			}
 			savedTree, err = treeMutator.Save(ctx)
 			if err != nil {
-				return nil, nil, err
+				if sqlgraph.IsUniqueConstraintError(err) {
+					return nil, nil, sparkerrors.AlreadyExistsDuplicateOperation(fmt.Errorf("tree already exists: %w", err))
+				}
+				return nil, nil, fmt.Errorf("failed to create tree: %w", err)
 			}
 			parentNodeID = nil
 		} else {
@@ -620,11 +625,17 @@ func (h *TreeCreationHandler) prepareSigningJobs(ctx context.Context, req *pb.Cr
 
 		node, err := createNode.Save(ctx)
 		if err != nil {
-			return nil, nil, err
+			if sqlgraph.IsUniqueConstraintError(err) {
+				return nil, nil, sparkerrors.AlreadyExistsDuplicateOperation(fmt.Errorf("tree node already exists: %w", err))
+			}
+			if sqlgraph.IsForeignKeyConstraintError(err) {
+				return nil, nil, sparkerrors.NotFoundMissingEntity(fmt.Errorf("referenced entity not found: %w", err))
+			}
+			return nil, nil, fmt.Errorf("failed to create tree node: %w", err)
 		}
 		nodes = append(nodes, node)
 		if currentElement.node.RefundTxSigningJob != nil {
-			if len(cpfpTx.TxOut) <= 0 {
+			if len(cpfpTx.TxOut) == 0 {
 				return nil, nil, fmt.Errorf("vout out of bounds for cpfp node tx, need at least one output")
 			}
 			cpfpRefundSigningJob, _, err := helper.NewSigningJob(currentElement.keyshare, currentElement.node.RefundTxSigningJob, cpfpTx.TxOut[0])
@@ -633,7 +644,7 @@ func (h *TreeCreationHandler) prepareSigningJobs(ctx context.Context, req *pb.Cr
 			}
 			signingJobs = append(signingJobs, cpfpRefundSigningJob)
 			if currentElement.node.DirectRefundTxSigningJob != nil && currentElement.node.DirectFromCpfpRefundTxSigningJob != nil {
-				if len(directTx.TxOut) <= 0 {
+				if len(directTx.TxOut) == 0 {
 					return nil, nil, fmt.Errorf("vout out of bounds for cpfp node tx, need at least one output")
 				}
 				directRefundSigningJob, _, err := helper.NewSigningJob(currentElement.keyshare, currentElement.node.DirectRefundTxSigningJob, directTx.TxOut[0])

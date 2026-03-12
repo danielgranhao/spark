@@ -24,7 +24,7 @@ type Transfer struct {
 func (Transfer) Mixin() []ent.Mixin {
 	return []ent.Mixin{
 		BaseMixin{},
-		NotifyMixin{AdditionalFields: []string{"receiver_identity_pubkey", "status"}},
+		NotifyMixin{AdditionalFields: []string{"receiver_identity_pubkey", "sender_identity_pubkey", "status"}},
 	}
 }
 
@@ -86,6 +86,8 @@ func (Transfer) Edges() []ent.Edge {
 			Comment("Invoice that this transfer pays. Only set for transfers that paid an invoice."),
 		edge.To("counter_swap_transfer", Transfer.Type).Comment("For SWAP type transfer, this field references the corresponding counter transfer (type COUNTER_SWAP), which will establish this edge automatically upon creation."),
 		edge.From("primary_swap_transfer", Transfer.Type).Unique().Ref("counter_swap_transfer").Comment("For counter transfers of type COUNTER_SWAP, this field references the corresponding primary transfer (type SWAP) that initiated the atomic swap. There are multiple counter transfers possible for a single primary transfer, because if a counter transfer fails the SSP will create a new one."),
+		edge.From("transfer_senders", TransferSender.Type).Ref("transfer"),
+		edge.From("transfer_receivers", TransferReceiver.Type).Ref("transfer"),
 	}
 }
 
@@ -98,6 +100,18 @@ func (Transfer) Indexes() []ent.Index {
 		index.Fields("update_time"),
 		// TODO(mhr): This is mostly for the backfill and can probably be removed later.
 		index.Fields("network"),
+
+		// Partial indexes for cancel_expired_transfers task - optimized for each OR branch
+		index.Fields("status", "expiry_time", "type").
+			Annotations(
+				entsql.IndexWhere("status = 'SENDER_INITIATED' AND type <> 'COUNTER_SWAP' AND expiry_time <> '1970-01-01 00:00:00+00'"),
+			).
+			StorageKey("idx_transfers_cancel_sender_initiated"),
+		index.Fields("status", "expiry_time", "type").
+			Annotations(
+				entsql.IndexWhere("status = 'SENDER_KEY_TWEAK_PENDING' AND type = 'PREIMAGE_SWAP' AND expiry_time <> '1970-01-01 00:00:00+00'"),
+			).
+			StorageKey("idx_transfers_cancel_preimage_swap"),
 
 		index.Fields("receiver_identity_pubkey", "status", "create_time").
 			Annotations(entsql.DescColumns("create_time")).

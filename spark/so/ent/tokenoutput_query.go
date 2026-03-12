@@ -14,6 +14,8 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
 	"github.com/google/uuid"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenjusticetransaction"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenoutputwithdrawal"
 	"github.com/lightsparkdev/spark/so/ent/predicate"
 	"github.com/lightsparkdev/spark/so/ent/signingkeyshare"
 	"github.com/lightsparkdev/spark/so/ent/tokencreate"
@@ -35,6 +37,8 @@ type TokenOutputQuery struct {
 	withOutputSpentStartedTokenTransactions *TokenTransactionQuery
 	withTokenPartialRevocationSecretShares  *TokenPartialRevocationSecretShareQuery
 	withTokenCreate                         *TokenCreateQuery
+	withWithdrawal                          *L1TokenOutputWithdrawalQuery
+	withJusticeTx                           *L1TokenJusticeTransactionQuery
 	withFKs                                 bool
 	modifiers                               []func(*sql.Selector)
 	// intermediate query (i.e. traversal path).
@@ -198,6 +202,50 @@ func (toq *TokenOutputQuery) QueryTokenCreate() *TokenCreateQuery {
 			sqlgraph.From(tokenoutput.Table, tokenoutput.FieldID, selector),
 			sqlgraph.To(tokencreate.Table, tokencreate.FieldID),
 			sqlgraph.Edge(sqlgraph.M2O, true, tokenoutput.TokenCreateTable, tokenoutput.TokenCreateColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(toq.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryWithdrawal chains the current query on the "withdrawal" edge.
+func (toq *TokenOutputQuery) QueryWithdrawal() *L1TokenOutputWithdrawalQuery {
+	query := (&L1TokenOutputWithdrawalClient{config: toq.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := toq.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := toq.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(tokenoutput.Table, tokenoutput.FieldID, selector),
+			sqlgraph.To(l1tokenoutputwithdrawal.Table, l1tokenoutputwithdrawal.FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, false, tokenoutput.WithdrawalTable, tokenoutput.WithdrawalColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(toq.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryJusticeTx chains the current query on the "justice_tx" edge.
+func (toq *TokenOutputQuery) QueryJusticeTx() *L1TokenJusticeTransactionQuery {
+	query := (&L1TokenJusticeTransactionClient{config: toq.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := toq.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := toq.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(tokenoutput.Table, tokenoutput.FieldID, selector),
+			sqlgraph.To(l1tokenjusticetransaction.Table, l1tokenjusticetransaction.FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, false, tokenoutput.JusticeTxTable, tokenoutput.JusticeTxColumn),
 		)
 		fromU = sqlgraph.SetNeighbors(toq.driver.Dialect(), step)
 		return fromU, nil
@@ -403,6 +451,8 @@ func (toq *TokenOutputQuery) Clone() *TokenOutputQuery {
 		withOutputSpentStartedTokenTransactions: toq.withOutputSpentStartedTokenTransactions.Clone(),
 		withTokenPartialRevocationSecretShares:  toq.withTokenPartialRevocationSecretShares.Clone(),
 		withTokenCreate:                         toq.withTokenCreate.Clone(),
+		withWithdrawal:                          toq.withWithdrawal.Clone(),
+		withJusticeTx:                           toq.withJusticeTx.Clone(),
 		// clone intermediate query.
 		sql:       toq.sql.Clone(),
 		path:      toq.path,
@@ -473,6 +523,28 @@ func (toq *TokenOutputQuery) WithTokenCreate(opts ...func(*TokenCreateQuery)) *T
 		opt(query)
 	}
 	toq.withTokenCreate = query
+	return toq
+}
+
+// WithWithdrawal tells the query-builder to eager-load the nodes that are connected to
+// the "withdrawal" edge. The optional arguments are used to configure the query builder of the edge.
+func (toq *TokenOutputQuery) WithWithdrawal(opts ...func(*L1TokenOutputWithdrawalQuery)) *TokenOutputQuery {
+	query := (&L1TokenOutputWithdrawalClient{config: toq.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	toq.withWithdrawal = query
+	return toq
+}
+
+// WithJusticeTx tells the query-builder to eager-load the nodes that are connected to
+// the "justice_tx" edge. The optional arguments are used to configure the query builder of the edge.
+func (toq *TokenOutputQuery) WithJusticeTx(opts ...func(*L1TokenJusticeTransactionQuery)) *TokenOutputQuery {
+	query := (&L1TokenJusticeTransactionClient{config: toq.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	toq.withJusticeTx = query
 	return toq
 }
 
@@ -555,13 +627,15 @@ func (toq *TokenOutputQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]
 		nodes       = []*TokenOutput{}
 		withFKs     = toq.withFKs
 		_spec       = toq.querySpec()
-		loadedTypes = [6]bool{
+		loadedTypes = [8]bool{
 			toq.withRevocationKeyshare != nil,
 			toq.withOutputCreatedTokenTransaction != nil,
 			toq.withOutputSpentTokenTransaction != nil,
 			toq.withOutputSpentStartedTokenTransactions != nil,
 			toq.withTokenPartialRevocationSecretShares != nil,
 			toq.withTokenCreate != nil,
+			toq.withWithdrawal != nil,
+			toq.withJusticeTx != nil,
 		}
 	)
 	if toq.withRevocationKeyshare != nil || toq.withOutputCreatedTokenTransaction != nil || toq.withOutputSpentTokenTransaction != nil {
@@ -632,6 +706,18 @@ func (toq *TokenOutputQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]
 	if query := toq.withTokenCreate; query != nil {
 		if err := toq.loadTokenCreate(ctx, query, nodes, nil,
 			func(n *TokenOutput, e *TokenCreate) { n.Edges.TokenCreate = e }); err != nil {
+			return nil, err
+		}
+	}
+	if query := toq.withWithdrawal; query != nil {
+		if err := toq.loadWithdrawal(ctx, query, nodes, nil,
+			func(n *TokenOutput, e *L1TokenOutputWithdrawal) { n.Edges.Withdrawal = e }); err != nil {
+			return nil, err
+		}
+	}
+	if query := toq.withJusticeTx; query != nil {
+		if err := toq.loadJusticeTx(ctx, query, nodes, nil,
+			func(n *TokenOutput, e *L1TokenJusticeTransaction) { n.Edges.JusticeTx = e }); err != nil {
 			return nil, err
 		}
 	}
@@ -852,6 +938,62 @@ func (toq *TokenOutputQuery) loadTokenCreate(ctx context.Context, query *TokenCr
 		for i := range nodes {
 			assign(nodes[i], n)
 		}
+	}
+	return nil
+}
+func (toq *TokenOutputQuery) loadWithdrawal(ctx context.Context, query *L1TokenOutputWithdrawalQuery, nodes []*TokenOutput, init func(*TokenOutput), assign func(*TokenOutput, *L1TokenOutputWithdrawal)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[uuid.UUID]*TokenOutput)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+	}
+	query.withFKs = true
+	query.Where(predicate.L1TokenOutputWithdrawal(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(tokenoutput.WithdrawalColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.token_output_withdrawal
+		if fk == nil {
+			return fmt.Errorf(`foreign-key "token_output_withdrawal" is nil for node %v`, n.ID)
+		}
+		node, ok := nodeids[*fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "token_output_withdrawal" returned %v for node %v`, *fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (toq *TokenOutputQuery) loadJusticeTx(ctx context.Context, query *L1TokenJusticeTransactionQuery, nodes []*TokenOutput, init func(*TokenOutput), assign func(*TokenOutput, *L1TokenJusticeTransaction)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[uuid.UUID]*TokenOutput)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+	}
+	query.withFKs = true
+	query.Where(predicate.L1TokenJusticeTransaction(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(tokenoutput.JusticeTxColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.token_output_justice_tx
+		if fk == nil {
+			return fmt.Errorf(`foreign-key "token_output_justice_tx" is nil for node %v`, n.ID)
+		}
+		node, ok := nodeids[*fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "token_output_justice_tx" returned %v for node %v`, *fk, n.ID)
+		}
+		assign(node, n)
 	}
 	return nil
 }

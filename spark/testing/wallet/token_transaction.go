@@ -290,7 +290,13 @@ func BroadcastTokenTransactionV3(
 	if err != nil {
 		return nil, err
 	}
+	return BroadcastTokenTransactionV3Request(ctx, config, req)
+}
 
+func BroadcastTokenTransactionV3Request(ctx context.Context,
+	config *TestWalletConfig,
+	req *tokenpb.BroadcastTransactionRequest,
+) (*tokenpb.TokenTransaction, error) {
 	conn, err := config.NewCoordinatorGRPCConnection()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to coordinator: %w", err)
@@ -320,6 +326,40 @@ func BroadcastTokenTransactionV3(
 	return legacyTx, nil
 }
 
+// BroadcastTokenTransactionV3WithResponse uses the broadcast_token_handler endpoint and returns the full response.
+func BroadcastTokenTransactionV3WithResponse(
+	ctx context.Context,
+	config *TestWalletConfig,
+	tokenTransaction *tokenpb.TokenTransaction,
+	ownerPrivateKeys []keys.Private,
+	validityDuration time.Duration,
+) (*tokenpb.BroadcastTransactionResponse, error) {
+	req, err := convertTokenTransactionToV3Request(config, tokenTransaction, ownerPrivateKeys, validityDuration)
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := config.NewCoordinatorGRPCConnection()
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to coordinator: %w", err)
+	}
+	defer conn.Close()
+
+	token, err := AuthenticateWithConnection(ctx, config, conn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to authenticate: %w", err)
+	}
+	ctx = ContextWithToken(ctx, token)
+
+	client := tokenpb.NewSparkTokenServiceClient(conn)
+	response, err := client.BroadcastTransaction(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to broadcast token transaction: %w", err)
+	}
+
+	return response, nil
+}
+
 func convertTokenTransactionToV3Request(
 	config *TestWalletConfig,
 	tokenTransaction *tokenpb.TokenTransaction,
@@ -339,7 +379,7 @@ func convertTokenTransactionToV3Request(
 	tokenTransaction.Version = 3
 
 	if tokenTransaction.ClientCreatedTimestamp == nil || tokenTransaction.ClientCreatedTimestamp.AsTime().IsZero() {
-		tokenTransaction.ClientCreatedTimestamp = timestamppb.Now()
+		tokenTransaction.ClientCreatedTimestamp = timestamppb.New(utils.ToMicrosecondPrecision(time.Now().UTC()))
 	}
 	tokenTransaction.ValidityDurationSeconds = proto.Uint64(uint64(validityDuration.Seconds()))
 
@@ -492,6 +532,58 @@ func FreezeTokens(
 		lastResponse, err = sparkTokenClient.FreezeTokens(tmpCtx, request)
 		if err != nil {
 			return nil, fmt.Errorf("failed to freeze/unfreeze tokens: %w", err)
+		}
+	}
+	return lastResponse, nil
+}
+
+func GlobalPauseTokens(
+	ctx context.Context,
+	config *TestWalletConfig,
+	tokenIdentifier []byte,
+	shouldUnpause bool,
+) (*tokenpb.FreezeTokensResponse, error) {
+	var lastResponse *tokenpb.FreezeTokensResponse
+	timestamp := uint64(time.Now().UnixMilli())
+	for _, operator := range config.SigningOperators {
+		operatorConn, err := operator.NewOperatorGRPCConnection()
+		if err != nil {
+			return nil, fmt.Errorf("error connecting to operator %s: %w", operator.AddressRpc, err)
+		}
+		defer operatorConn.Close()
+
+		token, err := AuthenticateWithConnection(ctx, config, operatorConn)
+		if err != nil {
+			return nil, fmt.Errorf("failed to authenticate with server: %w", err)
+		}
+		tmpCtx := ContextWithToken(ctx, token)
+		sparkTokenClient := tokenpb.NewSparkTokenServiceClient(operatorConn)
+
+		payloadTokenProto := &tokenpb.FreezeTokensPayload{
+			Version:                   1,
+			TokenIdentifier:           tokenIdentifier,
+			OperatorIdentityPublicKey: operator.IdentityPublicKey.Serialize(),
+			IssuerProvidedTimestamp:   timestamp,
+			ShouldUnfreeze:            shouldUnpause,
+		}
+		payloadHash, err := utils.HashFreezeTokensPayloadV1(payloadTokenProto)
+		if err != nil {
+			return nil, fmt.Errorf("failed to hash global pause payload: %w", err)
+		}
+
+		sig, err := SignHashSlice(config, config.IdentityPrivateKey, payloadHash)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create signature: %w", err)
+		}
+
+		request := &tokenpb.FreezeTokensRequest{
+			FreezeTokensPayload: payloadTokenProto,
+			IssuerSignature:     sig,
+		}
+
+		lastResponse, err = sparkTokenClient.FreezeTokens(tmpCtx, request)
+		if err != nil {
+			return nil, fmt.Errorf("failed to global pause/unpause tokens: %w", err)
 		}
 	}
 	return lastResponse, nil
@@ -674,8 +766,11 @@ func PrepareRevocationSharesFromCoordinator(
 		if keyshare := outputWithKeyShare.Edges.RevocationKeyshare; keyshare != nil {
 			if operatorShares, exists := sharesToReturnMap[coordinator.IdentityPublicKey]; exists {
 				operatorShares.Shares = append(operatorShares.Shares, &tokeninternalpb.RevocationSecretShare{
-					InputTtxoId: outputWithKeyShare.ID.String(),
 					SecretShare: keyshare.SecretShare.Serialize(),
+					InputTtxoRef: &tokenpb.TokenOutputToSpend{
+						PrevTokenTransactionHash: outputWithKeyShare.CreatedTransactionFinalizedHash,
+						PrevTokenTransactionVout: uint32(outputWithKeyShare.CreatedTransactionOutputVout),
+					},
 				})
 			}
 		}
@@ -685,8 +780,11 @@ func PrepareRevocationSharesFromCoordinator(
 				operatorKey := partialShare.OperatorIdentityPublicKey
 				if operatorShares, exists := sharesToReturnMap[operatorKey]; exists {
 					operatorShares.Shares = append(operatorShares.Shares, &tokeninternalpb.RevocationSecretShare{
-						InputTtxoId: outputWithKeyShare.ID.String(),
 						SecretShare: partialShare.SecretShare.Serialize(),
+						InputTtxoRef: &tokenpb.TokenOutputToSpend{
+							PrevTokenTransactionHash: outputWithKeyShare.CreatedTransactionFinalizedHash,
+							PrevTokenTransactionVout: uint32(outputWithKeyShare.CreatedTransactionOutputVout),
+						},
 					})
 				}
 			}
@@ -721,6 +819,11 @@ type QueryTokenTransactionsParams struct {
 	Order             pb.Order
 	Offset            int64
 	Limit             int64
+	// Cursor-based pagination fields (used with by_filters query type)
+	UseCursorPagination bool
+	PageSize            uint32
+	Cursor              string
+	Direction           pb.Direction
 }
 
 // QueryTokenOutputs retrieves the token outputs for the given owner and token public keys.
@@ -799,15 +902,39 @@ func QueryTokenTransactions(
 	// Combine decoded owner public keys with direct owner public keys
 	allOwnerPublicKeys := append(decodedOwnerPublicKeys, params.OwnerPublicKeys...)
 
-	request := &tokenpb.QueryTokenTransactionsRequest{
-		OwnerPublicKeys:        serializeAll(allOwnerPublicKeys),
-		IssuerPublicKeys:       serializeAll(params.IssuerPublicKeys), // Field name change: TokenPublicKeys -> IssuerPublicKeys
-		TokenIdentifiers:       params.TokenIdentifiers,
-		OutputIds:              params.OutputIDs,
-		TokenTransactionHashes: params.TransactionHashes,
-		Order:                  params.Order,
-		Limit:                  params.Limit,
-		Offset:                 params.Offset,
+	var request *tokenpb.QueryTokenTransactionsRequest
+
+	if params.UseCursorPagination {
+		// Use the by_filters query type with cursor-based pagination
+		byFilters := &tokenpb.QueryTokenTransactionsByFilters{
+			OutputIds:        params.OutputIDs,
+			OwnerPublicKeys:  serializeAll(allOwnerPublicKeys),
+			IssuerPublicKeys: serializeAll(params.IssuerPublicKeys),
+			TokenIdentifiers: params.TokenIdentifiers,
+			PageRequest: &pb.PageRequest{
+				PageSize:  params.PageSize,
+				Cursor:    params.Cursor,
+				Direction: params.Direction,
+			},
+		}
+		request = &tokenpb.QueryTokenTransactionsRequest{
+			QueryType: &tokenpb.QueryTokenTransactionsRequest_ByFilters{
+				ByFilters: byFilters,
+			},
+			Order: params.Order,
+		}
+	} else {
+		// Use the legacy query format with offset-based pagination
+		request = &tokenpb.QueryTokenTransactionsRequest{
+			OwnerPublicKeys:        serializeAll(allOwnerPublicKeys),
+			IssuerPublicKeys:       serializeAll(params.IssuerPublicKeys),
+			TokenIdentifiers:       params.TokenIdentifiers,
+			OutputIds:              params.OutputIDs,
+			TokenTransactionHashes: params.TransactionHashes,
+			Order:                  params.Order,
+			Limit:                  params.Limit,
+			Offset:                 params.Offset,
+		}
 	}
 
 	response, err := tokenClient.QueryTokenTransactions(tmpCtx, request)

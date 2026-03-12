@@ -13,7 +13,7 @@ import {
 import type { ClientMiddleware } from "nice-grpc-common";
 import { Metadata, Status } from "nice-grpc-common";
 import { openTelemetryClientMiddleware } from "nice-grpc-opentelemetry";
-import { clientEnv } from "../../constants.js";
+import { getClientEnv } from "../../constants.js";
 import { SparkRequestError } from "../../errors/types.js";
 import { MockServiceClient, MockServiceDefinition } from "../../proto/mock.js";
 import { SparkServiceDefinition } from "../../proto/spark.js";
@@ -21,13 +21,13 @@ import { SparkAuthnServiceDefinition } from "../../proto/spark_authn.js";
 import { SparkTokenServiceDefinition } from "../../proto/spark_token.js";
 import { WalletConfigService } from "../config.js";
 import { getMonotonicTime } from "../time-sync.js";
-import { ConnectionManager } from "./connection.js";
+import { AuthMode, ConnectionManager } from "./connection.js";
 
 export class ConnectionManagerNodeJS extends ConnectionManager {
   private certPath: string | null = null;
 
-  constructor(config: WalletConfigService) {
-    super(config);
+  constructor(config: WalletConfigService, authMode: AuthMode = "identity") {
+    super(config, authMode);
   }
 
   protected getMonotonicTime(): number {
@@ -35,7 +35,7 @@ export class ConnectionManagerNodeJS extends ConnectionManager {
   }
 
   protected prepareMetadata(metadata: Metadata): Metadata {
-    return metadata.set("X-Client-Env", clientEnv);
+    return metadata.set("X-Client-Env", getClientEnv());
   }
 
   public async createMockClient(address: string): Promise<

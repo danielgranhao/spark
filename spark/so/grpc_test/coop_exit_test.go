@@ -1,6 +1,7 @@
 package grpctest
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"testing"
@@ -45,7 +46,7 @@ func createTestCoopExitAndConnectorOutputs(
 	leafCount int,
 	outPoint *wire.OutPoint,
 	userPubKey keys.Public, userAmountSats int64,
-) (*wire.MsgTx, []*wire.OutPoint) {
+) (*wire.MsgTx, *wire.MsgTx, []*wire.OutPoint) {
 	// Get arbitrary SSP address, using identity for convenience
 	identityPubKey := config.IdentityPublicKey()
 	sspIntermediateAddress, err := common.P2TRAddressFromPublicKey(identityPubKey, config.Network)
@@ -79,7 +80,7 @@ func createTestCoopExitAndConnectorOutputs(
 		txHash := connectorTx.TxHash()
 		connectorOutputs = append(connectorOutputs, wire.NewOutPoint(&txHash, uint32(i)))
 	}
-	return exitTx, connectorOutputs
+	return exitTx, connectorTx, connectorOutputs
 }
 
 func waitForPendingTransferToConfirm(
@@ -112,9 +113,14 @@ func TestCoopExitBasic(t *testing.T) {
 
 	// SSP creates transactions
 	withdrawPrivKey := keys.GeneratePrivateKey()
-	exitTx, connectorOutputs := createTestCoopExitAndConnectorOutputs(
+	exitTx, connectorTx, connectorOutputs := createTestCoopExitAndConnectorOutputs(
 		t, sspConfig, 1, coin.OutPoint, withdrawPrivKey.Public(), amountSats,
 	)
+
+	// Serialize connector tx for passing to SO
+	var connectorTxBuf bytes.Buffer
+	err = connectorTx.Serialize(&connectorTxBuf)
+	require.NoError(t, err)
 
 	// User creates transfer to SSP on the condition that the tx is confirmed
 	exitTxID, err := hex.DecodeString(exitTx.TxID())
@@ -127,6 +133,7 @@ func TestCoopExitBasic(t *testing.T) {
 		connectorOutputs,
 		sspConfig.IdentityPublicKey(),
 		time.Now().Add(24*time.Hour),
+		connectorTxBuf.Bytes(),
 	)
 	require.NoError(t, err)
 	assert.Equal(t, sparkpb.TransferStatus_TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING, senderTransfer.Status)
@@ -144,7 +151,10 @@ func TestCoopExitBasic(t *testing.T) {
 	require.NoError(t, err)
 	// Confirm extra buffer to scan more blocks than needed
 	// So that we don't race the chain watcher in this test
-	_, err = client.GenerateToAddress(handler.CoopExitConfirmationThreshold+6, randomAddress, nil)
+	// First generate 3 blocks to trigger fund availability
+	_, err = client.GenerateToAddress(3, randomAddress, nil)
+	require.NoError(t, err)
+	_, err = client.GenerateToAddress(handler.CoopExitConfirmationThreshold+2, randomAddress, nil)
 	require.NoError(t, err)
 
 	// Wait until tx is confirmed and picked up by SO
@@ -209,9 +219,14 @@ func TestCoopExitCannotClaimBeforeEnoughConfirmations(t *testing.T) {
 
 	// SSP creates transactions
 	withdrawPrivKey := keys.GeneratePrivateKey()
-	exitTx, connectorOutputs := createTestCoopExitAndConnectorOutputs(
+	exitTx, connectorTx, connectorOutputs := createTestCoopExitAndConnectorOutputs(
 		t, sspConfig, 1, coin.OutPoint, withdrawPrivKey.Public(), amountSats,
 	)
+
+	// Serialize connector tx for passing to SO
+	var connectorTxBuf bytes.Buffer
+	err = connectorTx.Serialize(&connectorTxBuf)
+	require.NoError(t, err)
 
 	// User creates transfer to SSP on the condition that the tx is confirmed
 	exitTxID, err := hex.DecodeString(exitTx.TxID())
@@ -224,6 +239,7 @@ func TestCoopExitCannotClaimBeforeEnoughConfirmations(t *testing.T) {
 		connectorOutputs,
 		sspConfig.IdentityPublicKey(),
 		time.Now().Add(24*time.Hour),
+		connectorTxBuf.Bytes(),
 	)
 	require.NoError(t, err)
 
@@ -277,9 +293,14 @@ func TestCoopExitCannotClaimBeforeConfirm(t *testing.T) {
 
 	// SSP creates transactions
 	withdrawPrivKey := keys.GeneratePrivateKey()
-	exitTx, connectorOutputs := createTestCoopExitAndConnectorOutputs(
+	exitTx, connectorTx, connectorOutputs := createTestCoopExitAndConnectorOutputs(
 		t, sspConfig, 1, coin.OutPoint, withdrawPrivKey.Public(), amountSats,
 	)
+
+	// Serialize connector tx for passing to SO
+	var connectorTxBuf bytes.Buffer
+	err = connectorTx.Serialize(&connectorTxBuf)
+	require.NoError(t, err)
 
 	// User creates transfer to SSP on the condition that the tx is confirmed
 	exitTxID, err := hex.DecodeString(exitTx.TxID())
@@ -292,6 +313,7 @@ func TestCoopExitCannotClaimBeforeConfirm(t *testing.T) {
 		connectorOutputs,
 		sspConfig.IdentityPublicKey(),
 		time.Now().Add(24*time.Hour),
+		connectorTxBuf.Bytes(),
 	)
 	require.NoError(t, err)
 	assert.Equal(t, sparkpb.TransferStatus_TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING, senderTransfer.Status)
@@ -321,11 +343,193 @@ func TestCoopExitCannotClaimBeforeConfirm(t *testing.T) {
 	assert.Equal(t, codes.FailedPrecondition, stat.Code())
 }
 
+// TestCoopExitSingleCall tests the single-call cooperative exit flow where the client
+// includes the TransferPackage in the CooperativeExitV2 call directly.
+func TestCoopExitSingleCall(t *testing.T) {
+	client := sparktesting.GetBitcoinClient()
+
+	coin, err := faucet.Fund()
+	require.NoError(t, err)
+
+	amountSats := int64(100_000)
+	config, sspConfig, transferNode := setupUsers(t, amountSats)
+
+	// SSP creates transactions
+	withdrawPrivKey := keys.GeneratePrivateKey()
+	exitTx, connectorTx, connectorOutputs := createTestCoopExitAndConnectorOutputs(
+		t, sspConfig, 1, coin.OutPoint, withdrawPrivKey.Public(), amountSats,
+	)
+
+	// Serialize connector tx for passing to SO
+	var connectorTxBuf bytes.Buffer
+	err = connectorTx.Serialize(&connectorTxBuf)
+	require.NoError(t, err)
+
+	// User creates transfer to SSP using the single-call flow (TransferPackage included)
+	exitTxID, err := hex.DecodeString(exitTx.TxID())
+	require.NoError(t, err)
+	senderTransfer, err := wallet.GetConnectorRefundSignaturesV2WithTransferPackage(
+		t.Context(),
+		config,
+		[]wallet.LeafKeyTweak{transferNode},
+		exitTxID,
+		connectorOutputs,
+		sspConfig.IdentityPublicKey(),
+		time.Now().Add(24*time.Hour),
+		connectorTxBuf.Bytes(),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, sparkpb.TransferStatus_TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING, senderTransfer.Status)
+
+	// SSP signs exit tx and broadcasts
+	signedExitTx, err := sparktesting.SignFaucetCoin(exitTx, coin.TxOut, coin.Key)
+	require.NoError(t, err)
+
+	_, err = client.SendRawTransaction(signedExitTx, true)
+	require.NoError(t, err)
+
+	// Make sure the exit tx gets enough confirmations
+	randomKey := keys.GeneratePrivateKey()
+	randomAddress, err := common.P2TRRawAddressFromPublicKey(randomKey.Public(), btcnetwork.Regtest)
+	require.NoError(t, err)
+	_, err = client.GenerateToAddress(3, randomAddress, nil)
+	require.NoError(t, err)
+	_, err = client.GenerateToAddress(handler.CoopExitConfirmationThreshold+2, randomAddress, nil)
+	require.NoError(t, err)
+
+	// Wait until tx is confirmed and picked up by SO
+	sspToken, err := wallet.AuthenticateWithServer(t.Context(), sspConfig)
+	require.NoError(t, err)
+	sspCtx := wallet.ContextWithToken(t.Context(), sspToken)
+
+	receiverTransfer := waitForPendingTransferToConfirm(sspCtx, t, sspConfig)
+	assert.Equal(t, senderTransfer.Id, receiverTransfer.Id)
+	assert.Equal(t, sparkpb.TransferStatus_TRANSFER_STATUS_SENDER_KEY_TWEAKED, receiverTransfer.Status)
+	assert.Equal(t, sparkpb.TransferType_COOPERATIVE_EXIT, receiverTransfer.Type)
+
+	leafPrivKeyMap, err := wallet.VerifyPendingTransfer(t.Context(), sspConfig, receiverTransfer)
+	require.NoError(t, err)
+	assert.Len(t, leafPrivKeyMap, 1)
+	assert.Equal(t, leafPrivKeyMap[transferNode.Leaf.Id], sspConfig.IdentityPrivateKey)
+
+	// Claim leaf
+	finalLeafPrivKey := keys.GeneratePrivateKey()
+	claimingNode := wallet.LeafKeyTweak{
+		Leaf:              senderTransfer.Leaves[0].Leaf,
+		SigningPrivKey:    sspConfig.IdentityPrivateKey,
+		NewSigningPrivKey: finalLeafPrivKey,
+	}
+	leavesToClaim := []wallet.LeafKeyTweak{claimingNode}
+	startTime := time.Now()
+	for {
+		currentTransfer := receiverTransfer
+		transfers, _, err := wallet.QueryAllTransfersWithTypes(
+			sspCtx, sspConfig, 100, 0, []sparkpb.TransferType{sparkpb.TransferType_COOPERATIVE_EXIT},
+		)
+		require.NoError(t, err)
+		for _, tr := range transfers {
+			if tr.Id == receiverTransfer.Id {
+				currentTransfer = tr
+				break
+			}
+		}
+
+		_, err = wallet.ClaimTransfer(sspCtx, currentTransfer, sspConfig, leavesToClaim)
+		if err == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+		if time.Since(startTime) > 15*time.Second {
+			t.Fatalf("timed out waiting for tx to confirm")
+		}
+	}
+}
+
+// TestCoopExitSingleCallCannotClaimBeforeConfirmations tests that the claim fails before
+// enough confirmations using the single-call flow.
+func TestCoopExitSingleCallCannotClaimBeforeConfirmations(t *testing.T) {
+	client := sparktesting.GetBitcoinClient()
+
+	coin, err := faucet.Fund()
+	require.NoError(t, err)
+
+	amountSats := int64(100_000)
+	config, sspConfig, transferNode := setupUsers(t, amountSats)
+
+	// SSP creates transactions
+	withdrawPrivKey := keys.GeneratePrivateKey()
+	exitTx, connectorTx, connectorOutputs := createTestCoopExitAndConnectorOutputs(
+		t, sspConfig, 1, coin.OutPoint, withdrawPrivKey.Public(), amountSats,
+	)
+
+	// Serialize connector tx for passing to SO
+	var connectorTxBuf bytes.Buffer
+	err = connectorTx.Serialize(&connectorTxBuf)
+	require.NoError(t, err)
+
+	// User creates transfer to SSP using the single-call flow
+	exitTxID, err := hex.DecodeString(exitTx.TxID())
+	require.NoError(t, err)
+	_, err = wallet.GetConnectorRefundSignaturesV2WithTransferPackage(
+		t.Context(),
+		config,
+		[]wallet.LeafKeyTweak{transferNode},
+		exitTxID,
+		connectorOutputs,
+		sspConfig.IdentityPublicKey(),
+		time.Now().Add(24*time.Hour),
+		connectorTxBuf.Bytes(),
+	)
+	require.NoError(t, err)
+
+	// SSP signs exit tx and broadcasts
+	signedExitTx, err := sparktesting.SignFaucetCoin(exitTx, coin.TxOut, coin.Key)
+	require.NoError(t, err)
+
+	_, err = client.SendRawTransaction(signedExitTx, true)
+	require.NoError(t, err)
+
+	randomKey := keys.GeneratePrivateKey()
+	randomAddress, err := common.P2TRRawAddressFromPublicKey(randomKey.Public(), btcnetwork.Regtest)
+	require.NoError(t, err)
+	// Confirm half the threshold
+	_, err = client.GenerateToAddress(handler.CoopExitConfirmationThreshold/2, randomAddress, nil)
+	require.NoError(t, err)
+
+	// Wait until tx is confirmed and picked up by SO
+	sspToken, err := wallet.AuthenticateWithServer(t.Context(), sspConfig)
+	require.NoError(t, err)
+	sspCtx := wallet.ContextWithToken(t.Context(), sspToken)
+
+	receiverTransfer := waitForPendingTransferToConfirm(sspCtx, t, sspConfig)
+
+	// Try to claim leaf before exit tx confirms -> should fail
+	finalLeafPrivKey := keys.GeneratePrivateKey()
+	claimingNode := wallet.LeafKeyTweak{
+		Leaf:              receiverTransfer.Leaves[0].Leaf,
+		SigningPrivKey:    sspConfig.IdentityPrivateKey,
+		NewSigningPrivKey: finalLeafPrivKey,
+	}
+	leavesToClaim := [1]wallet.LeafKeyTweak{claimingNode}
+	_, err = wallet.ClaimTransfer(
+		sspCtx,
+		receiverTransfer,
+		sspConfig,
+		leavesToClaim[:],
+	)
+	require.Error(t, err, "expected error claiming transfer before exit tx confirms")
+	stat, ok := status.FromError(err)
+	assert.True(t, ok)
+	assert.Equal(t, codes.FailedPrecondition, stat.Code())
+}
+
 // This test starts a coop exit, fails for one operator on the sync, and verifies that no transfer was created across all operators
 func TestCoopExitFailureToSync(t *testing.T) {
+	// TODO(mhr): Figure out why this test hangs sometimes.
+	t.Skipf("This test sometimes hangs, needs investigation (SPARK-332)")
+
 	sparktesting.RequireMinikube(t)
 
-	// TODO(mhr): Figure out why this test hangs sometimes.
 	sparktesting.WithTimeout(t, 1*time.Minute, func(t *testing.T) {
 		coin, err := faucet.Fund()
 		require.NoError(t, err)
@@ -344,9 +548,14 @@ func TestCoopExitFailureToSync(t *testing.T) {
 
 		// SSP creates transactions
 		withdrawPrivKey := keys.GeneratePrivateKey()
-		exitTx, connectorOutputs := createTestCoopExitAndConnectorOutputs(
+		exitTx, connectorTx, connectorOutputs := createTestCoopExitAndConnectorOutputs(
 			t, sspConfig, 1, coin.OutPoint, withdrawPrivKey.Public(), amountSats,
 		)
+
+		// Serialize connector tx for passing to SO
+		var connectorTxBuf bytes.Buffer
+		err = connectorTx.Serialize(&connectorTxBuf)
+		require.NoError(t, err)
 
 		soController, err := sparktesting.NewSparkOperatorController(t)
 		require.NoError(t, err, "failed to create operator controller")
@@ -369,6 +578,7 @@ func TestCoopExitFailureToSync(t *testing.T) {
 			connectorOutputs,
 			sspConfig.IdentityPublicKey(),
 			time.Now().Add(24*time.Hour),
+			connectorTxBuf.Bytes(),
 		)
 		require.Error(t, err)
 

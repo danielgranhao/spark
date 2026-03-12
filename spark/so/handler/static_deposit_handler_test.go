@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -18,6 +19,7 @@ import (
 	"github.com/lightsparkdev/spark/common/keys"
 	pb "github.com/lightsparkdev/spark/proto/spark"
 	"github.com/lightsparkdev/spark/so"
+	"github.com/lightsparkdev/spark/so/db"
 	"github.com/lightsparkdev/spark/so/ent"
 	st "github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	testutil "github.com/lightsparkdev/spark/testing"
@@ -135,6 +137,7 @@ func createOldBitcoinTxBytes(t *testing.T, receiverPubKey keys.Public) []byte {
 }
 
 func createValidUserSignatureForTest(
+	t *testing.T,
 	txid []byte,
 	vout uint32,
 	network btcnetwork.Network,
@@ -143,7 +146,8 @@ func createValidUserSignatureForTest(
 	sspSignature []byte,
 	userPrivateKey keys.Private,
 ) []byte {
-	hash := CreateUserStatement(hex.EncodeToString(txid), vout, network, requestType, totalAmount, sspSignature)
+	hash, err := CreateUserStatement(hex.EncodeToString(txid), vout, network, requestType, totalAmount, sspSignature, pb.HashVariant_HASH_VARIANT_UNSPECIFIED)
+	require.NoError(t, err)
 	return ecdsa.Sign(userPrivateKey.ToBTCEC(), hash).Serialize()
 }
 
@@ -183,6 +187,7 @@ func createTestUtxoSwap(t *testing.T, ctx context.Context, rng io.Reader, client
 	utxoSwap, err := client.UtxoSwap.Create().
 		SetStatus(status).
 		SetUtxo(utxo).
+		SetUtxoValueSats(utxo.Amount).
 		SetRequestType(st.UtxoSwapRequestTypeRefund).
 		SetCreditAmountSats(10000).
 		SetSspSignature([]byte("test_ssp_signature")).
@@ -208,6 +213,105 @@ func setUpTestConfigWithRegtestNoAuthz(t *testing.T) *so.Config {
 		"regtest": {DepositConfirmationThreshold: 1},
 	}
 	return cfg
+}
+
+func TestUtxoSwapHook_CompletedWithUtxoSucceeds(t *testing.T) {
+	ctx, sessionCtx := db.ConnectToTestPostgres(t)
+	client := sessionCtx.Client
+
+	rng := rand.NewChaCha8([32]byte{1})
+	ownerIdentityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	ownerSigningPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	coordinatorPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+
+	createTestBlockHeight(t, ctx, client, 100)
+	keyshare := createTestSigningKeyshare(t, ctx, rng, client)
+	depositAddress := createTestStaticDepositAddress(t, ctx, client, keyshare, ownerIdentityPubKey, ownerSigningPubKey)
+	utxo := createTestUtxo(t, ctx, client, depositAddress, 100)
+
+	swap, err := client.UtxoSwap.Create().
+		SetStatus(st.UtxoSwapStatusCreated).
+		SetUtxo(utxo).
+		SetUtxoValueSats(utxo.Amount).
+		SetRequestType(st.UtxoSwapRequestTypeRefund).
+		SetCreditAmountSats(10000).
+		SetSspSignature([]byte("sig")).
+		SetSspIdentityPublicKey(ownerIdentityPubKey).
+		SetUserIdentityPublicKey(ownerIdentityPubKey).
+		SetCoordinatorIdentityPublicKey(coordinatorPubKey).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = swap.Update().SetStatus(st.UtxoSwapStatusCompleted).Save(ctx)
+	require.NoError(t, err)
+}
+
+func TestUtxoSwapHook_CompletedWithoutUtxoFails(t *testing.T) {
+	ctx, sessionCtx := db.ConnectToTestPostgres(t)
+	client := sessionCtx.Client
+
+	rng := rand.NewChaCha8([32]byte{2})
+	ownerIdentityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	ownerSigningPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	coordinatorPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+
+	createTestBlockHeight(t, ctx, client, 100)
+	keyshare := createTestSigningKeyshare(t, ctx, rng, client)
+	depositAddress := createTestStaticDepositAddress(t, ctx, client, keyshare, ownerIdentityPubKey, ownerSigningPubKey)
+	utxo := createTestUtxo(t, ctx, client, depositAddress, 100)
+
+	swap, err := client.UtxoSwap.Create().
+		SetStatus(st.UtxoSwapStatusCreated).
+		SetUtxo(utxo).
+		SetUtxoValueSats(utxo.Amount).
+		SetRequestType(st.UtxoSwapRequestTypeRefund).
+		SetCreditAmountSats(10000).
+		SetSspSignature([]byte("sig")).
+		SetSspIdentityPublicKey(ownerIdentityPubKey).
+		SetUserIdentityPublicKey(ownerIdentityPubKey).
+		SetCoordinatorIdentityPublicKey(coordinatorPubKey).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = swap.Update().ClearUtxo().Save(ctx)
+	require.NoError(t, err)
+
+	_, err = swap.Update().SetStatus(st.UtxoSwapStatusCompleted).Save(ctx)
+	require.ErrorContains(t, err, "utxo edge is required when status is COMPLETED")
+}
+
+func TestUtxoSwapHook_ClearUtxoOnCompletedSwapFails(t *testing.T) {
+	ctx, sessionCtx := db.ConnectToTestPostgres(t)
+	client := sessionCtx.Client
+
+	rng := rand.NewChaCha8([32]byte{3})
+	ownerIdentityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	ownerSigningPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	coordinatorPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+
+	createTestBlockHeight(t, ctx, client, 100)
+	keyshare := createTestSigningKeyshare(t, ctx, rng, client)
+	depositAddress := createTestStaticDepositAddress(t, ctx, client, keyshare, ownerIdentityPubKey, ownerSigningPubKey)
+	utxo := createTestUtxo(t, ctx, client, depositAddress, 100)
+
+	swap, err := client.UtxoSwap.Create().
+		SetStatus(st.UtxoSwapStatusCreated).
+		SetUtxo(utxo).
+		SetUtxoValueSats(utxo.Amount).
+		SetRequestType(st.UtxoSwapRequestTypeRefund).
+		SetCreditAmountSats(10000).
+		SetSspSignature([]byte("sig")).
+		SetSspIdentityPublicKey(ownerIdentityPubKey).
+		SetUserIdentityPublicKey(ownerIdentityPubKey).
+		SetCoordinatorIdentityPublicKey(coordinatorPubKey).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = swap.Update().SetStatus(st.UtxoSwapStatusCompleted).Save(ctx)
+	require.NoError(t, err)
+
+	_, err = swap.Update().ClearUtxo().Save(ctx)
+	require.ErrorContains(t, err, "utxo edge is required when status is COMPLETED")
 }
 
 func TestGenerateRollbackStaticDepositUtxoSwapForUtxoRequest(t *testing.T) {

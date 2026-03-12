@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"time"
 
+	"entgo.io/ent/dialect/sql"
 	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common"
-	"github.com/lightsparkdev/spark/common/bitcoin_transaction"
+	bitcointransaction "github.com/lightsparkdev/spark/common/bitcoin_transaction"
 	"github.com/lightsparkdev/spark/common/logging"
 	pbcommon "github.com/lightsparkdev/spark/proto/common"
 	pbgossip "github.com/lightsparkdev/spark/proto/gossip"
@@ -23,7 +24,6 @@ import (
 	enttransfer "github.com/lightsparkdev/spark/so/ent/transfer"
 	"github.com/lightsparkdev/spark/so/ent/transferleaf"
 	"github.com/lightsparkdev/spark/so/ent/treenode"
-	"github.com/lightsparkdev/spark/so/errors"
 	"github.com/lightsparkdev/spark/so/helper"
 	"github.com/lightsparkdev/spark/so/knobs"
 	"github.com/lightsparkdev/spark/so/tree"
@@ -69,60 +69,78 @@ func (o *FinalizeSignatureHandler) finalizeNodeSignatures(ctx context.Context, r
 		return nil, fmt.Errorf("failed to get or create current tx for request: %w", err)
 	}
 
-	firstNodeID, err := uuid.Parse(req.NodeSignatures[0].NodeId)
-	if err != nil {
-		return nil, fmt.Errorf("invalid node id in request %s: %w", logging.FormatProto("finalize_node_signatures_request", req), err)
-	}
-	firstNode, err := db.TreeNode.Get(ctx, firstNodeID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get first node for request %s: %w", logging.FormatProto("finalize_node_signatures_request", req), err)
-	}
-	nodeTree, err := firstNode.QueryTree().Only(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get tree for request %s: %w", logging.FormatProto("finalize_node_signatures_request", req), err)
-	}
-	if nodeTree.Status == st.TreeStatusPending {
+	var nodeTree *ent.Tree
+	// For CREATION intent, verify ALL nodes belong to the same tree before processing.
+	// This prevents attacks where nodes from different trees (built from different
+	// outputs of the same transaction) are submitted together to bypass validation.
+	if req.Intent == pbcommon.SignatureIntent_CREATION {
+		nodeIDs := make([]uuid.UUID, 0, len(req.NodeSignatures))
 		for _, nodeSignatures := range req.NodeSignatures {
 			nodeID, err := uuid.Parse(nodeSignatures.NodeId)
 			if err != nil {
 				return nil, fmt.Errorf("invalid node id in request %s: %w", logging.FormatProto("finalize_node_signatures_request", req), err)
 			}
-			node, err := db.TreeNode.Get(ctx, nodeID)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get node for request %s: %w", logging.FormatProto("finalize_node_signatures_request", req), err)
+			nodeIDs = append(nodeIDs, nodeID)
+		}
+		treeNodes, err := db.TreeNode.Query().Where(treenode.IDIn(nodeIDs...)).WithTree().All(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get nodes for request %s: %w", logging.FormatProto("finalize_node_signatures_request", req), err)
+		}
+		if len(treeNodes) != len(nodeIDs) {
+			return nil, fmt.Errorf("not all nodes found: expected %d, got %d", len(nodeIDs), len(treeNodes))
+		}
+		nodeTree = treeNodes[0].Edges.Tree
+		if nodeTree == nil {
+			return nil, fmt.Errorf("failed to get tree for first node %s", treeNodes[0].ID)
+		}
+		for _, node := range treeNodes[1:] {
+			if node.Edges.Tree == nil || node.Edges.Tree.ID != nodeTree.ID {
+				return nil, fmt.Errorf("node %s does not belong to the same tree as first node", node.ID)
 			}
-			signingKeyshare, err := node.QuerySigningKeyshare().Only(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get signing keyshare: %w", err)
-			}
-			address, err := db.DepositAddress.Query().Where(depositaddress.HasSigningKeyshareWith(signingkeyshare.IDEQ(signingKeyshare.ID))).Only(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get deposit address: %w", err)
-			}
-			if address.ConfirmationHeight != 0 {
-				blockHeight, err := db.BlockHeight.Query().
-					Where(blockheight.NetworkEQ(address.Network)).
-					Order(ent.Desc(blockheight.FieldHeight)).
-					First(ctx)
+		}
+
+		if nodeTree.Status == st.TreeStatusPending {
+			for _, nodeSignatures := range req.NodeSignatures {
+				nodeID, err := uuid.Parse(nodeSignatures.NodeId)
 				if err != nil {
-					if ent.IsNotFound(err) {
-						return nil, fmt.Errorf("no block height present in db; cannot determine number of confirmations")
+					return nil, fmt.Errorf("invalid node id in request %s: %w", logging.FormatProto("finalize_node_signatures_request", req), err)
+				}
+				node, err := db.TreeNode.Get(ctx, nodeID)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get node for request %s: %w", logging.FormatProto("finalize_node_signatures_request", req), err)
+				}
+				signingKeyshare, err := node.QuerySigningKeyshare().Only(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get signing keyshare: %w", err)
+				}
+				address, err := db.DepositAddress.Query().Where(depositaddress.HasSigningKeyshareWith(signingkeyshare.IDEQ(signingKeyshare.ID))).Only(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get deposit address: %w", err)
+				}
+				if address.ConfirmationHeight != 0 {
+					blockHeight, err := db.BlockHeight.Query().
+						Where(blockheight.NetworkEQ(address.Network)).
+						Order(ent.Desc(blockheight.FieldHeight)).
+						First(ctx)
+					if err != nil {
+						if ent.IsNotFound(err) {
+							return nil, fmt.Errorf("no block height present in db; cannot determine number of confirmations")
+						}
+						return nil, fmt.Errorf("failed to get max block height: %w", err)
 					}
-					return nil, fmt.Errorf("failed to get max block height: %w", err)
+					numConfirmations := blockHeight.Height - address.ConfirmationHeight
+					requiredConfirmations := int64(knobs.GetKnobsService(ctx).GetValue(knobs.KnobNumRequiredConfirmations, 3))
+					if numConfirmations >= requiredConfirmations {
+						if len(address.ConfirmationTxid) > 0 && address.ConfirmationTxid != nodeTree.BaseTxid.String() {
+							return nil, fmt.Errorf("confirmation txid does not match tree base txid")
+						}
+						_, err = nodeTree.Update().SetStatus(st.TreeStatusAvailable).Save(ctx)
+						if err != nil {
+							return nil, fmt.Errorf("failed to update tree: %w", err)
+						}
+					}
+					break
 				}
-				numConfirmations := blockHeight.Height - address.ConfirmationHeight
-				requiredConfirmations := int64(knobs.GetKnobsService(ctx).GetValue(knobs.KnobNumRequiredConfirmations, 3))
-				if numConfirmations < requiredConfirmations {
-					return nil, errors.FailedPreconditionInsufficientConfirmations(fmt.Errorf("expected at least %d confirmations, got %d", requiredConfirmations, numConfirmations))
-				}
-				if len(address.ConfirmationTxid) > 0 && address.ConfirmationTxid != nodeTree.BaseTxid.String() {
-					return nil, fmt.Errorf("confirmation txid does not match tree base txid")
-				}
-				_, err = nodeTree.Update().SetStatus(st.TreeStatusAvailable).Save(ctx)
-				if err != nil {
-					return nil, fmt.Errorf("failed to update tree: %w", err)
-				}
-				break
 			}
 		}
 	}
@@ -253,19 +271,32 @@ func (o *FinalizeSignatureHandler) verifyAndUpdateTransfer(ctx context.Context, 
 		leafIDs = append(leafIDs, leafID)
 	}
 
+	// Convert UUIDs to []any for SQL IN clause
+	leafIDsAny := make([]any, len(leafIDs))
+	for i, id := range leafIDs {
+		leafIDsAny[i] = id
+	}
+
 	var transfer *ent.Transfer
 	if knobs.GetKnobsService(ctx).RolloutRandom(knobs.KnobEnableStrictFinalizeSignature, 0) {
 		// Find all ongoing transfers that involves any of these leaves. All these leaves should be
 		// part of a **single** transfer so we expect one result.
 		transfer, err = db.Transfer.Query().
-			WithTransferLeaves().
+			Select(enttransfer.FieldID, enttransfer.FieldStatus, enttransfer.FieldReceiverIdentityPubkey).
 			Where(
 				enttransfer.StatusNotIn(st.TransferStatusCompleted, st.TransferStatusExpired, st.TransferStatusReturned),
-				enttransfer.HasTransferLeavesWith(
-					transferleaf.HasLeafWith(
-						treenode.IDIn(leafIDs...),
-					),
-				),
+				func(s *sql.Selector) {
+					// Check transfer_leafs FK directly, avoiding tree_nodes join
+					s.Where(sql.Exists(
+						sql.Select("transfer_leaf_transfer").
+							From(sql.Table("transfer_leafs")).
+							Where(sql.ColumnsEQ(
+								s.C(enttransfer.FieldID),
+								"transfer_leaf_transfer",
+							)).
+							Where(sql.In("transfer_leaf_leaf", leafIDsAny...)),
+					))
+				},
 			).
 			ForUpdate().
 			Only(ctx)
@@ -285,14 +316,21 @@ func (o *FinalizeSignatureHandler) verifyAndUpdateTransfer(ctx context.Context, 
 		}
 	} else {
 		transfer, err = db.Transfer.Query().
-			WithTransferLeaves().
+			Select(enttransfer.FieldID).
 			Where(
 				enttransfer.StatusEQ(st.TransferStatusReceiverRefundSigned),
-				enttransfer.HasTransferLeavesWith(
-					transferleaf.HasLeafWith(
-						treenode.IDIn(leafIDs...),
-					),
-				),
+				func(s *sql.Selector) {
+					// Check transfer_leafs FK directly, avoiding tree_nodes join
+					s.Where(sql.Exists(
+						sql.Select("transfer_leaf_transfer").
+							From(sql.Table("transfer_leafs")).
+							Where(sql.ColumnsEQ(
+								s.C(enttransfer.FieldID),
+								"transfer_leaf_transfer",
+							)).
+							Where(sql.In("transfer_leaf_leaf", leafIDsAny...)),
+					))
+				},
 			).
 			ForUpdate().
 			Only(ctx)
@@ -301,15 +339,43 @@ func (o *FinalizeSignatureHandler) verifyAndUpdateTransfer(ctx context.Context, 
 		}
 	}
 
-	numTransferLeaves := len(transfer.Edges.TransferLeaves)
+	// Count transfer leaves without loading them
+	numTransferLeaves, err := db.TransferLeaf.Query().
+		Where(transferleaf.HasTransferWith(enttransfer.ID(transfer.ID))).
+		Count(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count transfer leaves for transfer %s: %w", transfer.ID.String(), err)
+	}
 	if len(req.NodeSignatures) != numTransferLeaves {
 		return nil, fmt.Errorf("missing signatures for transfer %s", transfer.ID.String())
 	}
 
-	updatedTransfer, err := transfer.Update().SetStatus(st.TransferStatusCompleted).SetCompletionTime(time.Now()).Save(ctx)
+	receivers, err := transfer.QueryTransferReceivers().All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query receivers for transfer %s: %w", transfer.ID.String(), err)
+	}
+	if len(receivers) > 1 {
+		return nil, fmt.Errorf("transfer %s has %d receivers; FinalizeNodeSignatures does not support multi-receiver transfers", transfer.ID.String(), len(receivers))
+	}
+
+	completionTime := time.Now()
+	updatedTransfer, err := transfer.Update().SetStatus(st.TransferStatusCompleted).SetCompletionTime(completionTime).Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update transfer %s: %w", transfer.ID.String(), err)
 	}
+
+	if len(receivers) == 1 {
+		r := receivers[0]
+		if r.Status != st.TransferReceiverStatusCompleted {
+			if _, err := r.Update().
+				SetStatus(st.TransferReceiverStatusCompleted).
+				SetCompletionTime(completionTime).
+				Save(ctx); err != nil {
+				return nil, fmt.Errorf("failed to update receiver %s to completed: %w", r.ID, err)
+			}
+		}
+	}
+
 	return updatedTransfer, nil
 }
 
@@ -431,7 +497,7 @@ func (o *FinalizeSignatureHandler) updateNode(ctx context.Context, nodeSignature
 		if err != nil {
 			return nil, nil, fmt.Errorf("unable to deserialize cpfp leaf tx: %w", err)
 		}
-		if len(cpfpTreeNodeTx.TxOut) <= 0 {
+		if len(cpfpTreeNodeTx.TxOut) == 0 {
 			return nil, nil, fmt.Errorf("cpfp vout out of bounds")
 		}
 		err = common.VerifySignatureSingleInput(cpfpRefundTx, 0, cpfpTreeNodeTx.TxOut[0])
@@ -451,7 +517,7 @@ func (o *FinalizeSignatureHandler) updateNode(ctx context.Context, nodeSignature
 			if err != nil {
 				return nil, nil, fmt.Errorf("unable to deserialize direct leaf tx: %w", err)
 			}
-			if len(directTreeNodeTx.TxOut) <= 0 {
+			if len(directTreeNodeTx.TxOut) == 0 {
 				return nil, nil, fmt.Errorf("direct vout out of bounds")
 			}
 			err = common.VerifySignatureSingleInput(directRefundTx, 0, directTreeNodeTx.TxOut[0])
@@ -459,15 +525,12 @@ func (o *FinalizeSignatureHandler) updateNode(ctx context.Context, nodeSignature
 				return nil, nil, fmt.Errorf("unable to verify direct refund tx signature: %w", err)
 			}
 		} else if requireDirectTx && len(node.DirectTx) > 0 {
-			networkString := treeEnt.Network.String()
-			ignoreZeroNode := knobs.GetKnobsService(ctx).GetValueTarget(knobs.KnobEnableStrictDirectRefundTxValidation, &networkString, 100) == 0
-
 			isZeroNode, err := bitcointransaction.IsZeroNode(node)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to determine if node is zero node: %w", err)
 			}
 
-			if ignoreZeroNode || !isZeroNode {
+			if !isZeroNode {
 				return nil, nil, fmt.Errorf("DirectRefundTxSignature is required. Please upgrade to the latest SDK version")
 			}
 		}
@@ -504,17 +567,12 @@ func (o *FinalizeSignatureHandler) updateNode(ctx context.Context, nodeSignature
 		SetDirectRefundTx(directRefundTxBytes).
 		SetDirectFromCpfpRefundTx(directFromCpfpRefundTxBytes)
 	if treeEnt.Status == st.TreeStatusAvailable && tree.TreeNodeCanBecomeAvailable(node) {
-		if len(node.RawRefundTx) > 0 && !hasChildren {
-			if !knobs.GetKnobsService(ctx).RolloutRandom(knobs.KnobEnableStrictFinalizeSignature, 0) {
-				nodeMutator.SetStatus(st.TreeNodeStatusAvailable)
-			} else {
-				if (intent == pbcommon.SignatureIntent_CREATION && node.Status == st.TreeNodeStatusCreating) ||
-					(intent == pbcommon.SignatureIntent_TRANSFER) {
-					nodeMutator.SetStatus(st.TreeNodeStatusAvailable)
-				}
-			}
-		} else {
+		if len(node.RawRefundTx) == 0 || hasChildren {
 			nodeMutator.SetStatus(st.TreeNodeStatusSplitted)
+		} else if !knobs.GetKnobsService(ctx).RolloutRandom(knobs.KnobEnableStrictFinalizeSignature, 0) {
+			nodeMutator.SetStatus(st.TreeNodeStatusAvailable)
+		} else if (intent == pbcommon.SignatureIntent_CREATION && node.Status == st.TreeNodeStatusCreating) || intent == pbcommon.SignatureIntent_TRANSFER {
+			nodeMutator.SetStatus(st.TreeNodeStatusAvailable)
 		}
 	}
 	node, err = nodeMutator.Save(ctx)

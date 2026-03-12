@@ -461,22 +461,15 @@ func main() {
 	if !args.DisableChainwatcher {
 		// Chain watchers
 		for network, bitcoindConfig := range config.BitcoindConfigs {
-			network := network
-			bitcoindConfig := bitcoindConfig
 			errGrp.Go(func() error {
 				chainCtx, chainCancel := context.WithCancel(errCtx)
 				defer chainCancel()
 
 				chainLogger := logger.With(zap.String("component", "chainwatcher"), zap.String("network", network))
 				chainCtx = logging.Inject(chainCtx, chainLogger)
+				chainCtx = knobs.InjectKnobsService(chainCtx, knobsService)
 
-				err := chain.WatchChain(
-					chainCtx,
-					config,
-					dbClient,
-					bitcoindConfig,
-				)
-				if err != nil {
+				if err := chain.WatchChain(chainCtx, config, dbClient, bitcoindConfig); err != nil {
 					logger.Error("Error in chain watcher", zap.Error(err))
 					return err
 				}
@@ -641,6 +634,7 @@ func main() {
 					return handler(ctx, req)
 				}
 			}(),
+			sparkgrpc.MethodDisableInterceptor(),
 			sparkgrpc.TimeoutInterceptor(knobsService, config.GRPC.ServerUnaryHandlerTimeout),
 			sparkgrpc.PanicRecoveryInterceptor(config.ReturnDetailedPanicErrors),
 			authn.NewInterceptor(sessionTokenCreatorVerifier).AuthnInterceptor,
@@ -660,6 +654,8 @@ func main() {
 				db.NewDefaultSessionFactory(dbClient, knobsService),
 				config.Database.NewTxTimeout,
 			),
+			// Idempotency must be after the DB session so we can store idempotency keys
+			sparkgrpc.IdempotencyInterceptor(),
 			authz.NewAuthzInterceptor(authz.NewAuthzConfig(
 				authz.WithMode(config.ServiceAuthz.Mode),
 				authz.WithAllowedIPs(config.ServiceAuthz.IPAllowlist),
@@ -677,11 +673,11 @@ func main() {
 					return handler(srv, &grpcmiddleware.WrappedServerStream{ServerStream: ss, WrappedContext: ctx})
 				}
 			}(),
+			sparkgrpc.MethodDisableStreamInterceptor(),
 			sparkgrpc.PanicRecoveryStreamInterceptor(),
 			authn.NewInterceptor(sessionTokenCreatorVerifier).StreamAuthnInterceptor,
 			sparkgrpc.ConcurrencyStreamInterceptor(concurrencyStreamGuard, clientInfoProvider, knobsService),
 			func() grpc.StreamServerInterceptor {
-
 				if rateLimiter != nil {
 					return rateLimiter.StreamServerInterceptor()
 				}
@@ -734,6 +730,10 @@ func main() {
 	// Web compatibility layer
 	wrappedGrpc := grpcweb.WrapServer(grpcServer,
 		grpcweb.WithOriginFunc(func(_ string) bool {
+			return true
+		}),
+		grpcweb.WithWebsockets(true),
+		grpcweb.WithWebsocketOriginFunc(func(_ *http.Request) bool {
 			return true
 		}),
 		grpcweb.WithCorsForRegisteredEndpointsOnly(false),
@@ -930,7 +930,6 @@ func setUpPyroscope(args *args, logger *zap.Logger) (shutDown func()) {
 			pyroscope.ProfileBlockDuration,
 		},
 	})
-
 	// This is only possible if our configuration is bad.
 	if err != nil {
 		pyroLogger.Error("Failed to connect to Pyroscope. Profiling data will not be stored.", zap.Error(err))

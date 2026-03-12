@@ -39,6 +39,9 @@ var (
 	_ = spark.Network(0)
 )
 
+// define the regex for a UUID once up-front
+var _spark_token_internal_uuidPattern = regexp.MustCompile("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
 // Validate checks the field values on PrepareTransactionRequest with the rules
 // defined in the proto definition for this message. If any rules are
 // violated, the first error encountered is returned, or nil if there are no violations.
@@ -124,10 +127,35 @@ func (m *PrepareTransactionRequest) validate(all bool) error {
 
 	}
 
+	for idx, item := range m.GetKeyshareIds() {
+		_, _ = idx, item
+
+		if err := m._validateUuid(item); err != nil {
+			err = PrepareTransactionRequestValidationError{
+				field:  fmt.Sprintf("KeyshareIds[%v]", idx),
+				reason: "value must be a valid UUID",
+				cause:  err,
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
 	// no validation rules for CoordinatorPublicKey
 
 	if len(errors) > 0 {
 		return PrepareTransactionRequestMultiError(errors)
+	}
+
+	return nil
+}
+
+func (m *PrepareTransactionRequest) _validateUuid(uuid string) error {
+	if matched := _spark_token_internal_uuidPattern.MatchString(uuid); !matched {
+		return errors.New("invalid uuid format")
 	}
 
 	return nil
@@ -762,6 +790,35 @@ func (m *RevocationSecretShare) validate(all bool) error {
 	// no validation rules for InputTtxoId
 
 	// no validation rules for SecretShare
+
+	if all {
+		switch v := interface{}(m.GetInputTtxoRef()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, RevocationSecretShareValidationError{
+					field:  "InputTtxoRef",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, RevocationSecretShareValidationError{
+					field:  "InputTtxoRef",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetInputTtxoRef()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return RevocationSecretShareValidationError{
+				field:  "InputTtxoRef",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
 
 	if len(errors) > 0 {
 		return RevocationSecretShareMultiError(errors)
@@ -1712,3 +1769,601 @@ var _ interface {
 	Cause() error
 	ErrorName() string
 } = UnencodedTokenIdentifierValidationError{}
+
+// Validate checks the field values on SignTokenTransactionRequest with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *SignTokenTransactionRequest) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on SignTokenTransactionRequest with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// SignTokenTransactionRequestMultiError, or nil if none found.
+func (m *SignTokenTransactionRequest) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *SignTokenTransactionRequest) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if all {
+		switch v := interface{}(m.GetFinalTokenTransaction()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, SignTokenTransactionRequestValidationError{
+					field:  "FinalTokenTransaction",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, SignTokenTransactionRequestValidationError{
+					field:  "FinalTokenTransaction",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetFinalTokenTransaction()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return SignTokenTransactionRequestValidationError{
+				field:  "FinalTokenTransaction",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	for idx, item := range m.GetTokenTransactionSignatures() {
+		_, _ = idx, item
+
+		if all {
+			switch v := interface{}(item).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, SignTokenTransactionRequestValidationError{
+						field:  fmt.Sprintf("TokenTransactionSignatures[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, SignTokenTransactionRequestValidationError{
+						field:  fmt.Sprintf("TokenTransactionSignatures[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return SignTokenTransactionRequestValidationError{
+					field:  fmt.Sprintf("TokenTransactionSignatures[%v]", idx),
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
+	}
+
+	for idx, item := range m.GetKeyshareIds() {
+		_, _ = idx, item
+
+		if err := m._validateUuid(item); err != nil {
+			err = SignTokenTransactionRequestValidationError{
+				field:  fmt.Sprintf("KeyshareIds[%v]", idx),
+				reason: "value must be a valid UUID",
+				cause:  err,
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	if len(m.GetCoordinatorPublicKey()) != 33 {
+		err := SignTokenTransactionRequestValidationError{
+			field:  "CoordinatorPublicKey",
+			reason: "value length must be 33 bytes",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	if len(errors) > 0 {
+		return SignTokenTransactionRequestMultiError(errors)
+	}
+
+	return nil
+}
+
+func (m *SignTokenTransactionRequest) _validateUuid(uuid string) error {
+	if matched := _spark_token_internal_uuidPattern.MatchString(uuid); !matched {
+		return errors.New("invalid uuid format")
+	}
+
+	return nil
+}
+
+// SignTokenTransactionRequestMultiError is an error wrapping multiple
+// validation errors returned by SignTokenTransactionRequest.ValidateAll() if
+// the designated constraints aren't met.
+type SignTokenTransactionRequestMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m SignTokenTransactionRequestMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m SignTokenTransactionRequestMultiError) AllErrors() []error { return m }
+
+// SignTokenTransactionRequestValidationError is the validation error returned
+// by SignTokenTransactionRequest.Validate if the designated constraints
+// aren't met.
+type SignTokenTransactionRequestValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e SignTokenTransactionRequestValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e SignTokenTransactionRequestValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e SignTokenTransactionRequestValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e SignTokenTransactionRequestValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e SignTokenTransactionRequestValidationError) ErrorName() string {
+	return "SignTokenTransactionRequestValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e SignTokenTransactionRequestValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sSignTokenTransactionRequest.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = SignTokenTransactionRequestValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = SignTokenTransactionRequestValidationError{}
+
+// Validate checks the field values on SignTokenTransactionResponse with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *SignTokenTransactionResponse) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on SignTokenTransactionResponse with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// SignTokenTransactionResponseMultiError, or nil if none found.
+func (m *SignTokenTransactionResponse) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *SignTokenTransactionResponse) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if l := len(m.GetSparkOperatorSignature()); l < 64 || l > 73 {
+		err := SignTokenTransactionResponseValidationError{
+			field:  "SparkOperatorSignature",
+			reason: "value length must be between 64 and 73 bytes, inclusive",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	if len(errors) > 0 {
+		return SignTokenTransactionResponseMultiError(errors)
+	}
+
+	return nil
+}
+
+// SignTokenTransactionResponseMultiError is an error wrapping multiple
+// validation errors returned by SignTokenTransactionResponse.ValidateAll() if
+// the designated constraints aren't met.
+type SignTokenTransactionResponseMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m SignTokenTransactionResponseMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m SignTokenTransactionResponseMultiError) AllErrors() []error { return m }
+
+// SignTokenTransactionResponseValidationError is the validation error returned
+// by SignTokenTransactionResponse.Validate if the designated constraints
+// aren't met.
+type SignTokenTransactionResponseValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e SignTokenTransactionResponseValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e SignTokenTransactionResponseValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e SignTokenTransactionResponseValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e SignTokenTransactionResponseValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e SignTokenTransactionResponseValidationError) ErrorName() string {
+	return "SignTokenTransactionResponseValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e SignTokenTransactionResponseValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sSignTokenTransactionResponse.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = SignTokenTransactionResponseValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = SignTokenTransactionResponseValidationError{}
+
+// Validate checks the field values on InternalFreezeTokensRequest with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *InternalFreezeTokensRequest) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on InternalFreezeTokensRequest with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// InternalFreezeTokensRequestMultiError, or nil if none found.
+func (m *InternalFreezeTokensRequest) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *InternalFreezeTokensRequest) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if all {
+		switch v := interface{}(m.GetFreezeTokensPayload()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, InternalFreezeTokensRequestValidationError{
+					field:  "FreezeTokensPayload",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, InternalFreezeTokensRequestValidationError{
+					field:  "FreezeTokensPayload",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetFreezeTokensPayload()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return InternalFreezeTokensRequestValidationError{
+				field:  "FreezeTokensPayload",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if l := len(m.GetIssuerSignature()); l < 64 || l > 73 {
+		err := InternalFreezeTokensRequestValidationError{
+			field:  "IssuerSignature",
+			reason: "value length must be between 64 and 73 bytes, inclusive",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	if len(errors) > 0 {
+		return InternalFreezeTokensRequestMultiError(errors)
+	}
+
+	return nil
+}
+
+// InternalFreezeTokensRequestMultiError is an error wrapping multiple
+// validation errors returned by InternalFreezeTokensRequest.ValidateAll() if
+// the designated constraints aren't met.
+type InternalFreezeTokensRequestMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m InternalFreezeTokensRequestMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m InternalFreezeTokensRequestMultiError) AllErrors() []error { return m }
+
+// InternalFreezeTokensRequestValidationError is the validation error returned
+// by InternalFreezeTokensRequest.Validate if the designated constraints
+// aren't met.
+type InternalFreezeTokensRequestValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e InternalFreezeTokensRequestValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e InternalFreezeTokensRequestValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e InternalFreezeTokensRequestValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e InternalFreezeTokensRequestValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e InternalFreezeTokensRequestValidationError) ErrorName() string {
+	return "InternalFreezeTokensRequestValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e InternalFreezeTokensRequestValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sInternalFreezeTokensRequest.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = InternalFreezeTokensRequestValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = InternalFreezeTokensRequestValidationError{}
+
+// Validate checks the field values on InternalFreezeTokensResponse with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *InternalFreezeTokensResponse) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on InternalFreezeTokensResponse with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// InternalFreezeTokensResponseMultiError, or nil if none found.
+func (m *InternalFreezeTokensResponse) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *InternalFreezeTokensResponse) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	for idx, item := range m.GetImpactedTokenOutputs() {
+		_, _ = idx, item
+
+		if all {
+			switch v := interface{}(item).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, InternalFreezeTokensResponseValidationError{
+						field:  fmt.Sprintf("ImpactedTokenOutputs[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, InternalFreezeTokensResponseValidationError{
+						field:  fmt.Sprintf("ImpactedTokenOutputs[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return InternalFreezeTokensResponseValidationError{
+					field:  fmt.Sprintf("ImpactedTokenOutputs[%v]", idx),
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
+	}
+
+	// no validation rules for ImpactedTokenAmount
+
+	if len(errors) > 0 {
+		return InternalFreezeTokensResponseMultiError(errors)
+	}
+
+	return nil
+}
+
+// InternalFreezeTokensResponseMultiError is an error wrapping multiple
+// validation errors returned by InternalFreezeTokensResponse.ValidateAll() if
+// the designated constraints aren't met.
+type InternalFreezeTokensResponseMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m InternalFreezeTokensResponseMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m InternalFreezeTokensResponseMultiError) AllErrors() []error { return m }
+
+// InternalFreezeTokensResponseValidationError is the validation error returned
+// by InternalFreezeTokensResponse.Validate if the designated constraints
+// aren't met.
+type InternalFreezeTokensResponseValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e InternalFreezeTokensResponseValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e InternalFreezeTokensResponseValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e InternalFreezeTokensResponseValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e InternalFreezeTokensResponseValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e InternalFreezeTokensResponseValidationError) ErrorName() string {
+	return "InternalFreezeTokensResponseValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e InternalFreezeTokensResponseValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sInternalFreezeTokensResponse.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = InternalFreezeTokensResponseValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = InternalFreezeTokensResponseValidationError{}

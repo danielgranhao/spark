@@ -122,6 +122,12 @@ func (s *SparkInternalServer) UpdatePreimageRequest(ctx context.Context, req *pb
 	return &emptypb.Empty{}, lightningHandler.UpdatePreimageRequest(ctx, req)
 }
 
+// StorePreimageShare stores an ECIES-encrypted preimage share forwarded from the coordinator.
+func (s *SparkInternalServer) StorePreimageShare(ctx context.Context, req *pbspark.StorePreimageShareV2Request) (*emptypb.Empty, error) {
+	lightningHandler := handler.NewLightningHandler(s.config)
+	return &emptypb.Empty{}, lightningHandler.StorePreimageShareInternal(ctx, req)
+}
+
 // PrepareTreeAddress prepares the tree address.
 func (s *SparkInternalServer) PrepareTreeAddress(ctx context.Context, req *pb.PrepareTreeAddressRequest) (*pb.PrepareTreeAddressResponse, error) {
 	treeCreationHandler := handler.NewInternalTreeCreationHandler(s.config)
@@ -132,6 +138,12 @@ func (s *SparkInternalServer) PrepareTreeAddress(ctx context.Context, req *pb.Pr
 func (s *SparkInternalServer) InitiateTransfer(ctx context.Context, req *pb.InitiateTransferRequest) (*emptypb.Empty, error) {
 	transferHandler := handler.NewInternalTransferHandler(s.config)
 	return &emptypb.Empty{}, transferHandler.InitiateTransfer(ctx, req)
+}
+
+// InitiateTransferV2 initiates a transfer with multiple receivers.
+func (s *SparkInternalServer) InitiateTransferV2(ctx context.Context, req *pb.InitiateTransferV2Request) (*emptypb.Empty, error) {
+	transferHandler := handler.NewInternalTransferHandler(s.config)
+	return &emptypb.Empty{}, transferHandler.InitiateTransferV2(ctx, req)
 }
 
 func (s *SparkInternalServer) DeliverSenderKeyTweak(ctx context.Context, req *pb.DeliverSenderKeyTweakRequest) (*emptypb.Empty, error) {
@@ -170,6 +182,16 @@ func (s *SparkInternalServer) SettleSenderKeyTweak(ctx context.Context, req *pb.
 func (s *SparkInternalServer) CreateStaticDepositUtxoSwap(ctx context.Context, req *pb.CreateStaticDepositUtxoSwapRequest) (*pb.CreateStaticDepositUtxoSwapResponse, error) {
 	depositHandler := handler.NewStaticDepositInternalHandler(s.config)
 	return depositHandler.CreateStaticDepositUtxoSwap(ctx, s.config, req)
+}
+
+func (s *SparkInternalServer) CreateInstantStaticDepositUtxoSwap(ctx context.Context, req *pb.CreateInstantStaticDepositUtxoSwapRequest) (*pb.CreateInstantStaticDepositUtxoSwapResponse, error) {
+	depositHandler := handler.NewStaticDepositInternalHandler(s.config)
+	return depositHandler.CreateInstantStaticDepositUtxoSwap(ctx, s.config, req)
+}
+
+func (s *SparkInternalServer) SaveUtxoForInstantStaticDeposit(ctx context.Context, req *pb.SaveUtxoForInstantStaticDepositRequest) (*pb.SaveUtxoForInstantStaticDepositResponse, error) {
+	depositHandler := handler.NewStaticDepositInternalHandler(s.config)
+	return depositHandler.SaveUtxoForInstantStaticDeposit(ctx, s.config, req)
 }
 
 func (s *SparkInternalServer) CreateStaticDepositUtxoRefund(ctx context.Context, req *pb.CreateStaticDepositUtxoRefundRequest) (*pb.CreateStaticDepositUtxoRefundResponse, error) {

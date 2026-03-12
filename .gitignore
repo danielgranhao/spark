@@ -1,3 +1,6 @@
+# Node
+node_modules/
+
 # Go
 # Binaries for programs and plugins
 *.exe
@@ -41,13 +44,26 @@ _data/
 *.dev.*
 *.dev
 
-# Cursor files
-/.cursor*
-
 *.code-workspace
 
 # Claude Code settings
 .claude/settings.local.json
+.claude/CLAUDE.local.md
 
 # Claude Code thoughts/plans
 /thoughts/
+
+# Tilt
+tilt/tilt_config.json
+
+# Trunk
+.trunk/
+
+# MCP
+.mcp.json
+
+# Git worktrees
+.worktrees/
+
+# Lefthook local overrides
+lefthook-local.yml

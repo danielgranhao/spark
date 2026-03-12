@@ -4,12 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"math/big"
 	"testing"
 	"time"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	eciesgo "github.com/ecies/go/v2"
+	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common/btcnetwork"
 	"github.com/lightsparkdev/spark/common/keys"
+	secretsharing "github.com/lightsparkdev/spark/common/secret_sharing"
 	decodepay "github.com/nbd-wtf/ln-decodepay"
+	"google.golang.org/protobuf/proto"
 
 	pbmock "github.com/lightsparkdev/spark/proto/mock"
 	"github.com/lightsparkdev/spark/proto/spark"
@@ -1223,4 +1229,243 @@ func TestQueryHTLCWithRoleFilter(t *testing.T) {
 	htlcsReceiverAndSenderRole, err := wallet.QueryHTLC(t.Context(), userConfig, 5, 0, nil, nil, nil, &receiverAndSenderRole)
 	require.NoError(t, err, "failed to query htlcs")
 	require.Len(t, htlcsReceiverAndSenderRole.PreimageRequests, 2)
+}
+
+// TestReceiveLightningPaymentWithTransferRequest tests the lightning receive flow
+// where TransferRequest is provided (non-HODL invoice with preimage available).
+// This test verifies that:
+// 1. settleSenderKeyTweaks is called to coordinate with other operators
+// 2. commitSenderKeyTweaks is called to apply key tweaks locally
+// 3. Transfer status becomes SENDER_KEY_TWEAKED
+func TestReceiveLightningPaymentWithTransferRequest(t *testing.T) {
+	userConfig := wallet.NewTestWalletConfig(t)
+	sspConfig := wallet.NewTestWalletConfig(t)
+
+	amountSats := uint64(100)
+	preimageHex := "2d059c3ede82a107aa1452c0bea47759be3c5c6e5342be6a310f6c3a907d9f4c"
+	preimage, err := hex.DecodeString(preimageHex)
+	require.NoError(t, err)
+	paymentHash := sha256.Sum256(preimage)
+
+	fakeInvoiceCreator := NewFakeLightningInvoiceCreator()
+	defer cleanUp(t, userConfig, paymentHash)
+
+	invoice, err := wallet.CreateLightningInvoiceWithPreimage(
+		t.Context(),
+		userConfig,
+		fakeInvoiceCreator,
+		amountSats,
+		"test",
+		[32]byte(preimage),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, invoice)
+
+	sspLeafPrivKey := keys.GeneratePrivateKey()
+	nodeToSend, err := wallet.CreateNewTree(sspConfig, faucet, sspLeafPrivKey, 12345)
+	require.NoError(t, err)
+
+	newLeafPrivKey := keys.GeneratePrivateKey()
+	leaves := []wallet.LeafKeyTweak{{
+		Leaf:              nodeToSend,
+		SigningPrivKey:    sspLeafPrivKey,
+		NewSigningPrivKey: newLeafPrivKey,
+	}}
+
+	conn, err := sspConfig.NewCoordinatorGRPCConnection()
+	require.NoError(t, err)
+	defer conn.Close()
+
+	token, err := wallet.AuthenticateWithConnection(t.Context(), sspConfig, conn)
+	require.NoError(t, err)
+	ctx := wallet.ContextWithToken(t.Context(), token)
+
+	client := spark.NewSparkServiceClient(conn)
+
+	transferID, err := uuid.NewV7()
+	require.NoError(t, err)
+
+	keyTweakInputMap, err := wallet.PrepareSendTransferKeyTweaks(
+		sspConfig,
+		transferID,
+		userConfig.IdentityPublicKey(),
+		leaves,
+		map[string][]byte{},
+	)
+	require.NoError(t, err)
+
+	transferPackage, err := wallet.PrepareTransferPackage(
+		ctx,
+		sspConfig,
+		client,
+		transferID,
+		keyTweakInputMap,
+		leaves,
+		userConfig.IdentityPublicKey(),
+		keys.Public{}, // No adaptor key for non-swap
+	)
+	require.NoError(t, err)
+
+	userSignedLeavesToSend, err := wallet.PrepareUserSignedLeafSigningJobs(
+		ctx,
+		sspConfig,
+		client,
+		leaves,
+		userConfig.IdentityPublicKey(),
+		keys.Public{}, // No adaptor key for non-swap
+	)
+	require.NoError(t, err)
+
+	response, err := client.InitiatePreimageSwapV2(ctx, &spark.InitiatePreimageSwapRequest{
+		PaymentHash: paymentHash[:],
+		Reason:      spark.InitiatePreimageSwapRequest_REASON_RECEIVE,
+		InvoiceAmount: &spark.InvoiceAmount{
+			InvoiceAmountProof: &spark.InvoiceAmountProof{
+				Bolt11Invoice: invoice,
+			},
+			ValueSats: amountSats,
+		},
+		Transfer: &spark.StartUserSignedTransferRequest{
+			TransferId:                transferID.String(),
+			OwnerIdentityPublicKey:    sspConfig.IdentityPublicKey().Serialize(),
+			ReceiverIdentityPublicKey: userConfig.IdentityPublicKey().Serialize(),
+			LeavesToSend:              userSignedLeavesToSend,
+		},
+		TransferRequest: &spark.StartTransferRequest{
+			TransferId:                transferID.String(),
+			OwnerIdentityPublicKey:    sspConfig.IdentityPublicKey().Serialize(),
+			ReceiverIdentityPublicKey: userConfig.IdentityPublicKey().Serialize(),
+			TransferPackage:           transferPackage,
+		},
+		ReceiverIdentityPublicKey: userConfig.IdentityPublicKey().Serialize(),
+		FeeSats:                   0,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.NotNil(t, response.Transfer)
+
+	require.Equal(t, preimage, response.Preimage, "preimage should be returned for non-HODL invoice")
+	assert.Equal(t,
+		spark.TransferStatus_TRANSFER_STATUS_SENDER_KEY_TWEAKED,
+		response.Transfer.Status,
+		"transfer status should be SENDER_KEY_TWEAKED after key tweak settlement",
+	)
+	assert.Equal(t, transferID.String(), response.Transfer.Id)
+	assert.Equal(t, spark.TransferType_PREIMAGE_SWAP, response.Transfer.Type)
+	require.Len(t, response.Transfer.Leaves, 1)
+	assert.Equal(t, nodeToSend.Id, response.Transfer.Leaves[0].Leaf.Id)
+
+	// Verify all operators have the same status (distributed consensus verification)
+	for identifier, operator := range sspConfig.SigningOperators {
+		operatorConn, err := operator.NewOperatorGRPCConnection()
+		require.NoError(t, err, "failed to connect to operator %s", identifier)
+		defer operatorConn.Close()
+
+		operatorToken, err := wallet.AuthenticateWithConnection(t.Context(), sspConfig, operatorConn)
+		require.NoError(t, err, "failed to authenticate with operator %s", identifier)
+		operatorCtx := wallet.ContextWithToken(t.Context(), operatorToken)
+
+		operatorClient := spark.NewSparkServiceClient(operatorConn)
+		network, err := sspConfig.Network.ToProtoNetwork()
+		require.NoError(t, err)
+
+		response, err := operatorClient.QueryAllTransfers(operatorCtx, &spark.TransferFilter{
+			Participant: &spark.TransferFilter_SenderOrReceiverIdentityPublicKey{
+				SenderOrReceiverIdentityPublicKey: sspConfig.IdentityPublicKey().Serialize(),
+			},
+			Limit:   10,
+			Offset:  0,
+			Network: network,
+		})
+		require.NoError(t, err, "failed to query transfers from operator %s", identifier)
+
+		var found bool
+		for _, transfer := range response.Transfers {
+			if transfer.Id == transferID.String() {
+				assert.Equal(t,
+					spark.TransferStatus_TRANSFER_STATUS_SENDER_KEY_TWEAKED,
+					transfer.Status,
+					"operator %s should have transfer status SENDER_KEY_TWEAKED",
+					identifier,
+				)
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "operator %s should have the transfer in its database", identifier)
+	}
+}
+
+func TestStorePreimageShareV2(t *testing.T) {
+	config := wallet.NewTestWalletConfig(t)
+
+	amountSats := uint64(100)
+	preimage, paymentHash := testPreimageHash(t, amountSats)
+	invoice := testInvoice
+
+	defer cleanUp(t, config, paymentHash)
+
+	// Split preimage into secret shares with VSS proofs
+	preimageAsInt := new(big.Int).SetBytes(preimage[:])
+	shares, err := secretsharing.SplitSecretWithProofs(
+		preimageAsInt,
+		secp256k1.Params().N,
+		config.Threshold,
+		len(config.SigningOperators),
+	)
+	require.NoError(t, err)
+
+	// ECIES-encrypt each share for the corresponding SO
+	encryptedShares := make(map[string][]byte)
+	for identifier, operator := range config.SigningOperators {
+		share := shares[operator.ID]
+		shareProto := share.MarshalProto()
+		shareBytes, err := proto.Marshal(shareProto)
+		require.NoError(t, err)
+
+		pubKey, err := eciesgo.NewPublicKeyFromBytes(operator.IdentityPublicKey.Serialize())
+		require.NoError(t, err)
+
+		encrypted, err := eciesgo.Encrypt(pubKey, shareBytes)
+		require.NoError(t, err)
+
+		encryptedShares[identifier] = encrypted
+	}
+
+	// Call store_preimage_share_v2 on the coordinator
+	coordinatorOp := config.SigningOperators[config.CoordinatorIdentifier]
+	conn, err := coordinatorOp.NewOperatorGRPCConnection()
+	require.NoError(t, err)
+	defer conn.Close()
+
+	token, err := wallet.AuthenticateWithConnection(t.Context(), config, conn)
+	require.NoError(t, err)
+	ctx := wallet.ContextWithToken(t.Context(), token)
+
+	sparkClient := spark.NewSparkServiceClient(conn)
+	_, err = sparkClient.StorePreimageShareV2(ctx, &spark.StorePreimageShareV2Request{
+		PaymentHash:             paymentHash[:],
+		EncryptedPreimageShares: encryptedShares,
+		Threshold:               uint32(config.Threshold),
+		InvoiceString:           invoice,
+		UserIdentityPublicKey:   config.IdentityPublicKey().Serialize(),
+	})
+	require.NoError(t, err)
+
+	// Verify each SO has the preimage share stored in its DB
+	for identifier, operator := range config.SigningOperators {
+		opConn, err := operator.NewOperatorGRPCConnection()
+		require.NoError(t, err)
+
+		mockClient := pbmock.NewMockServiceClient(opConn)
+		resp, err := mockClient.QueryPreimageShare(t.Context(), &pbmock.QueryPreimageShareRequest{
+			PaymentHash: paymentHash[:],
+		})
+		require.NoError(t, err, "failed to query preimage share from operator %s", identifier)
+		assert.Equal(t, int32(config.Threshold), resp.Threshold, "operator %s threshold mismatch", identifier)
+		assert.Equal(t, invoice, resp.InvoiceString, "operator %s invoice mismatch", identifier)
+
+		opConn.Close()
+	}
 }

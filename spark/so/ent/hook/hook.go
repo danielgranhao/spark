@@ -81,6 +81,18 @@ func (f GossipFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, erro
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.GossipMutation", m)
 }
 
+// The IdempotencyKeyFunc type is an adapter to allow the use of ordinary
+// function as IdempotencyKey mutator.
+type IdempotencyKeyFunc func(context.Context, *ent.IdempotencyKeyMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f IdempotencyKeyFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.IdempotencyKeyMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.IdempotencyKeyMutation", m)
+}
+
 // The L1TokenCreateFunc type is an adapter to allow the use of ordinary
 // function as L1TokenCreate mutator.
 type L1TokenCreateFunc func(context.Context, *ent.L1TokenCreateMutation) (ent.Value, error)
@@ -91,6 +103,66 @@ func (f L1TokenCreateFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Valu
 		return f(ctx, mv)
 	}
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.L1TokenCreateMutation", m)
+}
+
+// The L1TokenJusticeTransactionFunc type is an adapter to allow the use of ordinary
+// function as L1TokenJusticeTransaction mutator.
+type L1TokenJusticeTransactionFunc func(context.Context, *ent.L1TokenJusticeTransactionMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f L1TokenJusticeTransactionFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.L1TokenJusticeTransactionMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.L1TokenJusticeTransactionMutation", m)
+}
+
+// The L1TokenOutputWithdrawalFunc type is an adapter to allow the use of ordinary
+// function as L1TokenOutputWithdrawal mutator.
+type L1TokenOutputWithdrawalFunc func(context.Context, *ent.L1TokenOutputWithdrawalMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f L1TokenOutputWithdrawalFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.L1TokenOutputWithdrawalMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.L1TokenOutputWithdrawalMutation", m)
+}
+
+// The L1WithdrawalTransactionFunc type is an adapter to allow the use of ordinary
+// function as L1WithdrawalTransaction mutator.
+type L1WithdrawalTransactionFunc func(context.Context, *ent.L1WithdrawalTransactionMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f L1WithdrawalTransactionFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.L1WithdrawalTransactionMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.L1WithdrawalTransactionMutation", m)
+}
+
+// The MultisigConfigFunc type is an adapter to allow the use of ordinary
+// function as MultisigConfig mutator.
+type MultisigConfigFunc func(context.Context, *ent.MultisigConfigMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f MultisigConfigFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.MultisigConfigMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.MultisigConfigMutation", m)
+}
+
+// The MultisigMemberFunc type is an adapter to allow the use of ordinary
+// function as MultisigMember mutator.
+type MultisigMemberFunc func(context.Context, *ent.MultisigMemberMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f MultisigMemberFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.MultisigMemberMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.MultisigMemberMutation", m)
 }
 
 // The PaymentIntentFunc type is an adapter to allow the use of ordinary
@@ -295,6 +367,30 @@ func (f TransferLeafFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value
 		return f(ctx, mv)
 	}
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.TransferLeafMutation", m)
+}
+
+// The TransferReceiverFunc type is an adapter to allow the use of ordinary
+// function as TransferReceiver mutator.
+type TransferReceiverFunc func(context.Context, *ent.TransferReceiverMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f TransferReceiverFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.TransferReceiverMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.TransferReceiverMutation", m)
+}
+
+// The TransferSenderFunc type is an adapter to allow the use of ordinary
+// function as TransferSender mutator.
+type TransferSenderFunc func(context.Context, *ent.TransferSenderMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f TransferSenderFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.TransferSenderMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.TransferSenderMutation", m)
 }
 
 // The TreeFunc type is an adapter to allow the use of ordinary

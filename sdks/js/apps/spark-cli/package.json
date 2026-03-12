@@ -1,0 +1,53 @@
+{
+  "name": "@buildonspark/cli",
+  "version": "0.0.107",
+  "description": "Spark CLI",
+  "type": "module",
+  "bin": {
+    "spark-cli": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "cli": "cross-env NODE_ENV=production NETWORK=regtest tsx src/cli.ts",
+    "cli:local": "cross-env NODE_ENV=development NETWORK=local tsx src/cli.ts",
+    "cli:minikube": "cross-env NODE_ENV=development NETWORK=local MINIKUBE_IP=$(minikube ip) tsx src/cli.ts",
+    "cli:mainnet": "cross-env NODE_ENV=production NETWORK=mainnet tsx src/cli.ts",
+    "cli:dev": "cross-env NODE_ENV=development NETWORK=regtest CONFIG_FILE=../../private/config/dev-regtest-config.json tsx src/cli.ts",
+    "cli:dev:mainnet": "cross-env NODE_ENV=development NETWORK=mainnet CONFIG_FILE=../../private/config/dev-mainnet-config.json tsx src/cli.ts",
+    "cli:loadtest": "cross-env NODE_ENV=development NETWORK=regtest CONFIG_FILE=../../private/config/loadtest-regtest-config.json tsx src/cli.ts",
+    "clean": "rm -rf dist",
+    "format:fix": "prettier . --write",
+    "format": "prettier . --check",
+    "types": "tsc --noEmit"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@buildonspark/issuer-sdk": "0.1.18",
+    "@buildonspark/spark-sdk": "0.7.0",
+    "@lightsparkdev/core": "^1.4.9",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.7.0",
+    "@scure/base": "^1.2.4",
+    "@scure/btc-signer": "^1.5.0",
+    "yargs": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.2",
+    "cross-env": "^7.0.3",
+    "prettier": "^3.7.4",
+    "tsdown": "^0.20.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

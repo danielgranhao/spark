@@ -317,7 +317,7 @@ func (r *RateLimiter) windowForSuffix(s string) time.Duration {
 // It ensures the store's bucket config matches the desired tokens/window
 // and attempts to take a token, returning an appropriate error on failure.
 func (r *RateLimiter) takeTokenForKey(ctx context.Context, key string, tokens uint64, window time.Duration, label string) (uint64, uint64, error) {
-	logger := logging.GetLoggerFromContext(ctx)
+	logger := logging.GetLoggerFromContext(ctx).Sugar()
 
 	// Only apply capacity/window to the store when the configured values change for this key.
 	desired := bucketConfig{tokens: tokens, window: window}
@@ -325,16 +325,20 @@ func (r *RateLimiter) takeTokenForKey(ctx context.Context, key string, tokens ui
 	if existingAny, ok := r.appliedBucketConfigs.Load(key); !ok {
 		// First time seeing this key: apply settings
 		if err := r.store.Set(ctx, key, tokens, window); err != nil {
-			logger.Error(fmt.Sprintf("Failed to set rate limit bucket, failing open. key=%s, err=%v", sanitizeKey(key), err))
+			logger.Errorf("Failed to set rate limit bucket, failing open. key=%s, err=%v", sanitizeKey(key), err)
 			return tokens, tokens, nil
 		}
 		r.appliedBucketConfigs.Store(key, desired)
 		remaining = tokens
 	} else {
-		existing := existingAny.(bucketConfig)
+		existing, ok := existingAny.(bucketConfig)
+		if !ok {
+			logger.Errorf("Failed to get rate limit bucket, failing open. key=%s, type=%T", sanitizeKey(key), existingAny)
+			return tokens, tokens, nil
+		}
 		if existing.tokens != desired.tokens || existing.window != desired.window {
 			if err := r.store.Set(ctx, key, tokens, window); err != nil {
-				logger.Error(fmt.Sprintf("Failed to set rate limit bucket, failing open. key=%s, err=%v", sanitizeKey(key), err))
+				logger.Errorf("Failed to set rate limit bucket, failing open. key=%s, err=%v", sanitizeKey(key), err)
 				return tokens, tokens, nil
 			}
 			r.appliedBucketConfigs.Store(key, desired)
@@ -344,13 +348,13 @@ func (r *RateLimiter) takeTokenForKey(ctx context.Context, key string, tokens ui
 			currentCapacity, rem, err := r.store.Get(ctx, key)
 			if err != nil {
 				// If we can't even Get the state of the bucket, we must fail open.
-				logger.Error(fmt.Sprintf("Rate limit store failed on Get, failing open. key=%s, err=%v", sanitizeKey(key), err))
+				logger.Errorf("Rate limit store failed on Get, failing open. key=%s, err=%v", sanitizeKey(key), err)
 				return tokens, tokens, nil
 			}
 			// If store is uninitialized (e.g., eviction), re-apply settings once.
 			if currentCapacity == 0 && rem == 0 {
 				if err := r.store.Set(ctx, key, tokens, window); err != nil {
-					logger.Error(fmt.Sprintf("Failed to set rate limit bucket, failing open. key=%s, err=%v", sanitizeKey(key), err))
+					logger.Errorf("Failed to set rate limit bucket, failing open. key=%s, err=%v", sanitizeKey(key), err)
 					return tokens, tokens, nil
 				}
 				remaining = tokens
@@ -367,10 +371,7 @@ func (r *RateLimiter) takeTokenForKey(ctx context.Context, key string, tokens ui
 	// Attempt to take a token.
 	ok, err := r.store.Take(ctx, key)
 	if err != nil {
-		logger.Error(fmt.Sprintf(
-			"Rate limit store failed on Take, failing open. key=%s, err=%v",
-			sanitizeKey(key), err,
-		))
+		logger.Errorf("Rate limit store failed on Take, failing open. key=%s, err=%v", sanitizeKey(key), err)
 		return tokens, tokens, nil
 	}
 
@@ -380,10 +381,7 @@ func (r *RateLimiter) takeTokenForKey(ctx context.Context, key string, tokens ui
 		// 2) the bucket was evicted in between Get and Take.
 		// This can be relatively frequent under high concurrency; log at debug level to avoid
 		// overwhelming production logs while still retaining visibility when needed.
-		logger.Debug(fmt.Sprintf(
-			"Rate limit race condition: Get reported tokens, but Take failed. Allowing request. key=%s",
-			sanitizeKey(key),
-		))
+		logger.Debugf("Rate limit race condition: Get reported tokens, but Take failed. Allowing request. key=%s", sanitizeKey(key))
 		return tokens, tokens, nil
 	}
 
@@ -494,7 +492,6 @@ type rateLimitDimensionConstraint struct {
 
 // Applies rate limiting across all tiers and dimensions for the given method.
 func (r *RateLimiter) enforceRateLimits(ctx context.Context, fullMethod string, dimensions []rateLimitDimensionConstraint) error {
-	// Nothing to enforce
 	if len(dimensions) == 0 {
 		return nil
 	}
@@ -562,7 +559,7 @@ func (r *RateLimiter) enforceAcrossScopes(ctx context.Context, base rateLimitEnf
 }
 
 // Build potential dimensions based on availability (dimension selection is driven by knob selectors)
-func (r *RateLimiter) buildDimensions(ctx context.Context) []rateLimitDimensionConstraint {
+func (r *RateLimiter) buildDimensions(ctx context.Context) ([]rateLimitDimensionConstraint, error) {
 	var pubkeyBucket, ipBucket string
 	havePubkey, haveIP := false, false
 	var identityHex string
@@ -572,19 +569,21 @@ func (r *RateLimiter) buildDimensions(ctx context.Context) []rateLimitDimensionC
 		identityHex = session.IdentityPublicKey().ToHex()
 	}
 
-	if v, err := GetClientIpFromHeader(ctx, r.config.XffClientIpPosition); err == nil && v != "" {
-		clientIP = v
+	clientIP = GetClientIP(ctx, r.config.XffClientIpPosition)
+
+	if identityHex == "" && clientIP == "" {
+		return nil, status.Errorf(codes.Internal, "no client identifier available for rate limiting")
 	}
 
 	// Check for full exclusions first - these bypass all rate limiting entirely.
 	if identityHex != "" {
 		if r.knobs.GetValueTarget(knobs.KnobRateLimitExcludePubkeys, &identityHex, 0) > 0 {
-			return nil
+			return nil, nil
 		}
 	}
 	if clientIP != "" {
 		if r.knobs.GetValueTarget(knobs.KnobRateLimitExcludeIps, &clientIP, 0) > 0 {
-			return nil
+			return nil, nil
 		}
 	}
 
@@ -605,8 +604,8 @@ func (r *RateLimiter) buildDimensions(ctx context.Context) []rateLimitDimensionC
 	}
 
 	if !havePubkey && !haveIP {
-		// No usable dimension; bypass rate limiting.
-		return nil
+		// Identifiers present but all excluded via dimension-only exclusions — bypass rate limiting.
+		return nil, nil
 	}
 
 	// Build list of available dimensions
@@ -618,18 +617,15 @@ func (r *RateLimiter) buildDimensions(ctx context.Context) []rateLimitDimensionC
 		dimensions = append(dimensions, rateLimitDimensionConstraint{name: dimensionNameIp, bucket: ipBucket})
 	}
 
-	return dimensions
+	return dimensions, nil
 }
 
 func (r *RateLimiter) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		// Check if the method is enabled.
-		methodEnabled := r.knobs.RolloutRandomTarget(knobs.KnobGrpcServerMethodEnabled, &info.FullMethod, 100)
-		if !methodEnabled {
-			return nil, errors.UnimplementedMethodDisabled(fmt.Errorf("the method is currently unavailable, please try again later"))
+		dimensions, err := r.buildDimensions(ctx)
+		if err != nil {
+			return nil, err
 		}
-
-		dimensions := r.buildDimensions(ctx)
 		if err := r.enforceRateLimits(ctx, info.FullMethod, dimensions); err != nil {
 			return nil, err
 		}
@@ -640,14 +636,11 @@ func (r *RateLimiter) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 
 func (r *RateLimiter) StreamServerInterceptor() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		// Check if the method is enabled.
-		methodEnabled := r.knobs.RolloutRandomTarget(knobs.KnobGrpcServerMethodEnabled, &info.FullMethod, 100)
-		if !methodEnabled {
-			return errors.UnimplementedMethodDisabled(fmt.Errorf("the method is currently unavailable, please try again later"))
-		}
-
 		ctx := ss.Context()
-		dimensions := r.buildDimensions(ctx)
+		dimensions, err := r.buildDimensions(ctx)
+		if err != nil {
+			return err
+		}
 		if err := r.enforceRateLimits(ctx, info.FullMethod, dimensions); err != nil {
 			return err
 		}
@@ -686,11 +679,11 @@ func (r *RateLimiter) enforceAndObserve(ctx context.Context, p rateLimitEnforcem
 			attrs = append(attrs, grpcutil.ParseFullMethod(p.FullMethod)...)
 			r.incrementBreachMetric(ctx, attrs)
 			// Log breach with bucket identity
-			logger := logging.GetLoggerFromContext(ctx)
-			logger.Warn(fmt.Sprintf(
+			logger := logging.GetLoggerFromContext(ctx).Sugar()
+			logger.Warnf(
 				"rate limit exceeded: scope=%s tier=%s dimension=%s bucket=%s",
 				p.Scope, p.TierSuffix, p.Dimension, p.Bucket,
-			))
+			)
 		}
 		return err
 	}

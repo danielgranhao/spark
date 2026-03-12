@@ -2,18 +2,22 @@ package chain
 
 import (
 	"bytes"
+	"context"
 	"math/rand/v2"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common/btcnetwork"
 	"github.com/lightsparkdev/spark/common/keys"
 	"github.com/lightsparkdev/spark/so/db"
 	"github.com/lightsparkdev/spark/so/ent"
 	"github.com/lightsparkdev/spark/so/handler"
+	"github.com/lightsparkdev/spark/so/knobs"
 	sparktesting "github.com/lightsparkdev/spark/testing"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -349,7 +353,7 @@ func TestHandleBlock_MixedTransactions(t *testing.T) {
 	bitcoinClient, err := rpcclient.New(connCfg, nil)
 	require.NoError(t, err)
 	blockHeight := int64(101)
-	err = handleBlock(ctx, &config, dbTx, bitcoinClient, txs, blockHeight, btcnetwork.Testnet)
+	err = handleBlock(ctx, &config, dbTx, bitcoinClient, txs, blockHeight, chainhash.Hash{}, btcnetwork.Testnet)
 	require.NoError(t, err)
 
 	// Both valid token announcements should be created as L1TokenCreate, the duplicate token announcement should not get created as a L1TokenCreate
@@ -570,7 +574,7 @@ func TestHandleBlock_NodeTransactionMarkingTreeNodeStatus(t *testing.T) {
 	blockHeight := int64(500)
 
 	// Call handleBlock
-	err = handleBlock(ctx, &config, dbTx, bitcoinClient, blockTxs, blockHeight, btcnetwork.Testnet)
+	err = handleBlock(ctx, &config, dbTx, bitcoinClient, blockTxs, blockHeight, chainhash.Hash{}, btcnetwork.Testnet)
 	require.NoError(t, err)
 
 	// Verify parent node status is updated to OnChain
@@ -602,7 +606,7 @@ func TestHandleBlock_NodeTransactionMarkingTreeNodeStatus(t *testing.T) {
 	blockHeight = int64(505)
 
 	// Call handleBlock
-	err = handleBlock(ctx, &config, dbTx, bitcoinClient, blockTxs, blockHeight, btcnetwork.Testnet)
+	err = handleBlock(ctx, &config, dbTx, bitcoinClient, blockTxs, blockHeight, chainhash.Hash{}, btcnetwork.Testnet)
 	require.NoError(t, err)
 
 	// Verify parent node status is updated to Exited
@@ -626,4 +630,616 @@ func TestHandleBlock_NodeTransactionMarkingTreeNodeStatus(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "is not available to transfer")
 	}
+}
+
+func TestHandleBlock_CoopExitProcessing_KnobEnabled(t *testing.T) {
+	rng := rand.NewChaCha8([32]byte{})
+	ctx, _ := db.NewTestSQLiteContext(t)
+
+	knobsService := knobs.NewFixedKnobs(map[string]float64{
+		knobs.KnobWatchChainTweakKeysForCoopExitDelayEnabled: 1.0,
+	})
+	ctx = knobs.InjectKnobsService(ctx, knobsService)
+
+	// Mock tweakKeysForCoopExit to succeed immediately
+	originalTweakFunc := tweakKeysForCoopExitFunc
+	tweakKeysForCoopExitFunc = func(ctx context.Context, coopExit *ent.CooperativeExit, blockHeight int64) error {
+		return nil
+	}
+	defer func() { tweakKeysForCoopExitFunc = originalTweakFunc }()
+
+	dbTx, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	// Create test transactions for coop exits
+	// Output 1: withdrawal amount to user, Output 2: intermediate amount to connector
+	coopExitTx1 := wire.MsgTx{
+		Version: 2,
+		TxIn:    []*wire.TxIn{{}},
+		TxOut: []*wire.TxOut{
+			{Value: 900},
+			{Value: 100},
+		},
+	}
+	coopExitTx2 := wire.MsgTx{
+		Version: 2,
+		TxIn:    []*wire.TxIn{{}},
+		TxOut: []*wire.TxOut{
+			{Value: 1800},
+			{Value: 200},
+		},
+	}
+	// Transaction not in block (should not be confirmed)
+	coopExitTxNotInBlock := wire.MsgTx{
+		Version: 2,
+		TxIn:    []*wire.TxIn{{}},
+		TxOut: []*wire.TxOut{
+			{Value: 3600},
+			{Value: 400},
+		},
+	}
+
+	// Create transfers and coop exits
+	senderIdentityPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	receiverIdentityPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+
+	transfer1, err := dbTx.Transfer.Create().
+		SetNetwork(btcnetwork.Testnet).
+		SetStatus(schematype.TransferStatusSenderInitiated).
+		SetType(schematype.TransferTypeCooperativeExit).
+		SetSenderIdentityPubkey(senderIdentityPrivKey.Public()).
+		SetReceiverIdentityPubkey(receiverIdentityPrivKey.Public()).
+		SetTotalValue(1000).
+		SetExpiryTime(time.Now().Add(24 * time.Hour)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	transfer2, err := dbTx.Transfer.Create().
+		SetNetwork(btcnetwork.Testnet).
+		SetStatus(schematype.TransferStatusSenderInitiated).
+		SetType(schematype.TransferTypeCooperativeExit).
+		SetSenderIdentityPubkey(senderIdentityPrivKey.Public()).
+		SetReceiverIdentityPubkey(receiverIdentityPrivKey.Public()).
+		SetTotalValue(2000).
+		SetExpiryTime(time.Now().Add(24 * time.Hour)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	transfer3, err := dbTx.Transfer.Create().
+		SetNetwork(btcnetwork.Testnet).
+		SetStatus(schematype.TransferStatusSenderInitiated).
+		SetType(schematype.TransferTypeCooperativeExit).
+		SetSenderIdentityPubkey(senderIdentityPrivKey.Public()).
+		SetReceiverIdentityPubkey(receiverIdentityPrivKey.Public()).
+		SetTotalValue(3000).
+		SetExpiryTime(time.Now().Add(24 * time.Hour)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Create cooperative exits with reversed byte order (matching production behavior)
+	// Exit 1: Reversed bytes - should be found
+	txHash1 := coopExitTx1.TxHash()
+	reversedTxHash1 := make([]byte, len(txHash1))
+	copy(reversedTxHash1, txHash1[:])
+	for i := 0; i < len(reversedTxHash1)/2; i++ {
+		reversedTxHash1[i], reversedTxHash1[len(reversedTxHash1)-1-i] = reversedTxHash1[len(reversedTxHash1)-1-i], reversedTxHash1[i]
+	}
+	exitTxid1, err := schematype.NewTxIDFromBytes(reversedTxHash1)
+	require.NoError(t, err)
+	_, err = dbTx.CooperativeExit.Create().
+		SetTransfer(transfer1).
+		SetExitTxid(exitTxid1).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Exit 2: Direct bytes - should be found
+	txHash2 := coopExitTx2.TxHash()
+	exitTxid2, err := schematype.NewTxIDFromBytes(txHash2[:])
+	require.NoError(t, err)
+	_, err = dbTx.CooperativeExit.Create().
+		SetTransfer(transfer2).
+		SetExitTxid(exitTxid2).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Exit 3: Reversed bytes - not in the block, should not be found
+	txHash3 := coopExitTxNotInBlock.TxHash()
+	reversedTxHash3 := make([]byte, len(txHash3))
+	copy(reversedTxHash3, txHash3[:])
+	for i := 0; i < len(reversedTxHash3)/2; i++ {
+		reversedTxHash3[i], reversedTxHash3[len(reversedTxHash3)-1-i] = reversedTxHash3[len(reversedTxHash3)-1-i], reversedTxHash3[i]
+	}
+	exitTxid3, err := schematype.NewTxIDFromBytes(reversedTxHash3)
+	require.NoError(t, err)
+	_, err = dbTx.CooperativeExit.Create().
+		SetTransfer(transfer3).
+		SetExitTxid(exitTxid3).
+		Save(ctx)
+	require.NoError(t, err)
+
+	config := so.Config{
+		SupportedNetworks: []btcnetwork.Network{btcnetwork.Testnet},
+		Lrc20Configs: map[string]so.Lrc20Config{
+			btcnetwork.Testnet.String(): {
+				DisableRpcs: true,
+			},
+		},
+		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
+	}
+
+	connCfg := &rpcclient.ConnConfig{DisableTLS: true, HTTPPostMode: true}
+	bitcoinClient, err := rpcclient.New(connCfg, nil)
+	require.NoError(t, err)
+
+	blockHeight := int64(100)
+	blockTxs := []wire.MsgTx{coopExitTx1, coopExitTx2}
+
+	err = handleBlock(ctx, &config, dbTx, bitcoinClient, blockTxs, blockHeight, chainhash.Hash{}, btcnetwork.Testnet)
+	require.NoError(t, err)
+
+	// Verify: exits 1 and 2 should be confirmed
+	// Exit 3 is not in the block
+	allCoopExits, err := dbTx.CooperativeExit.Query().WithTransfer().All(ctx)
+	require.NoError(t, err)
+	require.Len(t, allCoopExits, 3)
+
+	confirmedCount := 0
+	confirmedTransferIDs := make(map[uuid.UUID]bool)
+	for _, exit := range allCoopExits {
+		if exit.ConfirmationHeight != nil {
+			confirmedCount++
+			assert.Equal(t, blockHeight, *exit.ConfirmationHeight)
+			// Key tweaked height should still be nil (not enough blocks passed)
+			assert.Nil(t, exit.KeyTweakedHeight)
+			// Track which transfers were confirmed
+			require.NotNil(t, exit.Edges.Transfer)
+			confirmedTransferIDs[exit.Edges.Transfer.ID] = true
+		}
+	}
+	assert.Equal(t, 2, confirmedCount, "Expected 2 coop exits to be confirmed (both reversed and non-reversed)")
+	assert.True(t, confirmedTransferIDs[transfer1.ID], "Exit 1 (transfer1) should be confirmed")
+	assert.True(t, confirmedTransferIDs[transfer2.ID], "Exit 2 (transfer2) should be confirmed")
+	assert.False(t, confirmedTransferIDs[transfer3.ID], "Exit 3 (transfer3) should NOT be confirmed")
+
+	// Process a few more blocks to trigger key tweaking (need >= 2 blocks)
+	blockHeight = int64(102)
+	err = handleBlock(ctx, &config, dbTx, bitcoinClient, []wire.MsgTx{}, blockHeight, chainhash.Hash{}, btcnetwork.Testnet)
+	require.NoError(t, err)
+
+	// Verify: After 2+ blocks, keys should be tweaked for all confirmed exits
+	allCoopExits, err = dbTx.CooperativeExit.Query().WithTransfer().All(ctx)
+	require.NoError(t, err)
+
+	tweakedCount := 0
+	tweakedTransferIDs := make(map[uuid.UUID]bool)
+	for _, exit := range allCoopExits {
+		if exit.ConfirmationHeight != nil {
+			// All confirmed exits should now have KeyTweakedHeight set
+			assert.NotNil(t, exit.KeyTweakedHeight, "KeyTweakedHeight should be set after 2+ blocks")
+			if exit.KeyTweakedHeight != nil {
+				assert.Equal(t, blockHeight, *exit.KeyTweakedHeight)
+				require.NotNil(t, exit.Edges.Transfer)
+				tweakedTransferIDs[exit.Edges.Transfer.ID] = true
+				tweakedCount++
+			}
+		}
+	}
+	assert.Equal(t, 2, tweakedCount, "Expected 2 coop exits to have keys tweaked (both reversed and non-reversed)")
+	assert.True(t, tweakedTransferIDs[transfer1.ID], "Exit 1 (transfer1) should be tweaked")
+	assert.True(t, tweakedTransferIDs[transfer2.ID], "Exit 2 (transfer2) should be tweaked")
+	assert.False(t, tweakedTransferIDs[transfer3.ID], "Exit 3 (transfer3) should NOT be tweaked")
+}
+
+func TestHandleBlock_CoopExitProcessing_KnobDisabled(t *testing.T) {
+	rng := rand.NewChaCha8([32]byte{})
+	ctx, _ := db.NewTestSQLiteContext(t)
+
+	// Disable the knob to use old code path
+	knobsService := knobs.NewFixedKnobs(map[string]float64{
+		knobs.KnobWatchChainTweakKeysForCoopExitDelayEnabled: 0.0,
+	})
+	ctx = knobs.InjectKnobsService(ctx, knobsService)
+
+	// Mock tweakKeysForCoopExit to succeed immediately
+	originalTweakFunc := tweakKeysForCoopExitFunc
+	tweakKeysForCoopExitFunc = func(ctx context.Context, coopExit *ent.CooperativeExit, blockHeight int64) error {
+		return nil
+	}
+	defer func() { tweakKeysForCoopExitFunc = originalTweakFunc }()
+
+	dbTx, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	// Create test transactions for coop exits (version 2 with two outputs)
+	// Output 1: withdrawal amount to user, Output 2: intermediate amount to connector
+	coopExitTx1 := wire.MsgTx{
+		Version: 2,
+		TxIn:    []*wire.TxIn{{}},
+		TxOut: []*wire.TxOut{
+			{Value: 900},
+			{Value: 100},
+		},
+	}
+	coopExitTx2 := wire.MsgTx{
+		Version: 2,
+		TxIn:    []*wire.TxIn{{}},
+		TxOut: []*wire.TxOut{
+			{Value: 1800},
+			{Value: 200},
+		},
+	}
+	// Transaction not in block
+	coopExitTxNotInBlock := wire.MsgTx{
+		Version: 2,
+		TxIn:    []*wire.TxIn{{}},
+		TxOut: []*wire.TxOut{
+			{Value: 3600},
+			{Value: 400},
+		},
+	}
+
+	// Create transfers and coop exits
+	senderIdentityPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	receiverIdentityPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
+
+	transfer1, err := dbTx.Transfer.Create().
+		SetNetwork(btcnetwork.Testnet).
+		SetStatus(schematype.TransferStatusSenderInitiated).
+		SetType(schematype.TransferTypeCooperativeExit).
+		SetSenderIdentityPubkey(senderIdentityPrivKey.Public()).
+		SetReceiverIdentityPubkey(receiverIdentityPrivKey.Public()).
+		SetTotalValue(1000).
+		SetExpiryTime(time.Now().Add(24 * time.Hour)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	transfer2, err := dbTx.Transfer.Create().
+		SetNetwork(btcnetwork.Testnet).
+		SetStatus(schematype.TransferStatusSenderInitiated).
+		SetType(schematype.TransferTypeCooperativeExit).
+		SetSenderIdentityPubkey(senderIdentityPrivKey.Public()).
+		SetReceiverIdentityPubkey(receiverIdentityPrivKey.Public()).
+		SetTotalValue(2000).
+		SetExpiryTime(time.Now().Add(24 * time.Hour)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	transfer3, err := dbTx.Transfer.Create().
+		SetNetwork(btcnetwork.Testnet).
+		SetStatus(schematype.TransferStatusSenderInitiated).
+		SetType(schematype.TransferTypeCooperativeExit).
+		SetSenderIdentityPubkey(senderIdentityPrivKey.Public()).
+		SetReceiverIdentityPubkey(receiverIdentityPrivKey.Public()).
+		SetTotalValue(3000).
+		SetExpiryTime(time.Now().Add(24 * time.Hour)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Create cooperative exits with reversed byte order (matching production behavior)
+	// Exit 1: Reversed bytes - should be found
+	txHash1 := coopExitTx1.TxHash()
+	reversedTxHash1 := make([]byte, len(txHash1))
+	copy(reversedTxHash1, txHash1[:])
+	for i := 0; i < len(reversedTxHash1)/2; i++ {
+		reversedTxHash1[i], reversedTxHash1[len(reversedTxHash1)-1-i] = reversedTxHash1[len(reversedTxHash1)-1-i], reversedTxHash1[i]
+	}
+	exitTxid1, err := schematype.NewTxIDFromBytes(reversedTxHash1)
+	require.NoError(t, err)
+	_, err = dbTx.CooperativeExit.Create().
+		SetTransfer(transfer1).
+		SetExitTxid(exitTxid1).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Exit 2: Direct bytes (not reversed) - should be found
+	txHash2 := coopExitTx2.TxHash()
+	exitTxid2, err := schematype.NewTxIDFromBytes(txHash2[:])
+	require.NoError(t, err)
+	_, err = dbTx.CooperativeExit.Create().
+		SetTransfer(transfer2).
+		SetExitTxid(exitTxid2).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Exit 3: Reversed bytes - not in the block, should not be found
+	txHash3 := coopExitTxNotInBlock.TxHash()
+	reversedTxHash3 := make([]byte, len(txHash3))
+	copy(reversedTxHash3, txHash3[:])
+	for i := 0; i < len(reversedTxHash3)/2; i++ {
+		reversedTxHash3[i], reversedTxHash3[len(reversedTxHash3)-1-i] = reversedTxHash3[len(reversedTxHash3)-1-i], reversedTxHash3[i]
+	}
+	exitTxid3, err := schematype.NewTxIDFromBytes(reversedTxHash3)
+	require.NoError(t, err)
+	_, err = dbTx.CooperativeExit.Create().
+		SetTransfer(transfer3).
+		SetExitTxid(exitTxid3).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Create config
+	config := so.Config{
+		SupportedNetworks: []btcnetwork.Network{btcnetwork.Testnet},
+		Lrc20Configs: map[string]so.Lrc20Config{
+			btcnetwork.Testnet.String(): {
+				DisableRpcs: true,
+			},
+		},
+		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
+	}
+
+	connCfg := &rpcclient.ConnConfig{DisableTLS: true, HTTPPostMode: true}
+	bitcoinClient, err := rpcclient.New(connCfg, nil)
+	require.NoError(t, err)
+
+	blockHeight := int64(100)
+	blockTxs := []wire.MsgTx{coopExitTx1, coopExitTx2}
+
+	err = handleBlock(ctx, &config, dbTx, bitcoinClient, blockTxs, blockHeight, chainhash.Hash{}, btcnetwork.Testnet)
+	require.NoError(t, err)
+
+	// Verify: exits 1 and 2 should be confirmed, exit 3 should not
+	allCoopExits, err := dbTx.CooperativeExit.Query().WithTransfer().All(ctx)
+	require.NoError(t, err)
+	require.Len(t, allCoopExits, 3)
+
+	confirmedCount := 0
+	unconfirmedCount := 0
+	confirmedTransferIDs := make(map[uuid.UUID]bool)
+	for _, exit := range allCoopExits {
+		if exit.ConfirmationHeight != nil {
+			confirmedCount++
+			assert.Equal(t, blockHeight, *exit.ConfirmationHeight)
+			// In legacy path, KeyTweakedHeight should be set immediately
+			assert.NotNil(t, exit.KeyTweakedHeight, "KeyTweakedHeight should be set immediately in legacy path")
+			assert.Equal(t, blockHeight, *exit.KeyTweakedHeight)
+			// Track which transfers were confirmed
+			require.NotNil(t, exit.Edges.Transfer)
+			confirmedTransferIDs[exit.Edges.Transfer.ID] = true
+		} else {
+			unconfirmedCount++
+		}
+	}
+	assert.Equal(t, 2, confirmedCount, "Expected 2 coop exits to be confirmed")
+	assert.Equal(t, 1, unconfirmedCount, "Expected 1 coop exit to remain unconfirmed")
+	// Verify exits 1 and 2 (transfer1 and transfer2) were confirmed
+	assert.True(t, confirmedTransferIDs[transfer1.ID], "Exit 1 (transfer1) should be confirmed")
+	assert.True(t, confirmedTransferIDs[transfer2.ID], "Exit 2 (transfer2) should be confirmed")
+	assert.False(t, confirmedTransferIDs[transfer3.ID], "Exit 3 (transfer3) should NOT be confirmed")
+}
+
+func createTestDepositAddress(
+	t *testing.T,
+	ctx context.Context,
+	dbClient *ent.Client,
+	rng *rand.ChaCha8,
+	address string,
+	isStatic bool,
+	network btcnetwork.Network,
+) *ent.DepositAddress {
+	t.Helper()
+	ownerPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	signingPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	secretShare := keys.MustGeneratePrivateKeyFromRand(rng)
+
+	keyshare, err := dbClient.SigningKeyshare.Create().
+		SetPublicKey(signingPubKey).
+		SetSecretShare(secretShare).
+		SetMinSigners(1).
+		SetPublicShares(map[string]keys.Public{}).
+		SetStatus(schematype.KeyshareStatusAvailable).
+		SetCoordinatorIndex(0).
+		Save(ctx)
+	require.NoError(t, err)
+
+	deposit, err := dbClient.DepositAddress.Create().
+		SetAddress(address).
+		SetOwnerIdentityPubkey(ownerPubKey).
+		SetOwnerSigningPubkey(ownerPubKey).
+		SetSigningKeyshare(keyshare).
+		SetIsStatic(isStatic).
+		SetNetwork(network).
+		Save(ctx)
+	require.NoError(t, err)
+	return deposit
+}
+
+func createTestTx(t *testing.T, value int64, pkScript []byte) *wire.MsgTx {
+	t.Helper()
+	tx := &wire.MsgTx{
+		Version: 1,
+		TxIn:    []*wire.TxIn{{}},
+		TxOut:   []*wire.TxOut{{Value: value, PkScript: pkScript}},
+	}
+	return tx
+}
+
+func TestStoreUtxosForAddress(t *testing.T) {
+	rng := rand.NewChaCha8([32]byte{})
+	ctx, _ := db.NewTestSQLiteContext(t)
+	dbClient, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	pkScript := []byte{0x51, 0x20, 0x01, 0x02, 0x03}
+
+	t.Run("single utxo", func(t *testing.T) {
+		deposit := createTestDepositAddress(t, ctx, dbClient, rng, "addr-single", false, btcnetwork.Regtest)
+		tx := createTestTx(t, 5000, pkScript)
+		utxos := []AddressDepositUtxo{{tx: tx, amount: 5000, idx: 0}}
+
+		err := storeUtxosForAddress(ctx, dbClient, deposit, utxos, btcnetwork.Regtest, 100)
+		require.NoError(t, err)
+
+		stored, err := dbClient.DepositAddress.QueryUtxo(deposit).All(ctx)
+		require.NoError(t, err)
+		require.Len(t, stored, 1)
+		assert.Equal(t, uint64(5000), stored[0].Amount)
+		assert.Equal(t, uint32(0), stored[0].Vout)
+		assert.Equal(t, int64(100), stored[0].BlockHeight)
+	})
+
+	t.Run("multiple utxos", func(t *testing.T) {
+		deposit := createTestDepositAddress(t, ctx, dbClient, rng, "addr-multi", false, btcnetwork.Regtest)
+		tx1 := createTestTx(t, 3000, pkScript)
+		tx2 := createTestTx(t, 7000, pkScript)
+		utxos := []AddressDepositUtxo{
+			{tx: tx1, amount: 3000, idx: 0},
+			{tx: tx2, amount: 7000, idx: 0},
+		}
+
+		err := storeUtxosForAddress(ctx, dbClient, deposit, utxos, btcnetwork.Regtest, 200)
+		require.NoError(t, err)
+
+		stored, err := dbClient.DepositAddress.QueryUtxo(deposit).All(ctx)
+		require.NoError(t, err)
+		require.Len(t, stored, 2)
+	})
+
+	t.Run("upsert does not duplicate", func(t *testing.T) {
+		deposit := createTestDepositAddress(t, ctx, dbClient, rng, "addr-upsert", false, btcnetwork.Regtest)
+		tx := createTestTx(t, 4000, pkScript)
+		utxos := []AddressDepositUtxo{{tx: tx, amount: 4000, idx: 0}}
+
+		err := storeUtxosForAddress(ctx, dbClient, deposit, utxos, btcnetwork.Regtest, 300)
+		require.NoError(t, err)
+
+		// Call again with the same UTXO
+		err = storeUtxosForAddress(ctx, dbClient, deposit, utxos, btcnetwork.Regtest, 300)
+		require.NoError(t, err)
+
+		stored, err := dbClient.DepositAddress.QueryUtxo(deposit).All(ctx)
+		require.NoError(t, err)
+		require.Len(t, stored, 1)
+	})
+}
+
+func TestStoreDepositUtxos(t *testing.T) {
+	rng := rand.NewChaCha8([32]byte{1})
+	ctx, _ := db.NewTestSQLiteContext(t)
+	dbClient, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	pkScript := []byte{0x51, 0x20, 0x01, 0x02, 0x03}
+
+	t.Run("stores utxos for both static and non-static addresses", func(t *testing.T) {
+		staticAddr := createTestDepositAddress(t, ctx, dbClient, rng, "static-addr-1", true, btcnetwork.Regtest)
+		nonStaticAddr := createTestDepositAddress(t, ctx, dbClient, rng, "nonstatic-addr-1", false, btcnetwork.Regtest)
+
+		tx1 := createTestTx(t, 1000, pkScript)
+		tx2 := createTestTx(t, 2000, pkScript)
+
+		addressToUtxoMap := map[string][]AddressDepositUtxo{
+			staticAddr.Address:    {{tx: tx1, amount: 1000, idx: 0}},
+			nonStaticAddr.Address: {{tx: tx2, amount: 2000, idx: 0}},
+		}
+		creditedAddresses := []string{staticAddr.Address, nonStaticAddr.Address}
+
+		err := storeDepositUtxos(ctx, dbClient, creditedAddresses, addressToUtxoMap, btcnetwork.Regtest, 100)
+		require.NoError(t, err)
+
+		staticUtxos, err := dbClient.DepositAddress.QueryUtxo(staticAddr).All(ctx)
+		require.NoError(t, err)
+		require.Len(t, staticUtxos, 1)
+		assert.Equal(t, uint64(1000), staticUtxos[0].Amount)
+
+		nonStaticUtxos, err := dbClient.DepositAddress.QueryUtxo(nonStaticAddr).All(ctx)
+		require.NoError(t, err)
+		require.Len(t, nonStaticUtxos, 1)
+		assert.Equal(t, uint64(2000), nonStaticUtxos[0].Amount)
+	})
+
+	t.Run("non-static address picks up utxos across blocks", func(t *testing.T) {
+		addr := createTestDepositAddress(t, ctx, dbClient, rng, "nonstatic-multiblock", false, btcnetwork.Regtest)
+
+		// Block 1: first UTXO arrives
+		tx1 := createTestTx(t, 5000, pkScript)
+		addressToUtxoMap := map[string][]AddressDepositUtxo{
+			addr.Address: {{tx: tx1, amount: 5000, idx: 0}},
+		}
+		err := storeDepositUtxos(ctx, dbClient, []string{addr.Address}, addressToUtxoMap, btcnetwork.Regtest, 100)
+		require.NoError(t, err)
+
+		stored, err := dbClient.DepositAddress.QueryUtxo(addr).All(ctx)
+		require.NoError(t, err)
+		require.Len(t, stored, 1)
+
+		// Block 2: second UTXO arrives at the same address
+		tx2 := createTestTx(t, 8000, pkScript)
+		addressToUtxoMap = map[string][]AddressDepositUtxo{
+			addr.Address: {{tx: tx2, amount: 8000, idx: 0}},
+		}
+		err = storeDepositUtxos(ctx, dbClient, []string{addr.Address}, addressToUtxoMap, btcnetwork.Regtest, 101)
+		require.NoError(t, err)
+
+		stored, err = dbClient.DepositAddress.QueryUtxo(addr).All(ctx)
+		require.NoError(t, err)
+		require.Len(t, stored, 2)
+	})
+
+	t.Run("ignores addresses not in database", func(t *testing.T) {
+		utxoCountBefore, err := dbClient.Utxo.Query().Count(ctx)
+		require.NoError(t, err)
+
+		addressToUtxoMap := map[string][]AddressDepositUtxo{
+			"unknown-addr": {{tx: createTestTx(t, 1000, pkScript), amount: 1000, idx: 0}},
+		}
+		err = storeDepositUtxos(ctx, dbClient, []string{"unknown-addr"}, addressToUtxoMap, btcnetwork.Regtest, 500)
+		require.NoError(t, err)
+
+		utxoCountAfter, err := dbClient.Utxo.Query().Count(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, utxoCountBefore, utxoCountAfter)
+	})
+}
+
+func TestHandleBlock_NonStaticDeposit_SetsConfirmationTxid(t *testing.T) {
+	rng := rand.NewChaCha8([32]byte{2})
+	ctx, _ := db.NewTestSQLiteContext(t)
+	dbClient, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	// Create a taproot-style script so processTransactions can decode an address
+	params := &chaincfg.RegressionNetParams
+	privKey := keys.MustGeneratePrivateKeyFromRand(rng)
+	taprootKey := txscript.ComputeTaprootKeyNoScript(privKey.Public().ToBTCEC())
+	taprootScript, err := txscript.PayToTaprootScript(taprootKey)
+	require.NoError(t, err)
+
+	// Decode the address string for the deposit address entity
+	_, addrs, _, err := txscript.ExtractPkScriptAddrs(taprootScript, params)
+	require.NoError(t, err)
+	require.Len(t, addrs, 1)
+	addrStr := addrs[0].EncodeAddress()
+
+	deposit := createTestDepositAddress(t, ctx, dbClient, rng, addrStr, false, btcnetwork.Regtest)
+
+	// Two transactions to the same address with different amounts
+	smallTx := wire.MsgTx{Version: 1, TxIn: []*wire.TxIn{{}}, TxOut: []*wire.TxOut{{Value: 1000, PkScript: taprootScript}}}
+	largeTx := wire.MsgTx{Version: 1, TxIn: []*wire.TxIn{{}}, TxOut: []*wire.TxOut{{Value: 5000, PkScript: taprootScript}}}
+
+	config := so.Config{
+		SupportedNetworks: []btcnetwork.Network{btcnetwork.Regtest},
+		Lrc20Configs: map[string]so.Lrc20Config{
+			btcnetwork.Regtest.String(): {DisableRpcs: true},
+		},
+		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
+	}
+	connCfg := &rpcclient.ConnConfig{DisableTLS: true, HTTPPostMode: true}
+	bitcoinClient, err := rpcclient.New(connCfg, nil)
+	require.NoError(t, err)
+
+	// Block 1: both transactions confirm
+	blockTxs := []wire.MsgTx{smallTx, largeTx}
+	err = handleBlock(ctx, &config, dbClient, bitcoinClient, blockTxs, 100, chainhash.Hash{}, btcnetwork.Regtest)
+	require.NoError(t, err)
+
+	// Verify confirmation_txid is set to the largest UTXO's txid
+	updated, err := dbClient.DepositAddress.Get(ctx, deposit.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(100), updated.ConfirmationHeight)
+	assert.Equal(t, largeTx.TxHash().String(), updated.ConfirmationTxid)
+
+	// Verify both UTXOs are stored as Utxo entities
+	utxos, err := dbClient.DepositAddress.QueryUtxo(updated).All(ctx)
+	require.NoError(t, err)
+	assert.Len(t, utxos, 2)
 }

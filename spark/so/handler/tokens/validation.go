@@ -4,7 +4,9 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common/keys"
@@ -18,6 +20,34 @@ import (
 	"github.com/lightsparkdev/spark/so/utils"
 )
 
+// MaxTimestampSkew is the maximum allowed difference between client-provided timestamps
+// and server time. Timestamps must be within ±MaxTimestampSkew of the current time.
+const MaxTimestampSkew = 1 * time.Minute
+
+// ValidateTimestampMillis validates that a timestamp (in milliseconds) is within acceptable bounds.
+// Timestamps must be within ±MaxTimestampSkew of the current server time.
+func ValidateTimestampMillis(timestampMillis uint64) error {
+	now := time.Now()
+	timestamp := time.UnixMilli(int64(timestampMillis))
+
+	oldestAllowed := now.Add(-MaxTimestampSkew)
+	latestAllowed := now.Add(MaxTimestampSkew)
+
+	if timestamp.Before(oldestAllowed) {
+		return sparkerrors.InvalidArgumentOutOfRange(fmt.Errorf(
+			"timestamp %d is too old (oldest allowed: %d)",
+			timestampMillis, oldestAllowed.UnixMilli(),
+		))
+	}
+	if timestamp.After(latestAllowed) {
+		return sparkerrors.InvalidArgumentOutOfRange(fmt.Errorf(
+			"timestamp %d is too far in the future (max allowed: %d)",
+			timestampMillis, latestAllowed.UnixMilli(),
+		))
+	}
+	return nil
+}
+
 // validateStatuses is a shared helper that checks if all provided outputs have one of the
 // expected statuses. The idFormatter formats the identifier used in error messages
 // (e.g., "output 0" or "input <id>").
@@ -28,21 +58,14 @@ func validateStatuses(
 ) []error {
 	var invalidOutputs []error
 	for i, output := range outputs {
-		matchesExpected := false
-		for _, status := range expectedStatuses {
-			if output.Status == status {
-				matchesExpected = true
-				break
-			}
-		}
-		if !matchesExpected {
+		if !slices.Contains(expectedStatuses, output.Status) {
 			var expectedDesc string
 			if len(expectedStatuses) == 1 {
-				expectedDesc = string(expectedStatuses[0])
+				expectedDesc = fmt.Sprintf("%s", expectedStatuses[0])
 			} else {
 				parts := make([]string, len(expectedStatuses))
 				for i, s := range expectedStatuses {
-					parts[i] = string(s)
+					parts[i] = fmt.Sprintf("%s", s)
 				}
 				expectedDesc = fmt.Sprintf("one of [%s]", strings.Join(parts, " or "))
 			}
@@ -105,6 +128,11 @@ func validateTokenTransactionForSigning(
 		if err := tokens.ValidateMintDoesNotExceedMaxSupplyEnt(ctx, tokenTransactionEnt); err != nil {
 			return err
 		}
+		if len(tokenTransactionEnt.Edges.CreatedOutput) > 0 {
+			if err := validateTokenNotGloballyPaused(ctx, tokenTransactionEnt.Edges.CreatedOutput[0].TokenCreateID); err != nil {
+				return err
+			}
+		}
 	case utils.TokenTransactionTypeTransfer:
 		// If token outputs are being spent, verify the expected status of inputs and check for active freezes.
 		if len(tokenTransactionEnt.Edges.SpentOutput) == 0 {
@@ -139,7 +167,7 @@ func validateTokenTransactionForSigning(
 }
 
 // validateNoActiveFreezesForOutputs checks whether any of the provided outputs belong to an
-// owner+token pair that is currently frozen. Supports outputs spanning multiple TokenCreateIDs.
+// owner+token pair that is currently frozen.
 func validateNoActiveFreezesForOutputs(ctx context.Context, outputs []*ent.TokenOutput) error {
 	if len(outputs) == 0 {
 		return nil
@@ -157,7 +185,10 @@ func validateNoActiveFreezesForOutputs(ctx context.Context, outputs []*ent.Token
 
 	logger := logging.GetLoggerFromContext(ctx)
 	for tokenCreateID, owners := range ownersByToken {
-		// Bulk query to ensure none of the owners for this token are frozen.
+		if err := validateTokenNotGloballyPaused(ctx, tokenCreateID); err != nil {
+			return err
+		}
+
 		activeFreezes, err := ent.GetActiveFreezes(ctx, owners, tokenCreateID)
 		if err != nil {
 			return fmt.Errorf("%s: %w", tokens.ErrFailedToQueryTokenFreezeStatus, err)
@@ -166,14 +197,96 @@ func validateNoActiveFreezesForOutputs(ctx context.Context, outputs []*ent.Token
 			continue
 		}
 		for _, freeze := range activeFreezes {
-			logger.Sugar().Infof(
+			logger.Info(fmt.Sprintf(
 				"Found active freeze for owner %x (token: %x, timestamp: %d)",
 				freeze.OwnerPublicKey,
 				freeze.TokenPublicKey,
 				freeze.WalletProvidedFreezeTimestamp,
-			)
+			))
 		}
 		return sparkerrors.FailedPreconditionTokenRulesViolation(fmt.Errorf("at least one input is frozen. Cannot proceed with transaction"))
 	}
+	return nil
+}
+
+func validateTokenNotGloballyPaused(ctx context.Context, tokenCreateID uuid.UUID) error {
+	globalPause, err := ent.GetActiveGlobalPause(ctx, tokenCreateID)
+	if err != nil {
+		return sparkerrors.InternalDatabaseReadError(fmt.Errorf("failed to check global pause status: %w", err))
+	}
+	if globalPause != nil {
+		return sparkerrors.FailedPreconditionTokenRulesViolation(fmt.Errorf("token is globally paused, cannot proceed"))
+	}
+	return nil
+}
+
+func validateQueryTokenTransactionsRequest(req *tokenpb.QueryTokenTransactionsRequest) error {
+	if req.GetByTxHash() != nil {
+		if len(req.GetByTxHash().TokenTransactionHashes) > maxTokenTransactionHashValues {
+			return sparkerrors.InvalidArgumentOutOfRange(
+				fmt.Errorf("too many token transaction hashes in filter: got %d, max %d", len(req.GetByTxHash().TokenTransactionHashes), maxTokenTransactionHashValues),
+			)
+		}
+		return nil
+	}
+
+	if req.GetByFilters() != nil {
+		if len(req.GetByFilters().OutputIds) > maxTokenTransactionFilterValues {
+			return sparkerrors.InvalidArgumentOutOfRange(
+				fmt.Errorf("too many output ids in filter: got %d, max %d", len(req.GetByFilters().OutputIds), maxTokenTransactionFilterValues),
+			)
+		}
+
+		if len(req.GetByFilters().OwnerPublicKeys) > maxTokenTransactionFilterValues {
+			return sparkerrors.InvalidArgumentOutOfRange(
+				fmt.Errorf("too many owner public keys in filter: got %d, max %d", len(req.GetByFilters().OwnerPublicKeys), maxTokenTransactionFilterValues),
+			)
+		}
+
+		if len(req.GetByFilters().IssuerPublicKeys) > maxTokenTransactionFilterValues {
+			return sparkerrors.InvalidArgumentOutOfRange(
+				fmt.Errorf("too many issuer public keys in filter: got %d, max %d", len(req.GetByFilters().IssuerPublicKeys), maxTokenTransactionFilterValues),
+			)
+		}
+
+		if len(req.GetByFilters().TokenIdentifiers) > maxTokenTransactionFilterValues {
+			return sparkerrors.InvalidArgumentOutOfRange(
+				fmt.Errorf("too many token identifiers in filter: got %d, max %d", len(req.GetByFilters().TokenIdentifiers), maxTokenTransactionFilterValues),
+			)
+		}
+
+		return nil
+	}
+
+	if len(req.OutputIds) > maxTokenTransactionFilterValues {
+		return sparkerrors.InvalidArgumentOutOfRange(
+			fmt.Errorf("too many output ids in filter: got %d, max %d", len(req.OutputIds), maxTokenTransactionFilterValues),
+		)
+	}
+
+	if len(req.OwnerPublicKeys) > maxTokenTransactionFilterValues {
+		return sparkerrors.InvalidArgumentOutOfRange(
+			fmt.Errorf("too many owner public keys in filter: got %d, max %d", len(req.OwnerPublicKeys), maxTokenTransactionFilterValues),
+		)
+	}
+
+	if len(req.IssuerPublicKeys) > maxTokenTransactionFilterValues {
+		return sparkerrors.InvalidArgumentOutOfRange(
+			fmt.Errorf("too many issuer public keys in filter: got %d, max %d", len(req.IssuerPublicKeys), maxTokenTransactionFilterValues),
+		)
+	}
+
+	if len(req.TokenIdentifiers) > maxTokenTransactionFilterValues {
+		return sparkerrors.InvalidArgumentOutOfRange(
+			fmt.Errorf("too many token identifiers in filter: got %d, max %d", len(req.TokenIdentifiers), maxTokenTransactionFilterValues),
+		)
+	}
+
+	if len(req.TokenTransactionHashes) > maxTokenTransactionFilterValues {
+		return sparkerrors.InvalidArgumentOutOfRange(
+			fmt.Errorf("too many token transaction hashes in filter: got %d, max %d", len(req.TokenTransactionHashes), maxTokenTransactionFilterValues),
+		)
+	}
+
 	return nil
 }

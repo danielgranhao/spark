@@ -3,14 +3,20 @@ package tokens_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightsparkdev/spark/common/keys"
 	tokenpb "github.com/lightsparkdev/spark/proto/spark_token"
+	tokenwatchtower "github.com/lightsparkdev/spark/so/chain/tokens"
 	"github.com/lightsparkdev/spark/so/utils"
 	"github.com/lightsparkdev/spark/testing/wallet"
 	"github.com/stretchr/testify/assert"
@@ -77,12 +83,16 @@ func getSigningOperatorPublicKeyBytes(config *wallet.TestWalletConfig) [][]byte 
 	return operatorKeys
 }
 
-// ensureV3DeterministicOrdering sorts fields that must be strictly ordered for V3+ hashing:
+// normalizeV3TokenTransaction normalizes a V3+ token transaction for testing:
+// - truncates the client created timestamp to microsecond precision for PostgreSQL consistency
 // - spark_operator_identity_public_keys: bytewise ascending
 // - invoice_attachments: lexicographic by spark_invoice
-func ensureV3DeterministicOrdering(tx *tokenpb.TokenTransaction) {
+func normalizeV3TokenTransaction(tx *tokenpb.TokenTransaction) {
 	if tx == nil || tx.GetVersion() < 3 {
 		return
+	}
+	if ts := tx.ClientCreatedTimestamp; ts != nil {
+		tx.ClientCreatedTimestamp = timestamppb.New(utils.ToMicrosecondPrecision(ts.AsTime()))
 	}
 	sort.Slice(tx.SparkOperatorIdentityPublicKeys, func(i, j int) bool {
 		return bytes.Compare(tx.SparkOperatorIdentityPublicKeys[i], tx.SparkOperatorIdentityPublicKeys[j]) < 0
@@ -90,6 +100,29 @@ func ensureV3DeterministicOrdering(tx *tokenpb.TokenTransaction) {
 	if len(tx.InvoiceAttachments) > 1 {
 		sort.Slice(tx.InvoiceAttachments, func(i, j int) bool {
 			return tx.InvoiceAttachments[i].GetSparkInvoice() < tx.InvoiceAttachments[j].GetSparkInvoice()
+		})
+	}
+}
+
+func normalizeV3PartialTokenTransaction(partialTx *tokenpb.PartialTokenTransaction) {
+	if partialTx == nil || partialTx.GetVersion() < 3 {
+		return
+	}
+	metadata := partialTx.TokenTransactionMetadata
+	if metadata == nil {
+		return
+	}
+	if ts := metadata.ClientCreatedTimestamp; ts != nil {
+		metadata.ClientCreatedTimestamp = timestamppb.New(utils.ToMicrosecondPrecision(ts.AsTime()))
+	}
+
+	sort.Slice(metadata.SparkOperatorIdentityPublicKeys, func(i, j int) bool {
+		return bytes.Compare(metadata.SparkOperatorIdentityPublicKeys[i], metadata.SparkOperatorIdentityPublicKeys[j]) < 0
+	})
+
+	if len(metadata.InvoiceAttachments) > 1 {
+		sort.Slice(metadata.InvoiceAttachments, func(i, j int) bool {
+			return metadata.InvoiceAttachments[i].GetSparkInvoice() < metadata.InvoiceAttachments[j].GetSparkInvoice()
 		})
 	}
 }
@@ -113,9 +146,11 @@ type tokenTransactionParams struct {
 	FinalIssueTokenTransactionHash []byte   // Only used for transfers, nil for mints
 	NumOutputs                     int      // Number of outputs to create (defaults to 2 for backward compatibility)
 	OutputAmounts                  []uint64 // Exact amounts for each output (must match NumOutputs length)
+	SameOwner                      bool     // Each output has the same owner
 	NumOutputsToSpend              int      // Number of outputs to spend (defaults to 2 for backward compatibility)
 	MintToSelf                     bool
 	InvoiceAttachments             []*tokenpb.InvoiceAttachment
+	ClientCreatedTimestamp         time.Time
 }
 
 type sparkTokenCreationTestParams struct {
@@ -189,10 +224,14 @@ var signatureTypeTestCases = []signatureTypeTestCase{
 }
 
 var broadcastTokenTestsUseV3 bool
+var broadcastTokenTestsUsePhase2 bool
 
 func currentBroadcastRunLabel() string {
 	if broadcastTokenTestsUseV3 {
-		return "TTV3"
+		if broadcastTokenTestsUsePhase2 {
+			return "TTV3_Phase2"
+		}
+		return "TTV3_Phase1"
 	}
 	return "TTV2"
 }
@@ -205,7 +244,6 @@ func RunWithBroadcastLabel(t *testing.T, fn func(t *testing.T)) {
 
 func runSignatureTypeTestCases(t *testing.T, fn func(t *testing.T, tc signatureTypeTestCase)) {
 	for _, tc := range signatureTypeTestCases {
-		tc := tc
 		t.Run(tc.name+" ["+currentBroadcastRunLabel()+"]", func(t *testing.T) {
 			fn(t, tc)
 		})
@@ -247,6 +285,7 @@ func broadcastTokenTransactionWithValidityDuration(
 		return nil, fmt.Errorf("failed to clone token transaction")
 	}
 	if broadcastTokenTestsUseV3 {
+		normalizeV3TokenTransaction(clonedTx)
 		return wallet.BroadcastTokenTransactionV3(ctx, config, clonedTx, ownerPrivateKeys, validityDuration)
 	}
 	return wallet.BroadcastTokenTransferWithValidityDuration(ctx, config, clonedTx, validityDuration, ownerPrivateKeys)
@@ -262,6 +301,7 @@ func startTokenTransactionOrBroadcast(
 ) (*tokenpb.StartTransactionResponse, []byte, error) {
 	t.Helper()
 	if broadcastTokenTestsUseV3 {
+		normalizeV3TokenTransaction(tokenTransaction)
 		finalTx, err := wallet.BroadcastTokenTransactionV3(ctx, config, tokenTransaction, ownerPrivateKeys, validityDuration)
 		if err != nil {
 			return nil, nil, err
@@ -296,12 +336,21 @@ func createTestTokenMintTransactionTokenPbWithParams(t *testing.T, config *walle
 	userOutputPrivKeys := make([]keys.Private, numOutputs)
 	tokenOutputs := make([]*tokenpb.TokenOutput, numOutputs)
 
+	var ownerPrivKey *keys.Private
+	if params.SameOwner {
+		privKey := keys.GeneratePrivateKey()
+		ownerPrivKey = &privKey
+	}
+
 	for i := range numOutputs {
 		var pubKey keys.Public
 
 		if params.MintToSelf {
 			pubKey = params.TokenIdentityPubKey
 			userOutputPrivKeys[i] = config.IdentityPrivateKey
+		} else if ownerPrivKey != nil {
+			userOutputPrivKeys[i] = *ownerPrivKey
+			pubKey = ownerPrivKey.Public()
 		} else {
 			privKey := keys.GeneratePrivateKey()
 			userOutputPrivKeys[i] = privKey
@@ -331,7 +380,7 @@ func createTestTokenMintTransactionTokenPbWithParams(t *testing.T, config *walle
 		TokenOutputs:                    tokenOutputs,
 		Network:                         config.ProtoNetwork(),
 		SparkOperatorIdentityPublicKeys: getSigningOperatorPublicKeyBytes(config),
-		ClientCreatedTimestamp:          timestamppb.New(now),
+		ClientCreatedTimestamp:          timestamppb.New(utils.ToMicrosecondPrecision(now)),
 	}
 
 	if version >= 3 {
@@ -344,8 +393,7 @@ func createTestTokenMintTransactionTokenPbWithParams(t *testing.T, config *walle
 			o.WithdrawBondSats = &bond
 			o.WithdrawRelativeBlockLocktime = &lock
 		}
-		// V3 requires deterministic ordering for hashing
-		ensureV3DeterministicOrdering(mintTokenTransaction)
+		normalizeV3TokenTransaction(mintTokenTransaction)
 
 		withdrawalBondSats := uint64(withdrawalBondSatsInConfig)
 		withdrawRelativeBlockLocktime := uint64(withdrawalRelativeBlockLocktimeInConfig)
@@ -400,6 +448,12 @@ func createTestTokenTransferTransactionTokenPbWithParams(t *testing.T, config *w
 		}
 	}
 
+	ts := time.Now().UTC()
+	if !params.ClientCreatedTimestamp.IsZero() {
+		ts = params.ClientCreatedTimestamp
+	}
+	clientCreatedTimestamp := timestamppb.New(utils.ToMicrosecondPrecision(ts))
+
 	transferTokenTransaction := &tokenpb.TokenTransaction{
 		Version: uint32(version),
 		TokenInputs: &tokenpb.TokenTransaction_TransferInput{
@@ -416,7 +470,7 @@ func createTestTokenTransferTransactionTokenPbWithParams(t *testing.T, config *w
 		},
 		Network:                         config.ProtoNetwork(),
 		SparkOperatorIdentityPublicKeys: getSigningOperatorPublicKeyBytes(config),
-		ClientCreatedTimestamp:          timestamppb.New(time.Now()),
+		ClientCreatedTimestamp:          clientCreatedTimestamp,
 		InvoiceAttachments:              params.InvoiceAttachments,
 	}
 
@@ -428,7 +482,7 @@ func createTestTokenTransferTransactionTokenPbWithParams(t *testing.T, config *w
 			o.WithdrawBondSats = &bond
 			o.WithdrawRelativeBlockLocktime = &lock
 		}
-		ensureV3DeterministicOrdering(transferTokenTransaction)
+		normalizeV3TokenTransaction(transferTokenTransaction)
 	}
 
 	transferTokenTransaction.TokenOutputs[0].TokenIdentifier = params.TokenIdentifier
@@ -505,8 +559,8 @@ func createTestTokenMintTransactionWithMultipleTokenOutputsTokenPb(t *testing.T,
 	tokenIdentityPubKey keys.Public, numOutputs int,
 ) (*tokenpb.TokenTransaction, []keys.Private, error) {
 	outputAmounts := make([]uint64, numOutputs)
-	for i := 0; i < numOutputs; i++ {
-		outputAmounts[i] = uint64(testIssueMultiplePerOutputAmount)
+	for i := range outputAmounts {
+		outputAmounts[i] = testIssueMultiplePerOutputAmount
 	}
 
 	tokenIdentifier := queryTokenIdentifierOrFail(t, config, tokenIdentityPubKey)
@@ -569,7 +623,7 @@ func createTestTokenCreateTransactionWithParams(config *wallet.TestWalletConfig,
 	if version >= TokenTransactionVersion3 {
 		// V3 requires client-provided validity duration and sorted operator keys for deterministic hashing
 		createTokenTransaction.ValidityDurationSeconds = proto.Uint64(uint64(wallet.DefaultValidityDuration.Seconds()))
-		ensureV3DeterministicOrdering(createTokenTransaction)
+		normalizeV3TokenTransaction(createTokenTransaction)
 	}
 	return createTokenTransaction, nil
 }
@@ -577,13 +631,14 @@ func createTestTokenCreateTransactionWithParams(config *wallet.TestWalletConfig,
 // verifyTokenMetadata verifies individual token metadata entries
 func verifyTokenMetadata(t *testing.T, metadata *tokenpb.TokenMetadata, expectedParams sparkTokenCreationTestParams, queryMethod string) {
 	issuerPublicKey := expectedParams.issuerPrivateKey.Public().Serialize()
-	require.Equal(t, expectedParams.name, metadata.TokenName, "%s: token name should match, expected: %s, found: %s", queryMethod, expectedParams.name, metadata.TokenName)
-	require.Equal(t, expectedParams.ticker, metadata.TokenTicker, "%s: token ticker should match, expected: %s, found: %s", queryMethod, expectedParams.ticker, metadata.TokenTicker)
-	require.Equal(t, uint32(testTokenDecimals), metadata.Decimals, "%s: token decimals should match, expected: %d, found: %d", queryMethod, uint32(testTokenDecimals), metadata.Decimals)
-	require.Equal(t, testTokenIsFreezable, metadata.IsFreezable, "%s: token freezable flag should match, expected: %t, found: %t", queryMethod, testTokenIsFreezable, metadata.IsFreezable)
-	require.True(t, bytes.Equal(issuerPublicKey, metadata.IssuerPublicKey), "%s: issuer public key should match, expected: %x, found: %x", queryMethod, issuerPublicKey, metadata.IssuerPublicKey)
-	require.True(t, bytes.Equal(getTokenMaxSupplyBytes(expectedParams.maxSupply), metadata.MaxSupply), "%s: max supply should match, expected: %x, found: %x", queryMethod, getTokenMaxSupplyBytes(expectedParams.maxSupply), metadata.MaxSupply)
-	require.True(t, bytes.Equal(expectedParams.extraMetadata, metadata.ExtraMetadata), "%s: extra metadata should match, expected: %x, found: %x", queryMethod, expectedParams.extraMetadata, metadata.ExtraMetadata)
+	require.Equalf(t, expectedParams.name, metadata.TokenName, "%s: token name should match, expected: %s, found: %s", queryMethod, expectedParams.name, metadata.TokenName)
+	require.Equalf(t, expectedParams.ticker, metadata.TokenTicker, "%s: token ticker should match, expected: %s, found: %s", queryMethod, expectedParams.ticker, metadata.TokenTicker)
+	require.Equalf(t, uint32(testTokenDecimals), metadata.Decimals, "%s: token decimals should match, expected: %d, found: %d", queryMethod, testTokenDecimals, metadata.Decimals)
+	require.Equalf(t, testTokenIsFreezable, metadata.IsFreezable, "%s: token freezable flag should match, expected: %t, found: %t", queryMethod, testTokenIsFreezable, metadata.IsFreezable)
+	require.Equalf(t, issuerPublicKey, metadata.IssuerPublicKey, "%s: issuer public key should match, expected: %x, found: %x", queryMethod, issuerPublicKey, metadata.IssuerPublicKey)
+	maxSupplyBytes := getTokenMaxSupplyBytes(expectedParams.maxSupply)
+	require.Equalf(t, maxSupplyBytes, metadata.MaxSupply, "%s: max supply should match, expected: %x, found: %x", queryMethod, maxSupplyBytes, metadata.MaxSupply)
+	require.Equalf(t, expectedParams.extraMetadata, metadata.ExtraMetadata, "%s: extra metadata should match, expected: %x, found: %x", queryMethod, expectedParams.extraMetadata, metadata.ExtraMetadata)
 }
 
 // createNativeToken creates a native token (no verification)
@@ -631,10 +686,17 @@ func queryAndVerifyTokenOutputs(t *testing.T, coordinatorIdentifiers []string, f
 
 		outputs, err := wallet.QueryTokenOutputs(t.Context(), config, []keys.Public{ownerPrivateKey.Public()}, nil)
 		require.NoError(t, err, "failed to query token outputs from coordinator: %s", coordinatorIdentifier)
-		require.Len(t, outputs.OutputsWithPreviousTransactionData, len(expectedOutputs), "expected %d outputs from coordinator: %s", len(expectedOutputs), coordinatorIdentifier)
+		var availableOutputs []*tokenpb.OutputWithPreviousTransactionData
+		for _, o := range outputs.OutputsWithPreviousTransactionData {
+			if o.Output.GetStatus() == tokenpb.TokenOutputStatus_TOKEN_OUTPUT_STATUS_AVAILABLE {
+				availableOutputs = append(availableOutputs, o)
+			}
+		}
+
+		require.Len(t, availableOutputs, len(expectedOutputs), "expected %d available outputs from coordinator: %s", len(expectedOutputs), coordinatorIdentifier)
 
 		for j, expectedOutput := range expectedOutputs {
-			assert.Equal(t, expectedOutput.Id, outputs.OutputsWithPreviousTransactionData[j].Output.Id, "expected the same output ID for output %d from coordinator: %s", j, coordinatorIdentifier)
+			assert.Equal(t, expectedOutput.Id, availableOutputs[j].Output.Id, "expected the same output ID for output %d from coordinator: %s", j, coordinatorIdentifier)
 		}
 	}
 }
@@ -755,6 +817,7 @@ func setupNativeTokenWithMint(
 	ticker string,
 	maxSupply uint64,
 	mintOutputAmounts []uint64,
+	sameOwner bool,
 ) (*tokenSetupResult, error) {
 	issuerPrivKey := keys.GeneratePrivateKey()
 	config := wallet.NewTestWalletConfigWithIdentityKey(t, issuerPrivKey)
@@ -775,12 +838,13 @@ func setupNativeTokenWithMint(
 		TokenIdentifier:     tokenIdentifier,
 		NumOutputs:          len(mintOutputAmounts),
 		OutputAmounts:       mintOutputAmounts,
+		SameOwner:           sameOwner,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create mint transaction: %w", err)
 	}
 
-	mintTxForBroadcast := proto.Clone(mintTxBeforeBroadcast).(*tokenpb.TokenTransaction)
+	mintTxForBroadcast := proto.CloneOf(mintTxBeforeBroadcast)
 	finalMintTx, err := broadcastTokenTransaction(
 		t,
 		t.Context(),
@@ -845,4 +909,162 @@ func queryTokenIdentifierOrFail(t *testing.T, config *wallet.TestWalletConfig, i
 	tokenIdentifier, err := queryTokenIdentifierFromCoordinator(t, config, issuerPubKey)
 	require.NoError(t, err, "failed to query token identifier")
 	return tokenIdentifier
+}
+
+// ComputeUnilateralExitOwnerSignature computes the owner's signature over SE withdrawal signatures.
+func ComputeUnilateralExitOwnerSignature(ttxos []*tokenpb.OutputWithPreviousTransactionData, signingKey keys.Private) (*schnorr.Signature, error) {
+	seSignatures := make([][]byte, 0, len(ttxos)*schnorr.SignatureSize)
+	for _, t := range ttxos {
+		seSignatures = append(seSignatures, t.Output.SeWithdrawalSignature)
+	}
+
+	hash := chainhash.TaggedHash([]byte("BTKN_BATCH_EXIT"), seSignatures...)
+
+	return schnorr.Sign(signingKey.ToBTCEC(), hash.CloneBytes())
+}
+
+// ConstructUnilateralWithdrawal constructs a withdrawal transaction from token outputs.
+func ConstructUnilateralWithdrawal(
+	ttxos []*tokenpb.OutputWithPreviousTransactionData,
+	sePublicKeyBytes []byte,
+	ownerSignature []byte,
+) (*wire.MsgTx, error) {
+	opReturnScript, err := constructUnilateralExitOpReturnScript(ttxos, ownerSignature, sePublicKeyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	tx := wire.NewMsgTx(3)
+
+	// Build all P2TR outputs
+	for _, t := range ttxos {
+		ttxo := t.Output
+
+		revocationPublicKey, err := keys.ParsePublicKey(ttxo.RevocationCommitment)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse revocation public key: %w", err)
+		}
+		ownerPublicKey, err := keys.ParsePublicKey(ttxo.OwnerPublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse owner's public key: %w", err)
+		}
+
+		scriptPubKey, _, _, _, err := constructRevocationCsvTaprootOutput(
+			revocationPublicKey,
+			ownerPublicKey,
+			*ttxo.WithdrawRelativeBlockLocktime,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// token + bond output
+		tx.AddTxOut(&wire.TxOut{
+			Value:    int64(*ttxo.WithdrawBondSats),
+			PkScript: scriptPubKey,
+		})
+	}
+
+	tx.AddTxOut(&wire.TxOut{
+		Value:    0,
+		PkScript: opReturnScript,
+	})
+
+	return tx, nil
+}
+
+func constructRevocationCsvTaprootOutput(
+	revocationPublicKey keys.Public,
+	ownerPublicKey keys.Public,
+	csvBlocks uint64,
+) (scriptPubKey []byte, timelockScript []byte, leafHash []byte, tweakedXOnly []byte, err error) {
+	ownerXOnly := ownerPublicKey.SerializeXOnly()
+
+	sb := txscript.NewScriptBuilder()
+	sb.AddInt64(int64(csvBlocks))
+	sb.AddOp(txscript.OP_CHECKSEQUENCEVERIFY)
+	sb.AddOp(txscript.OP_DROP)
+	sb.AddData(ownerXOnly)
+	sb.AddOp(txscript.OP_CHECKSIG)
+
+	timelockScript, err = sb.Script()
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("build timelock tapscript: %w", err)
+	}
+
+	tapLeaf := txscript.NewBaseTapLeaf(timelockScript)
+	leafHashArr := tapLeaf.TapHash()
+	leafHash = leafHashArr[:]
+
+	internalKey := revocationPublicKey
+
+	tweakedKey := txscript.ComputeTaprootOutputKey(internalKey.ToBTCEC(), leafHash)
+	tweakedXOnly = tweakedKey.SerializeCompressed()[1:]
+
+	p2tr, err := txscript.NewScriptBuilder().
+		AddOp(txscript.OP_1).
+		AddData(tweakedXOnly).
+		Script()
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("build p2tr scriptPubKey: %w", err)
+	}
+
+	return p2tr, timelockScript, leafHash, tweakedXOnly, nil
+}
+
+func constructUnilateralExitOpReturnScript(
+	ttxos []*tokenpb.OutputWithPreviousTransactionData,
+	ownerSignature []byte,
+	sePublicKey []byte,
+) ([]byte, error) {
+	if len(ownerSignature) != 64 {
+		return nil, fmt.Errorf("ownerSignature must be 64 bytes, got %d", len(ownerSignature))
+	}
+
+	descriptor := tokenwatchtower.BtknWithdrawalDescriptor()
+
+	prefix := []byte(descriptor.Prefix) // "BTKN"
+	kind := descriptor.Kind             // L2 exit
+
+	var exitRecords bytes.Buffer
+
+	for i, t := range ttxos {
+		if len(t.PreviousTransactionHash) != 32 {
+			return nil, fmt.Errorf("PreviousTransactionHash must be 32 bytes, got %d", len(t.PreviousTransactionHash))
+		}
+
+		outputIndex := uint16(i)
+
+		var bitcoinVoutBytes [2]byte
+		binary.BigEndian.PutUint16(bitcoinVoutBytes[:], outputIndex)
+		_, _ = exitRecords.Write(bitcoinVoutBytes[:])
+
+		_, _ = exitRecords.Write(t.PreviousTransactionHash)
+
+		var sparkVoutBytes [4]byte
+		binary.BigEndian.PutUint32(sparkVoutBytes[:], t.PreviousTransactionVout)
+		_, _ = exitRecords.Write(sparkVoutBytes[:])
+	}
+
+	if len(ttxos) > 255 {
+		return nil, fmt.Errorf("ttxos length must fit in 1 byte, got %d", len(ttxos))
+	}
+
+	pushData := make([]byte, 0, 104+exitRecords.Len())
+	pushData = append(pushData, prefix...)
+	pushData = append(pushData, kind[:]...)
+	pushData = append(pushData, sePublicKey...)
+	pushData = append(pushData, ownerSignature...)
+	pushData = append(pushData, byte(len(ttxos)))
+	pushData = append(pushData, exitRecords.Bytes()...)
+
+	script, err := txscript.NewScriptBuilder().
+		AddOp(txscript.OP_RETURN).
+		AddData(pushData).
+		Script()
+	if err != nil {
+		return nil, fmt.Errorf("build op_return script: %w", err)
+	}
+
+	return script, nil
 }

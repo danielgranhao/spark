@@ -4,24 +4,31 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	errs "errors"
 	"fmt"
 	"strings"
 
 	"entgo.io/ent/dialect/sql"
-	"github.com/lightsparkdev/spark"
-	"github.com/lightsparkdev/spark/common/btcnetwork"
-	"github.com/lightsparkdev/spark/common/keys"
-	"github.com/lightsparkdev/spark/so/frost"
-	"go.uber.org/zap"
-
+	"entgo.io/ent/dialect/sql/sqlgraph"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/lightsparkdev/spark"
 	"github.com/lightsparkdev/spark/common"
 	bitcointransaction "github.com/lightsparkdev/spark/common/bitcoin_transaction"
+	"github.com/lightsparkdev/spark/common/btcnetwork"
+	"github.com/lightsparkdev/spark/common/keys"
 	"github.com/lightsparkdev/spark/common/logging"
+	pbgossip "github.com/lightsparkdev/spark/proto/gossip"
 	pb "github.com/lightsparkdev/spark/proto/spark"
 	pbinternal "github.com/lightsparkdev/spark/proto/spark_internal"
 	"github.com/lightsparkdev/spark/so"
+	"github.com/lightsparkdev/spark/so/authn"
 	"github.com/lightsparkdev/spark/so/authz"
 	"github.com/lightsparkdev/spark/so/ent"
 	"github.com/lightsparkdev/spark/so/ent/blockheight"
@@ -32,14 +39,24 @@ import (
 	entutxo "github.com/lightsparkdev/spark/so/ent/utxo"
 	"github.com/lightsparkdev/spark/so/ent/utxoswap"
 	"github.com/lightsparkdev/spark/so/errors"
+	"github.com/lightsparkdev/spark/so/frost"
 	"github.com/lightsparkdev/spark/so/helper"
 	"github.com/lightsparkdev/spark/so/knobs"
 	"github.com/lightsparkdev/spark/so/utils"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const DefaultDepositConfirmationThreshold = uint(3)
+const DefaultGetUtxosForAddressesPageSize = 50
+const MaxGetUtxosForAddressesPageSize = 100
+const MaxGetUtxosForAddressesCount = 100
+
+// DefaultMaxUnusedDepositAddresses is the default maximum number of unused non-static deposit
+// addresses a user can have per network. This prevents DoS attacks where users repeatedly
+// generate addresses without depositing, exhausting the available signing keyshares.
+// This value can be overridden via the KnobMaxUnusedDepositAddresses knob.
+const DefaultMaxUnusedDepositAddresses = 64
+
+var ErrInvalidNetwork = errs.New("invalid network")
 
 // The DepositHandler is responsible for handling deposit related requests.
 type DepositHandler struct {
@@ -53,9 +70,30 @@ func NewDepositHandler(config *so.Config) *DepositHandler {
 	}
 }
 
+// validateIdentity parses and validates the identity public key from a request.
+func validateIdentity(ctx context.Context, config *so.Config, identityPublicKey []byte) (keys.Public, error) {
+	reqIDPubKey, err := keys.ParsePublicKey(identityPublicKey)
+	if err != nil {
+		return keys.Public{}, fmt.Errorf("invalid identity public key: %w", err)
+	}
+	if err := authz.EnforceSessionIdentityPublicKeyMatches(ctx, config, reqIDPubKey); err != nil {
+		return keys.Public{}, err
+	}
+	return reqIDPubKey, nil
+}
+
 // GenerateDepositAddress generates a deposit address for the given public key.
 // The address string is generated using provided network field in the request.
 func (o *DepositHandler) GenerateDepositAddress(ctx context.Context, config *so.Config, req *pb.GenerateDepositAddressRequest) (*pb.GenerateDepositAddressResponse, error) {
+	return o.generateDepositAddress(ctx, config, req, false)
+}
+
+// GenerateDepositAddressInternal generates a deposit address without rate limiting for the SSP.
+func (o *DepositHandler) GenerateDepositAddressInternal(ctx context.Context, config *so.Config, req *pb.GenerateDepositAddressRequest) (*pb.GenerateDepositAddressResponse, error) {
+	return o.generateDepositAddress(ctx, config, req, true)
+}
+
+func (o *DepositHandler) generateDepositAddress(ctx context.Context, config *so.Config, req *pb.GenerateDepositAddressRequest, skipRateLimit bool) (*pb.GenerateDepositAddressResponse, error) {
 	ctx, span := tracer.Start(ctx, "DepositHandler.GenerateDepositAddress")
 	defer span.End()
 
@@ -95,6 +133,38 @@ func (o *DepositHandler) GenerateDepositAddress(ctx context.Context, config *so.
 	}
 
 	logger.Sugar().Infof("Generating deposit address for public key %s (signing %s)", reqIDPubKey, reqSigningPubKey)
+
+	db, err := ent.GetDbFromContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get db: %w", err)
+	}
+
+	// Check if user already has too many unused non-static deposit addresses for this network.
+	// An "unused" address is one that has no tree created yet (no deposit confirmed).
+	// This prevents DoS attacks where users repeatedly generate addresses without depositing,
+	// exhausting the available signing keyshares.
+	if !skipRateLimit {
+		// Approximate count; will not include concurrent requests
+		// Considered low risk so not making use of locking
+		unusedCount, err := db.DepositAddress.Query().
+			Where(
+				depositaddress.OwnerIdentityPubkey(reqIDPubKey),
+				depositaddress.IsStatic(false),
+				depositaddress.NetworkEQ(network),
+				depositaddress.Not(depositaddress.HasTree()),
+			).
+			Count(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to count existing deposit addresses: %w", err)
+		}
+		maxUnusedAddresses := int(knobs.GetKnobsService(ctx).GetValue(knobs.KnobMaxUnusedDepositAddresses, DefaultMaxUnusedDepositAddresses))
+		if unusedCount >= maxUnusedAddresses {
+			return nil, status.Errorf(codes.ResourceExhausted,
+				"user already has %d unused deposit addresses for this network (maximum %d); please use an existing address or wait for a deposit to be confirmed",
+				unusedCount, maxUnusedAddresses)
+		}
+	}
+
 	keyshares, err := ent.GetUnusedSigningKeyshares(ctx, config, 1)
 	if err != nil {
 		return nil, err
@@ -128,9 +198,10 @@ func (o *DepositHandler) GenerateDepositAddress(ctx context.Context, config *so.
 		return nil, err
 	}
 
-	db, err := ent.GetDbFromContext(ctx)
+	// Get a fresh db handle since GetUnusedSigningKeyshares commits the transaction
+	db, err = ent.GetDbFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get or create current tx: %w", err)
+		return nil, fmt.Errorf("failed to get db: %w", err)
 	}
 
 	depositAddressMutator := db.DepositAddress.Create().
@@ -150,6 +221,9 @@ func (o *DepositHandler) GenerateDepositAddress(ctx context.Context, config *so.
 	}
 
 	if _, err := depositAddressMutator.Save(ctx); err != nil {
+		if sqlgraph.IsUniqueConstraintError(err) {
+			return nil, errors.AlreadyExistsDuplicateOperation(fmt.Errorf("deposit address already exists: %w", err))
+		}
 		return nil, fmt.Errorf("failed to save deposit address: %w", err)
 	}
 
@@ -177,9 +251,7 @@ func (o *DepositHandler) GenerateDepositAddress(ctx context.Context, config *so.
 		return nil, err
 	}
 
-	verifyingKey := keyshare.PublicKey.Add(reqSigningPubKey)
-
-	msg := common.ProofOfPossessionMessageHashForDepositAddress(reqIDPubKey, keyshare.PublicKey, []byte(depositAddress))
+	msg := common.ProofOfPossessionMessageHashForDepositAddress(reqIDPubKey, keyshare.PublicKey, []byte(depositAddress), req.GetHashVariant())
 	proofOfPossessionSignature, err := helper.GenerateProofOfPossessionSignatures(ctx, config, [][]byte{msg}, []*ent.SigningKeyshare{keyshare})
 	if err != nil {
 		return nil, err
@@ -187,7 +259,7 @@ func (o *DepositHandler) GenerateDepositAddress(ctx context.Context, config *so.
 	return &pb.GenerateDepositAddressResponse{
 		DepositAddress: &pb.Address{
 			Address:      depositAddress,
-			VerifyingKey: verifyingKey.Serialize(),
+			VerifyingKey: combinedPublicKey.Serialize(),
 			DepositAddressProof: &pb.DepositAddressProof{
 				AddressSignatures:          response,
 				ProofOfPossessionSignature: proofOfPossessionSignature[0],
@@ -245,7 +317,6 @@ func (o *DepositHandler) GenerateStaticDepositAddress(ctx context.Context, confi
 		return nil, fmt.Errorf("failed to get or create current tx: %w", err)
 	}
 
-	// TODO(LIG-8000): remove when we have a way to support multiple static deposit addresses per (identity, network).
 	depositAddress, err := db.DepositAddress.Query().
 		Where(
 			depositaddress.OwnerIdentityPubkey(idPubKey),
@@ -266,7 +337,7 @@ func (o *DepositHandler) GenerateStaticDepositAddress(ctx context.Context, confi
 			return nil, fmt.Errorf("failed to get keyshare for static deposit address id %s: %w", depositAddress.ID, err)
 		}
 
-		addressSignatures, proofOfPossessionSignature, err := generateStaticDepositAddressProofs(ctx, config, keyshare, depositAddress)
+		addressSignatures, proofOfPossessionSignature, err := generateStaticDepositAddressProofs(ctx, config, keyshare, depositAddress, req.GetHashVariant())
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate static deposit address proofs for static deposit address id %s: %w", depositAddress.ID, err)
 		}
@@ -296,7 +367,25 @@ func (o *DepositHandler) GenerateStaticDepositAddress(ctx context.Context, confi
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse signing public key: %w", err)
 	}
-	logger.Sugar().Infof("Generating static deposit address for public key %s (signing %x)", idPubKey, req.SigningPublicKey)
+
+	depositAddressInfo, err := createStaticDepositAddress(ctx, config, network, idPubKey, reqSigningPubKey, req.GetHashVariant())
+	if err != nil {
+		return nil, err
+	}
+	return &pb.GenerateStaticDepositAddressResponse{
+		DepositAddress: depositAddressInfo,
+	}, nil
+}
+
+// Create a static deposit address in the database generating all the necessary proofs and return them as a protobuf message ready to return to the user
+func createStaticDepositAddress(ctx context.Context, config *so.Config, network btcnetwork.Network, identityPublicKey keys.Public, signingPublicKey keys.Public, hashVariant pb.HashVariant) (*pb.Address, error) {
+	logger := logging.GetLoggerFromContext(ctx)
+
+	if identityPublicKey.IsZero() || signingPublicKey.IsZero() {
+		return nil, fmt.Errorf("both identity key and signing key must be provided")
+	}
+
+	logger.Sugar().Infof("Generating static deposit address for public key %s (signing %x)", identityPublicKey, signingPublicKey)
 
 	// Note that this method will COMMIT or ROLLBACK the DB transaction.
 	keyshares, err := ent.GetUnusedSigningKeyshares(ctx, config, 1)
@@ -306,8 +395,9 @@ func (o *DepositHandler) GenerateStaticDepositAddress(ctx context.Context, confi
 	if len(keyshares) == 0 {
 		return nil, fmt.Errorf("no keyshares available")
 	}
-
 	keyshare := keyshares[0]
+
+	verifyingKey := keyshare.PublicKey.Add(signingPublicKey)
 
 	selection := helper.OperatorSelection{Option: helper.OperatorSelectionOptionExcludeSelf}
 	_, err = helper.ExecuteTaskWithAllOperators(ctx, config, &selection, func(ctx context.Context, operator *so.SigningOperator) (any, error) {
@@ -322,24 +412,24 @@ func (o *DepositHandler) GenerateStaticDepositAddress(ctx context.Context, confi
 		return nil, err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse keyshare public key: %w", err)
+		return nil, fmt.Errorf("failed to mark keyshares as used: %w", err)
 	}
 
-	combinedPublicKey := keyshare.PublicKey.Add(reqSigningPubKey)
+	combinedPublicKey := keyshare.PublicKey.Add(signingPublicKey)
 	depositAddressString, err := common.P2TRAddressFromPublicKey(combinedPublicKey, network)
 	if err != nil {
 		return nil, err
 	}
 
-	db, err = ent.GetDbFromContext(ctx)
+	db, err := ent.GetDbFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get or create current tx: %w", err)
 	}
 
 	depositAddressMutator := db.DepositAddress.Create().
 		SetSigningKeyshareID(keyshare.ID).
-		SetOwnerIdentityPubkey(idPubKey).
-		SetOwnerSigningPubkey(reqSigningPubKey).
+		SetOwnerIdentityPubkey(identityPublicKey).
+		SetOwnerSigningPubkey(signingPublicKey).
 		SetNetwork(network).
 		SetAddress(depositAddressString).
 		SetIsDefault(true).
@@ -347,11 +437,37 @@ func (o *DepositHandler) GenerateStaticDepositAddress(ctx context.Context, confi
 
 	depositAddressRecord, err := depositAddressMutator.Save(ctx)
 	if err != nil {
+		if sqlgraph.IsUniqueConstraintError(err) {
+			return nil, errors.AlreadyExistsDuplicateOperation(fmt.Errorf("deposit address already exists: %w", err))
+		}
 		return nil, fmt.Errorf("failed to save deposit address: %w", err)
 	}
 
-	isStatic := true
+	// Generate proof of possession signature for the coordinator's keyshare first.
+	// If this fails, the address is not persisted and the transaction is rolled back.
+	msg := common.ProofOfPossessionMessageHashForDepositAddress(identityPublicKey, keyshare.PublicKey, []byte(depositAddressString), hashVariant)
+	proofOfPossessionSignatures, err := helper.GenerateProofOfPossessionSignatures(ctx, config, [][]byte{msg}, []*ent.SigningKeyshare{keyshare})
+	if err != nil {
+		return nil, err
+	}
+	if len(proofOfPossessionSignatures) == 0 {
+		return nil, fmt.Errorf("unable to generate proof of possession signature for a deposit address: 0 signatures")
+	}
+	proofOfPossessionSignature := proofOfPossessionSignatures[0]
 
+	internalHandler := NewInternalDepositHandler(config)
+	selfProofs, err := internalHandler.GenerateStaticDepositAddressProofs(ctx, &pbinternal.GenerateStaticDepositAddressProofsRequest{
+		KeyshareId:             keyshare.ID.String(),
+		Address:                depositAddressString,
+		OwnerIdentityPublicKey: identityPublicKey.Serialize(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Mark the keyshare as used on all operators, create the deposit address
+	// record on other operators and return a proof of possession signature.
+	isStatic := true
 	addressSignatures, err := helper.ExecuteTaskWithAllOperators(ctx, config, &selection, func(ctx context.Context, operator *so.SigningOperator) ([]byte, error) {
 		conn, err := operator.NewOperatorGRPCConnection()
 		if err != nil {
@@ -363,31 +479,14 @@ func (o *DepositHandler) GenerateStaticDepositAddress(ctx context.Context, confi
 		response, err := client.MarkKeyshareForDepositAddress(ctx, &pbinternal.MarkKeyshareForDepositAddressRequest{
 			KeyshareId:             keyshare.ID.String(),
 			Address:                depositAddressString,
-			OwnerIdentityPublicKey: idPubKey.Serialize(),
-			OwnerSigningPublicKey:  reqSigningPubKey.Serialize(),
+			OwnerIdentityPublicKey: identityPublicKey.Serialize(),
+			OwnerSigningPublicKey:  signingPublicKey.Serialize(),
 			IsStatic:               &isStatic,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to mark keyshare for deposit address: %w", err)
 		}
 		return response.AddressSignature, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	verifyingKey := keyshare.PublicKey.Add(reqSigningPubKey)
-	msg := common.ProofOfPossessionMessageHashForDepositAddress(idPubKey, keyshare.PublicKey, []byte(depositAddressString))
-	proofOfPossessionSignatures, err := helper.GenerateProofOfPossessionSignatures(ctx, config, [][]byte{msg}, []*ent.SigningKeyshare{keyshare})
-	if err != nil {
-		return nil, err
-	}
-
-	internalHandler := NewInternalDepositHandler(config)
-	selfProofs, err := internalHandler.GenerateStaticDepositAddressProofs(ctx, &pbinternal.GenerateStaticDepositAddressProofsRequest{
-		KeyshareId:             keyshare.ID.String(),
-		Address:                depositAddressString,
-		OwnerIdentityPublicKey: req.IdentityPublicKey,
 	})
 	if err != nil {
 		return nil, err
@@ -399,38 +498,47 @@ func (o *DepositHandler) GenerateStaticDepositAddress(ctx context.Context, confi
 	if err != nil {
 		return nil, fmt.Errorf("failed to get or create current tx for request: %w", err)
 	}
-	_, err = db.DepositAddress.Update().
+	update := db.DepositAddress.Update().
 		Where(depositaddress.ID(depositAddressRecord.ID)).
-		SetAddressSignatures(addressSignatures).
-		SetPossessionSignature(proofOfPossessionSignatures[0]).
-		Save(ctx)
+		SetAddressSignatures(addressSignatures)
+
+	if hashVariant == pb.HashVariant_HASH_VARIANT_V2 {
+		update = update.SetPossessionSignatureV2(proofOfPossessionSignatures[0])
+	} else {
+		update = update.SetPossessionSignature(proofOfPossessionSignatures[0])
+	}
+
+	_, err = update.Save(ctx)
 	if err != nil {
 		logger.With(zap.Error(err)).
 			Sugar().
 			Errorf(
 				"Failed to cache proofs for static deposit address %s (%s)",
 				depositAddressRecord.ID,
-				depositAddress,
+				depositAddressString,
 			)
 	}
-
-	return &pb.GenerateStaticDepositAddressResponse{
-		DepositAddress: &pb.Address{
-			Address:      depositAddressString,
-			VerifyingKey: verifyingKey.Serialize(),
-			DepositAddressProof: &pb.DepositAddressProof{
-				AddressSignatures:          addressSignatures,
-				ProofOfPossessionSignature: proofOfPossessionSignatures[0],
-			},
-			IsStatic: true,
+	return &pb.Address{
+		Address:      depositAddressString,
+		VerifyingKey: verifyingKey.Serialize(),
+		DepositAddressProof: &pb.DepositAddressProof{
+			AddressSignatures:          addressSignatures,
+			ProofOfPossessionSignature: proofOfPossessionSignature,
 		},
+		IsStatic: true,
 	}, nil
 }
 
-func generateStaticDepositAddressProofs(ctx context.Context, config *so.Config, keyshare *ent.SigningKeyshare, depositAddress *ent.DepositAddress) (map[string][]byte, []byte, error) {
+func generateStaticDepositAddressProofs(ctx context.Context, config *so.Config, keyshare *ent.SigningKeyshare, depositAddress *ent.DepositAddress, hashVariant pb.HashVariant) (map[string][]byte, []byte, error) {
 	// If the proofs are already cached, return them.
-	if depositAddress.AddressSignatures != nil && depositAddress.PossessionSignature != nil {
-		return depositAddress.AddressSignatures, depositAddress.PossessionSignature, nil
+	var cachedPossessionSignature []byte
+	if hashVariant == pb.HashVariant_HASH_VARIANT_V2 {
+		cachedPossessionSignature = depositAddress.PossessionSignatureV2
+	} else {
+		cachedPossessionSignature = depositAddress.PossessionSignature
+	}
+	if depositAddress.AddressSignatures != nil && cachedPossessionSignature != nil {
+		return depositAddress.AddressSignatures, cachedPossessionSignature, nil
 	}
 
 	logger := logging.GetLoggerFromContext(ctx)
@@ -487,7 +595,7 @@ func generateStaticDepositAddressProofs(ctx context.Context, config *so.Config, 
 	}
 	addressSignatures[config.Identifier] = selfProofs.AddressSignature
 
-	msg := common.ProofOfPossessionMessageHashForDepositAddress(depositAddress.OwnerIdentityPubkey, keyshare.PublicKey, []byte(depositAddress.Address))
+	msg := common.ProofOfPossessionMessageHashForDepositAddress(depositAddress.OwnerIdentityPubkey, keyshare.PublicKey, []byte(depositAddress.Address), hashVariant)
 	proofOfPossessionSignatures, err := helper.GenerateProofOfPossessionSignatures(ctx, config, [][]byte{msg}, []*ent.SigningKeyshare{keyshare})
 	if err != nil {
 		return nil, nil, err
@@ -498,11 +606,15 @@ func generateStaticDepositAddressProofs(ctx context.Context, config *so.Config, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get or create current tx for request: %w", err)
 	}
-	_, err = db.DepositAddress.Update().
+	update := db.DepositAddress.Update().
 		Where(depositaddress.ID(depositAddress.ID)).
-		SetAddressSignatures(addressSignatures).
-		SetPossessionSignature(proofOfPossessionSignatures[0]).
-		Save(ctx)
+		SetAddressSignatures(addressSignatures)
+	if hashVariant == pb.HashVariant_HASH_VARIANT_V2 {
+		update = update.SetPossessionSignatureV2(proofOfPossessionSignatures[0])
+	} else {
+		update = update.SetPossessionSignature(proofOfPossessionSignatures[0])
+	}
+	_, err = update.Save(ctx)
 	if err != nil {
 		logger.With(zap.Error(err)).
 			Sugar().
@@ -513,6 +625,157 @@ func generateStaticDepositAddressProofs(ctx context.Context, config *so.Config, 
 			)
 	}
 	return addressSignatures, proofOfPossessionSignatures[0], nil
+}
+
+// Archives the current default Static Deposit Address and generates a new one
+// for a user. This method is useful when users want to obtain a new static deposit
+// address for privacy or security reasons.
+//
+// The method performs the following steps:
+//  1. Queries for the existing default static deposit address
+//  2. If no default address exists, returns an error
+//  3. Archives the existing default address (sets is_default = false)
+//  4. Sends a gossip message to other SOs commanding them to archive that
+//     specific address using a signed statement (idempotent handler).
+//  5. Generates a new default static deposit address using the same logic
+//     as GenerateStaticDepositAddress (involves sending another gossip via
+//     MarkKeyshareForDepositAddress)
+//  6. Returns both the new and archived addresses in the response
+//
+// Parameters:
+//   - SigningPublicKey: User's 33-byte secp256k1 public key for address generation
+//   - IdentityPublicKey: User's 33-byte identity key for authentication
+//   - Network: Target Bitcoin network (mainnet, testnet, regtest)
+//
+// Returns:
+//   - NewDepositAddress: The newly generated default static deposit address
+//   - ArchivedDepositAddress: The archived (previous default) static deposit address
+func (o *DepositHandler) RotateStaticDepositAddress(ctx context.Context, config *so.Config, req *pb.RotateStaticDepositAddressRequest) (*pb.RotateStaticDepositAddressResponse, error) {
+	ctx, span := tracer.Start(ctx, "DepositHandler.RotateStaticDepositAddress")
+	defer span.End()
+
+	network, err := btcnetwork.FromProtoNetwork(req.Network)
+	if err != nil {
+		return nil, err
+	}
+	if !config.IsNetworkSupported(network) {
+		return nil, fmt.Errorf("network not supported")
+	}
+	// Get the session from context
+	session, err := authn.GetSessionFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Get the identity public key from the session
+	idPubKey := session.IdentityPublicKey() // Returns keys.Public
+
+	logger := logging.GetLoggerFromContext(ctx)
+	db, err := ent.GetDbFromContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get or create current tx: %w", err)
+	}
+
+	// Query for the existing default static deposit address
+	existingDefaultAddress, err := db.DepositAddress.Query().
+		Where(
+			depositaddress.OwnerIdentityPubkey(idPubKey),
+			depositaddress.IsStatic(true),
+			depositaddress.IsDefault(true),
+			depositaddress.NetworkEQ(network),
+		).
+		Only(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, errors.NotFoundMissingEntity(fmt.Errorf("no default static deposit address found for user; generate one first using generate_static_deposit_address"))
+		}
+		return nil, fmt.Errorf("failed to query static deposit address for user id %s: %w", idPubKey.Serialize(), err)
+	}
+
+	// Get keyshare for the existing address to construct the archived address response
+	existingKeyshare, err := existingDefaultAddress.QuerySigningKeyshare().Only(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get keyshare for existing static deposit address id %s: %w", existingDefaultAddress.ID, err)
+	}
+
+	// Generate proofs for the existing address to include in the archived address response
+	existingAddressSignatures, existingProofOfPossession, err := generateStaticDepositAddressProofs(ctx, config, existingKeyshare, existingDefaultAddress, req.GetHashVariant())
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate proofs for existing static deposit address id %s: %w", existingDefaultAddress.ID, err)
+	}
+	if existingAddressSignatures == nil {
+		return nil, fmt.Errorf("existing static deposit address id %s does not have proofs on all operators", existingDefaultAddress.ID)
+	}
+
+	existingVerifyingKey := existingKeyshare.PublicKey.Add(existingDefaultAddress.OwnerSigningPubkey)
+
+	// Archive the existing default address by setting is_default to false
+	_, err = db.DepositAddress.Update().
+		Where(depositaddress.ID(existingDefaultAddress.ID)).
+		SetIsDefault(false).
+		Save(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to archive existing default static deposit address: %w", err)
+	}
+
+	logger.Sugar().Infof("Archived static deposit address %s with ID %s", existingDefaultAddress.Address, existingDefaultAddress.ID)
+
+	// Create statement and sign it with coordinator's identity key to prove authorization
+	messageHash, err := CreateArchiveStaticDepositAddressStatement(idPubKey, network, existingDefaultAddress.Address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create archive statement: %w", err)
+	}
+	signature := ecdsa.Sign(config.IdentityPrivateKey.ToBTCEC(), messageHash)
+
+	// Send gossip message to archive the address on all other SOs
+	selection := helper.OperatorSelection{Option: helper.OperatorSelectionOptionExcludeSelf}
+	participants, err := selection.OperatorIdentifierList(config)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get operator list: %w", err)
+	}
+
+	// Broadcast gossip to other SOs to archive a specific deposit address.
+	// This call is asynchronous ensuring eventual consistency.
+	// The signature prevents rogue SOs from archiving addresses without user authorization.
+	sendGossipHandler := NewSendGossipHandler(config)
+	_, err = sendGossipHandler.CreateAndSendGossipMessage(ctx, &pbgossip.GossipMessage{
+		Message: &pbgossip.GossipMessage_ArchiveStaticDepositAddress{
+			ArchiveStaticDepositAddress: &pbgossip.GossipMessageArchiveStaticDepositAddress{
+				OwnerIdentityPublicKey: idPubKey.Serialize(),
+				Network:                req.Network,
+				Address:                existingDefaultAddress.Address,
+				Signature:              signature.Serialize(),
+				CoordinatorPublicKey:   config.IdentityPublicKey().Serialize(),
+			},
+		},
+	}, participants)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send gossip message to archive static deposit address: %w", err)
+	}
+
+	reqSigningPubKey, err := keys.ParsePublicKey(req.GetSigningPublicKey())
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse signing public key: %w", err)
+	}
+
+	depositAddressInfo, err := createStaticDepositAddress(ctx, config, network, idPubKey, reqSigningPubKey, req.GetHashVariant())
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Sugar().Infof("Successfully rotated static deposit address. New address: %s, Archived address: %s", depositAddressInfo.Address, existingDefaultAddress.Address)
+
+	return &pb.RotateStaticDepositAddressResponse{
+		NewDepositAddress: depositAddressInfo,
+		ArchivedDepositAddress: &pb.Address{
+			Address:      existingDefaultAddress.Address,
+			VerifyingKey: existingVerifyingKey.Serialize(),
+			DepositAddressProof: &pb.DepositAddressProof{
+				AddressSignatures:          existingAddressSignatures,
+				ProofOfPossessionSignature: existingProofOfPossession,
+			},
+			IsStatic: true,
+		},
+	}, nil
 }
 
 // StartDepositTreeCreation verifies the on chain utxo, and then verifies and signs the offchain root and refund transactions.
@@ -578,7 +841,7 @@ func (o *DepositHandler) StartDepositTreeCreation(ctx context.Context, config *s
 		return nil, fmt.Errorf("unexpected signing public key")
 	}
 
-	txConfirmed := depositAddress.ConfirmationHeight != 0
+	txConfirmed := !depositAddress.AvailabilityConfirmedAt.IsZero()
 
 	if txConfirmed && depositAddress.ConfirmationTxid != "" {
 		onChainTxid := onChainTx.TxHash().String()
@@ -630,14 +893,14 @@ func (o *DepositHandler) StartDepositTreeCreation(ctx context.Context, config *s
 
 	signingJobs := []*helper.SigningJob{
 		{
-			JobID:             uuid.New().String(),
+			JobID:             uuid.New(),
 			SigningKeyshareID: signingKeyShare.ID,
 			Message:           cpfpRootTxSigHash,
 			VerifyingKey:      &verifyingKey,
 			UserCommitment:    &userCpfpRootTxNonceCommitment,
 		},
 		{
-			JobID:             uuid.New().String(),
+			JobID:             uuid.New(),
 			SigningKeyshareID: signingKeyShare.ID,
 			Message:           cpfpRefundTxSigHash,
 			VerifyingKey:      &verifyingKey,
@@ -648,6 +911,14 @@ func (o *DepositHandler) StartDepositTreeCreation(ctx context.Context, config *s
 	// New flow
 	directRootTxSigningJob := req.GetDirectRootTxSigningJob()
 	directRefundTxSigningJob := req.GetDirectRefundTxSigningJob()
+
+	if directRootTxSigningJob != nil || directRefundTxSigningJob != nil {
+		networkString := network.String()
+		if knobs.GetKnobsService(ctx).GetValueTarget(knobs.KnobEnforceNoDirectTransactionsFromDepositTx, &networkString, 0) > 0 {
+			return nil, errors.InvalidArgumentInvalidVersion(fmt.Errorf("direct root tx signing job and direct refund tx signing job are deprecated, please upgrade to the latest SDK version"))
+		}
+	}
+
 	directFromCpfpRefundTxSigningJob := req.GetDirectFromCpfpRefundTxSigningJob()
 
 	if directFromCpfpRefundTxSigningJob == nil {
@@ -663,7 +934,7 @@ func (o *DepositHandler) StartDepositTreeCreation(ctx context.Context, config *s
 		if err := o.verifyRefundTransaction(cpfpRootTx, directFromCpfpRefundTx); err != nil {
 			return nil, err
 		}
-		if len(cpfpRootTx.TxOut) <= 0 {
+		if len(cpfpRootTx.TxOut) == 0 {
 			return nil, fmt.Errorf("vout out of bounds, root tx has no outputs")
 		}
 		directFromCpfpRefundTxSigHash, err := common.SigHashFromTx(directFromCpfpRefundTx, 0, cpfpRootTx.TxOut[0])
@@ -678,7 +949,7 @@ func (o *DepositHandler) StartDepositTreeCreation(ctx context.Context, config *s
 		signingJobs = append(
 			signingJobs,
 			&helper.SigningJob{
-				JobID:             uuid.New().String(),
+				JobID:             uuid.New(),
 				SigningKeyshareID: signingKeyShare.ID,
 				Message:           directFromCpfpRefundTxSigHash,
 				VerifyingKey:      &verifyingKey,
@@ -713,8 +984,11 @@ func (o *DepositHandler) StartDepositTreeCreation(ctx context.Context, config *s
 		if err != nil {
 			return nil, err
 		}
-		if len(cpfpRootTx.TxOut) <= 0 {
+		if len(cpfpRootTx.TxOut) == 0 {
 			return nil, fmt.Errorf("vout out of bounds, root tx has no outputs")
+		}
+		if len(directRootTx.TxOut) == 0 {
+			return nil, fmt.Errorf("vout out of bounds, direct root tx has no outputs")
 		}
 		directRefundTxSigHash, err := common.SigHashFromTx(directRefundTx, 0, directRootTx.TxOut[0])
 		if err != nil {
@@ -731,14 +1005,14 @@ func (o *DepositHandler) StartDepositTreeCreation(ctx context.Context, config *s
 		signingJobs = append(
 			signingJobs,
 			&helper.SigningJob{
-				JobID:             uuid.New().String(),
+				JobID:             uuid.New(),
 				SigningKeyshareID: signingKeyShare.ID,
 				Message:           directRootTxSigHash,
 				VerifyingKey:      &verifyingKey,
 				UserCommitment:    &userDirectRootTxNonceCommitment,
 			},
 			&helper.SigningJob{
-				JobID:             uuid.New().String(),
+				JobID:             uuid.New(),
 				SigningKeyshareID: signingKeyShare.ID,
 				Message:           directRefundTxSigHash,
 				VerifyingKey:      &verifyingKey,
@@ -752,7 +1026,32 @@ func (o *DepositHandler) StartDepositTreeCreation(ctx context.Context, config *s
 	networkString := network.String()
 	if knobs.GetKnobsService(ctx).GetValueTarget(knobs.KnobEnableDepositFlowValidation, &networkString, 0) > 0 {
 		combinedPublicKey := signingKeyShare.PublicKey.Add(depositAddress.OwnerSigningPubkey)
-		err = o.validateBitcoinTransactions(req, combinedPublicKey)
+
+		var directRootTxRaw, directRefundTxRaw []byte
+		if req.DirectRootTxSigningJob != nil {
+			directRootTxRaw = req.DirectRootTxSigningJob.RawTx
+		}
+		if req.DirectRefundTxSigningJob != nil {
+			directRefundTxRaw = req.DirectRefundTxSigningJob.RawTx
+		}
+		var directFromCpfpRefundTxRaw []byte
+		if req.DirectFromCpfpRefundTxSigningJob != nil {
+			directFromCpfpRefundTxRaw = req.DirectFromCpfpRefundTxSigningJob.RawTx
+		}
+
+		err = validateBitcoinTransactions(
+			ctx,
+			req.OnChainUtxo.RawTx,
+			req.OnChainUtxo.Vout,
+			req.RootTxSigningJob.RawTx,
+			req.RefundTxSigningJob.RawTx,
+			directFromCpfpRefundTxRaw,
+			directRootTxRaw,
+			directRefundTxRaw,
+			combinedPublicKey,
+			depositAddress.OwnerSigningPubkey,
+			networkString,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to validate transaction in tree creation request: %w", err)
 		}
@@ -937,7 +1236,7 @@ func (o *DepositHandler) verifyRootTransaction(rootTx *wire.MsgTx, onChainTx *wi
 		return fmt.Errorf("root tx version validation failed: %w", err)
 	}
 
-	if len(rootTx.TxIn) <= 0 || len(rootTx.TxOut) <= 0 {
+	if len(rootTx.TxIn) == 0 || len(rootTx.TxOut) == 0 {
 		return fmt.Errorf("root transaction should have at least 1 input and 1 output")
 	}
 
@@ -1005,46 +1304,126 @@ func (s UtxoSwapStatementType) String() string {
 	return [...]string{"Created", "Rollback", "Completed"}[s]
 }
 
-// validatedTxID is a 32-byte Bitcoin transaction ID (txid) that has passed basic format checks.
-// "Validated" means only the length is verified; no cryptographic or blockchain existence checks are performed.
-type validatedTxID [32]byte
+// Holds an UTXO that was verified by the validating function as confirmed on
+// the blockchain. Can be used in functions that require a valid UTXO.
+type VerifiedTargetUtxo struct {
+	// DB record of the confirmed utxo stored by Chain Watcher
+	inner *ent.Utxo
+	// Cached transaction hash of the UTXO. Different from ent UTXO txid, which is
+	// txid string stored as bytes.
+	txid chainhash.Hash
+}
 
-// NewValidatedTxID returns a validatedTxID if b is exactly 32 bytes long.
-func NewValidatedTxID(b []byte) (validatedTxID, error) {
-	if len(b) != 32 {
-		return validatedTxID{}, fmt.Errorf("invalid txid length: got %d, want 32", len(b))
-	}
-	return validatedTxID(b), nil
+func (u *VerifiedTargetUtxo) Hash() *chainhash.Hash {
+	return &u.txid
+}
+
+func (u *VerifiedTargetUtxo) Vout() uint32 {
+	return u.inner.Vout
 }
 
 // Verifies that an UTXO is confirmed on the blockchain and has sufficient confirmations.
-func VerifiedTargetUtxo(ctx context.Context, config *so.Config, db *ent.Client, network btcnetwork.Network, txid validatedTxID, vout uint32) (*ent.Utxo, error) {
+func VerifiedTargetUtxoFromRequest(ctx context.Context, config *so.Config, db *ent.Client, network btcnetwork.Network, reqUtxo *pb.UTXO, confirmationThreshold *uint32) (*VerifiedTargetUtxo, error) {
+	if reqUtxo == nil {
+		return nil, fmt.Errorf("requested UTXO is nil")
+	}
+
+	if len(reqUtxo.Txid) != chainhash.HashSize {
+		return nil, fmt.Errorf("invalid txid length: expected %d bytes, got %d bytes", chainhash.HashSize, len(reqUtxo.Txid))
+	}
+
+	txidString := hex.EncodeToString(reqUtxo.Txid)
+	reqUtxoTxid, err := chainhash.NewHashFromStr(txidString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse on-chain txid: %w", err)
+	}
 	blockHeight, err := db.BlockHeight.Query().Where(
 		blockheight.NetworkEQ(network),
 	).Only(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find block height: %w", err)
 	}
+
 	targetUtxo, err := db.Utxo.Query().
 		Where(entutxo.NetworkEQ(network)).
-		Where(entutxo.Txid(txid[:])).
-		Where(entutxo.Vout(vout)).
+		Where(entutxo.Txid(reqUtxo.Txid)).
+		Where(entutxo.Vout(reqUtxo.Vout)).
 		Only(ctx)
 	if err != nil {
 		if ent.IsNotFound(err) {
-			return nil, errors.NotFoundMissingEntity(fmt.Errorf("utxo not found: txid: %s vout: %d", hex.EncodeToString(txid[:]), vout))
+			return nil, errors.NotFoundMissingEntity(fmt.Errorf("utxo not found: txid: %s vout: %d", reqUtxoTxid.String(), reqUtxo.Vout))
 		}
 		return nil, fmt.Errorf("failed to get target utxo: %w", err)
 	}
 
-	threshold := DefaultDepositConfirmationThreshold
-	if bitcoinConfig, ok := config.BitcoindConfigs[strings.ToLower(network.String())]; ok {
-		threshold = bitcoinConfig.DepositConfirmationThreshold
+	var threshold uint
+	if confirmationThreshold != nil {
+		threshold = uint(*confirmationThreshold)
+	} else {
+		threshold = DefaultDepositConfirmationThreshold
+		if bitcoinConfig, ok := config.BitcoindConfigs[strings.ToLower(network.String())]; ok {
+			threshold = bitcoinConfig.DepositConfirmationThreshold
+		}
 	}
 	if blockHeight.Height-targetUtxo.BlockHeight+1 < int64(threshold) {
 		return nil, errors.FailedPreconditionInsufficientConfirmations(fmt.Errorf("deposit tx doesn't have enough confirmations: confirmation height: %d current block height: %d", targetUtxo.BlockHeight, blockHeight.Height))
 	}
-	return targetUtxo, nil
+	return &VerifiedTargetUtxo{inner: targetUtxo, txid: *reqUtxoTxid}, nil
+}
+
+// resolveConfirmationThreshold returns the effective confirmation threshold.
+// Uses the request-provided value if >= 1, otherwise falls back to the
+// SO config value, otherwise falls back to DefaultDepositConfirmationThreshold (3).
+func resolveConfirmationThreshold(requested *uint32, config *so.Config, network btcnetwork.Network) uint32 {
+	if requested != nil && *requested >= 1 {
+		return *requested
+	}
+	if bitcoinConfig, ok := config.BitcoindConfigs[strings.ToLower(network.String())]; ok {
+		return uint32(bitcoinConfig.DepositConfirmationThreshold)
+	}
+	return uint32(DefaultDepositConfirmationThreshold)
+}
+
+// VerifiedTargetUtxoFromRequestWithThreshold verifies a UTXO with an optional confirmation threshold override.
+// If the UTXO doesn't meet the confirmation requirement, returns (nil, nil) instead of an error.
+// This allows callers to handle unconfirmed UTXOs gracefully.
+func VerifiedTargetUtxoFromRequestWithThreshold(ctx context.Context, db *ent.Client, network btcnetwork.Network, reqUtxo *pb.UTXO, threshold uint32) (*VerifiedTargetUtxo, error) {
+	if reqUtxo == nil {
+		return nil, fmt.Errorf("requested UTXO is nil")
+	}
+
+	if len(reqUtxo.Txid) != chainhash.HashSize {
+		return nil, fmt.Errorf("invalid txid length: expected %d bytes, got %d bytes", chainhash.HashSize, len(reqUtxo.Txid))
+	}
+
+	txidString := hex.EncodeToString(reqUtxo.Txid)
+	reqUtxoTxid, err := chainhash.NewHashFromStr(txidString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse on-chain txid: %w", err)
+	}
+	blockHeight, err := db.BlockHeight.Query().Where(
+		blockheight.NetworkEQ(network),
+	).Only(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find block height: %w", err)
+	}
+
+	targetUtxo, err := db.Utxo.Query().
+		Where(entutxo.NetworkEQ(network)).
+		Where(entutxo.Txid(reqUtxo.Txid)).
+		Where(entutxo.Vout(reqUtxo.Vout)).
+		Only(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, nil // UTXO not found, return nil without error
+		}
+		return nil, fmt.Errorf("failed to get target utxo: %w", err)
+	}
+
+	if blockHeight.Height-targetUtxo.BlockHeight+1 < int64(threshold) {
+		return nil, nil // Not enough confirmations, return nil without error
+	}
+	return &VerifiedTargetUtxo{inner: targetUtxo, txid: *reqUtxoTxid}, nil
 }
 
 // A helper function to generate a FROST signature for a spend transaction. This
@@ -1064,19 +1443,19 @@ func VerifiedTargetUtxo(ctx context.Context, config *so.Config, db *ent.Client, 
 //   - *pb.SigningResult: Signing result containing a partial FROST signature that can
 //     be aggregated with other signatures.
 //   - error if the operation fails.
-func getSpendTxSigningResult(ctx context.Context, config *so.Config, depositAddress *ent.DepositAddress, targetUtxo *ent.Utxo, spendTxRaw []byte, userSpendTxNonceCommitment *frost.SigningCommitment) (keys.Public, *pb.SigningResult, error) {
+func getSpendTxSigningResult(ctx context.Context, config *so.Config, depositAddress *ent.DepositAddress, targetUtxo *VerifiedTargetUtxo, spendTxRaw []byte, userSpendTxNonceCommitment *frost.SigningCommitment) (keys.Public, *pb.SigningResult, error) {
 	signingKeyShare, err := depositAddress.QuerySigningKeyshare().Only(ctx)
 	if err != nil {
 		return keys.Public{}, nil, fmt.Errorf("failed to get signing keyshare: %w", err)
 	}
 	verifyingKey := signingKeyShare.PublicKey.Add(depositAddress.OwnerSigningPubkey)
-	spendTxSigHash, _, err := GetTxSigningInfo(ctx, targetUtxo, spendTxRaw)
+	spendTxSigHash, _, err := GetTxSigningInfo(ctx, targetUtxo.inner, spendTxRaw)
 	if err != nil {
 		return keys.Public{}, nil, fmt.Errorf("failed to get spend tx sig hash: %w", err)
 	}
 
 	signingJobs := []*helper.SigningJob{{
-		JobID:             uuid.New().String(),
+		JobID:             uuid.New(),
 		SigningKeyshareID: signingKeyShare.ID,
 		Message:           spendTxSigHash,
 		VerifyingKey:      &verifyingKey,
@@ -1135,7 +1514,7 @@ func GetTxSigningInfo(ctx context.Context, targetUtxo *ent.Utxo, spendTxRaw []by
 	return spendTxSigHash, total, nil
 }
 
-func GetSpendTxSigningResult(ctx context.Context, config *so.Config, utxo *pb.UTXO, spendTxSigningJob *pb.SigningJob) (*pb.SigningResult, *pb.DepositAddressQueryResult, error) {
+func GetSpendTxSigningResult(ctx context.Context, config *so.Config, utxo *pb.UTXO, spendTxSigningJob *pb.SigningJob, confirmationThreshold *uint32) (*pb.SigningResult, *pb.DepositAddressQueryResult, error) {
 	if spendTxSigningJob == nil || spendTxSigningJob.SigningNonceCommitment == nil || spendTxSigningJob.RawTx == nil {
 		return nil, nil, fmt.Errorf("spend tx signing job is not valid")
 	}
@@ -1148,15 +1527,11 @@ func GetSpendTxSigningResult(ctx context.Context, config *so.Config, utxo *pb.UT
 		return nil, nil, fmt.Errorf("failed to get schema network: %w", err)
 	}
 
-	targetUtxoTxId, err := NewValidatedTxID(utxo.Txid)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to validate UTXO txid: %w", err)
-	}
-	targetUtxo, err := VerifiedTargetUtxo(ctx, config, db, network, targetUtxoTxId, utxo.Vout)
+	targetUtxo, err := VerifiedTargetUtxoFromRequest(ctx, config, db, network, utxo, confirmationThreshold)
 	if err != nil {
 		return nil, nil, err
 	}
-	depositAddress, err := targetUtxo.QueryDepositAddress().Only(ctx)
+	depositAddress, err := targetUtxo.inner.QueryDepositAddress().Only(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get deposit address: %w", err)
 	}
@@ -1212,7 +1587,7 @@ func (o *DepositHandler) GetUtxosForAddress(ctx context.Context, req *pb.GetUtxo
 
 	var utxosResult []*pb.UTXO
 	if depositAddress.IsStatic {
-		if req.Limit > 100 || req.Limit <= 0 {
+		if req.Limit > 100 || req.Limit == 0 {
 			req.Limit = 100
 		}
 		query := depositAddress.QueryUtxo().
@@ -1253,54 +1628,271 @@ func (o *DepositHandler) GetUtxosForAddress(ctx context.Context, req *pb.GetUtxo
 		}
 
 		if depositAddress.ConfirmationHeight <= currentBlockHeight.Height-int64(threshold) {
-			utxosResult = append(utxosResult, &pb.UTXO{
-				Txid:    txid,
-				Vout:    0,
-				Network: req.Network,
-			})
+			utxos, err := depositAddress.QueryUtxo().
+				Where(entutxo.Txid(txid)).
+				All(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("failed to query UTXOs for deposit address: %w", err)
+			}
+			if len(utxos) > 0 {
+				for _, u := range utxos {
+					utxosResult = append(utxosResult, &pb.UTXO{
+						Txid:    u.Txid,
+						Vout:    u.Vout,
+						Network: req.Network,
+					})
+				}
+			} else {
+				utxosResult = append(utxosResult, &pb.UTXO{
+					Txid:    txid,
+					Vout:    0,
+					Network: req.Network,
+				})
+			}
 		}
 	}
 
 	return &pb.GetUtxosForAddressResponse{Utxos: utxosResult}, nil
 }
 
-// validateBitcoinTransactions validates Bitcoin transactions
-// in the deposit request depending on the knob.
-func (h *DepositHandler) validateBitcoinTransactions(req *pb.StartDepositTreeCreationRequest, rootDestPubkey keys.Public) error {
-	if req == nil {
-		return nil
+func (o *DepositHandler) GetUtxosForAddresses(ctx context.Context, req *pb.GetUtxosForAddressesRequest) (*pb.GetUtxosForAddressesResponse, error) {
+	db, err := ent.GetDbFromContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get or create current tx for request: %w", err)
 	}
-	vout := req.OnChainUtxo.Vout
-	depositTx := req.OnChainUtxo.RawTx
-	cpfpRootTx := req.RootTxSigningJob.RawTx
-	cpfpRefundTx := req.RefundTxSigningJob.RawTx
 
+	if len(req.GetAddresses()) == 0 {
+		return nil, errors.InvalidArgumentMissingField(fmt.Errorf("addresses is required"))
+	}
+
+	uniqueAddresses := make([]string, 0, len(req.GetAddresses()))
+	seenAddresses := make(map[string]struct{}, len(req.GetAddresses()))
+	for _, address := range req.GetAddresses() {
+		if _, exists := seenAddresses[address]; exists {
+			continue
+		}
+		seenAddresses[address] = struct{}{}
+		uniqueAddresses = append(uniqueAddresses, address)
+	}
+	if len(uniqueAddresses) > MaxGetUtxosForAddressesCount {
+		return nil, errors.InvalidArgumentOutOfRange(
+			fmt.Errorf("too many addresses in request: got %d, max %d", len(uniqueAddresses), MaxGetUtxosForAddressesCount),
+		)
+	}
+
+	network, err := btcnetwork.FromProtoNetwork(req.GetNetwork())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get schema network: %w", err)
+	}
+
+	for _, address := range uniqueAddresses {
+		if !utils.IsBitcoinAddressForNetwork(address, network) {
+			return nil, errors.InvalidArgumentMalformedField(
+				fmt.Errorf("deposit address %s is not aligned with the requested network", address),
+			)
+		}
+	}
+
+	currentBlockHeight, err := db.BlockHeight.Query().Where(blockheight.NetworkEQ(network)).Only(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current block height: %w", err)
+	}
+
+	threshold := DefaultDepositConfirmationThreshold
+	if bitcoinConfig, ok := o.config.BitcoindConfigs[strings.ToLower(network.String())]; ok {
+		threshold = bitcoinConfig.DepositConfirmationThreshold
+	}
+	confirmedCutoffBlockHeight := currentBlockHeight.Height - int64(threshold) + 1
+	maxPendingBlockHeight := currentBlockHeight.Height
+
+	limit := DefaultGetUtxosForAddressesPageSize
+	if page := req.GetPage(); page != nil {
+		if page.GetPageSize() > 0 {
+			limit = int(page.GetPageSize())
+		} else if page.GetUnsafePageSize() > 0 {
+			limit = int(page.GetUnsafePageSize())
+		}
+		if page.GetDirection() == pb.Direction_PREVIOUS {
+			return nil, errors.InvalidArgumentMalformedField(
+				fmt.Errorf("backward pagination with 'previous' direction is not currently supported"),
+			)
+		}
+	}
+	if limit > MaxGetUtxosForAddressesPageSize {
+		return nil, errors.InvalidArgumentOutOfRange(
+			fmt.Errorf("requested page size exceeds max supported size: got %d, max %d", limit, MaxGetUtxosForAddressesPageSize),
+		)
+	}
+
+	var (
+		cursorProvided  bool
+		cursorBlock     int64
+		cursorTxidBytes []byte
+		cursorVout      uint32
+		cursorID        uuid.UUID
+	)
+	if page := req.GetPage(); page != nil && page.GetCursor() != "" {
+		cursorPayload, txidBytes, utxoID, err := decodeGetUtxosForAddressesCursor(page.GetCursor())
+		if err != nil {
+			return nil, err
+		}
+		cursorProvided = true
+		cursorBlock = cursorPayload.BlockHeight
+		cursorTxidBytes = txidBytes
+		cursorVout = cursorPayload.Vout
+		cursorID = utxoID
+	}
+
+	query := db.Utxo.Query().
+		Where(
+			entutxo.NetworkEQ(network),
+			entutxo.HasDepositAddressWith(
+				depositaddress.AddressIn(uniqueAddresses...),
+				depositaddress.IsStatic(true),
+			),
+		).WithDepositAddress().
+		Order(
+			entutxo.ByBlockHeight(sql.OrderDesc()),
+			func(s *sql.Selector) {
+				s.OrderBy(sql.Asc(s.C(entutxo.FieldTxid)))
+			},
+			entutxo.ByVout(),
+			entutxo.ByID(),
+		)
+
+	if req.GetIncludePending() {
+		query = query.Where(entutxo.BlockHeightLTE(maxPendingBlockHeight))
+	} else {
+		query = query.Where(entutxo.BlockHeightLTE(confirmedCutoffBlockHeight))
+	}
+
+	if req.GetExcludeClaimed() {
+		query = query.Where(func(s *sql.Selector) {
+			subquery := sql.Select(utxoswap.UtxoColumn).
+				From(sql.Table(utxoswap.Table)).
+				Where(sql.NEQ(utxoswap.FieldStatus, string(st.UtxoSwapStatusCancelled)))
+			s.Where(sql.NotIn(s.C(entutxo.FieldID), subquery))
+		})
+	}
+
+	if cursorProvided {
+		query = query.Where(func(s *sql.Selector) {
+			s.Where(
+				sql.Or(
+					sql.LT(s.C(entutxo.FieldBlockHeight), cursorBlock),
+					sql.And(
+						sql.EQ(s.C(entutxo.FieldBlockHeight), cursorBlock),
+						sql.GT(s.C(entutxo.FieldTxid), cursorTxidBytes),
+					),
+					sql.And(
+						sql.EQ(s.C(entutxo.FieldBlockHeight), cursorBlock),
+						sql.EQ(s.C(entutxo.FieldTxid), cursorTxidBytes),
+						sql.GT(s.C(entutxo.FieldVout), cursorVout),
+					),
+					sql.And(
+						sql.EQ(s.C(entutxo.FieldBlockHeight), cursorBlock),
+						sql.EQ(s.C(entutxo.FieldTxid), cursorTxidBytes),
+						sql.EQ(s.C(entutxo.FieldVout), cursorVout),
+						sql.GT(s.C(entutxo.FieldID), cursorID),
+					),
+				),
+			)
+		})
+	}
+
+	utxos, err := query.Limit(limit + 1).All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get utxos: %w", err)
+	}
+
+	hasNextPage := len(utxos) > limit
+	if hasNextPage {
+		utxos = utxos[:limit]
+	}
+
+	utxosResult := make([]*pb.AddressedUtxo, 0, len(utxos))
+	for _, utxo := range utxos {
+		if utxo.Edges.DepositAddress == nil {
+			return nil, fmt.Errorf("utxo %s is missing deposit address edge", utxo.ID)
+		}
+		utxosResult = append(utxosResult, &pb.AddressedUtxo{
+			Address:     utxo.Edges.DepositAddress.Address,
+			IsConfirmed: utxo.BlockHeight <= confirmedCutoffBlockHeight,
+			Utxo: &pb.UTXO{
+				Txid:    utxo.Txid,
+				Vout:    utxo.Vout,
+				Network: req.Network,
+			},
+		})
+	}
+
+	pageResponse := &pb.PageResponse{
+		HasNextPage:     hasNextPage,
+		HasPreviousPage: cursorProvided,
+	}
+	if len(utxos) > 0 {
+		previousCursor, err := encodeGetUtxosForAddressesCursor(utxos[0])
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode previous cursor: %w", err)
+		}
+		pageResponse.PreviousCursor = previousCursor
+
+		nextCursor, err := encodeGetUtxosForAddressesCursor(utxos[len(utxos)-1])
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode next cursor: %w", err)
+		}
+		pageResponse.NextCursor = nextCursor
+	}
+
+	return &pb.GetUtxosForAddressesResponse{
+		Utxos: utxosResult,
+		Page:  pageResponse,
+	}, nil
+}
+
+// validateBitcoinTransactions validates Bitcoin transactions in a deposit flow.
+// Parameters:
+//   - depositTx: Raw bytes of the on-chain deposit transaction
+//   - vout: Output index in the deposit transaction
+//   - cpfpRootTx: Raw bytes of the CPFP root transaction
+//   - cpfpRefundTx: Raw bytes of the CPFP refund transaction
+//   - directFromCpfpRefundTx: Optional raw bytes of direct-from-CPFP refund transaction
+//   - directRootTx: Optional raw bytes of direct root transaction
+//   - directRefundTx: Optional raw bytes of direct refund transaction
+//   - rootDestPubkey: Public key for root transaction destination
+//   - refundDestPubkey: Public key for refund transaction destination
+//   - networkString: Network identifier string
+func validateBitcoinTransactions(
+	ctx context.Context,
+	depositTx []byte,
+	vout uint32,
+	cpfpRootTx []byte,
+	cpfpRefundTx []byte,
+	directFromCpfpRefundTx []byte,
+	directRootTx []byte,
+	directRefundTx []byte,
+	rootDestPubkey keys.Public,
+	refundDestPubkey keys.Public,
+	networkString string,
+) error {
 	// Validate cpfp root tx based on deposit tx
-	err := bitcointransaction.VerifyTransactionWithSource(cpfpRootTx, depositTx, vout, 0, bitcointransaction.TxTypeNodeCPFP, rootDestPubkey)
+	err := bitcointransaction.VerifyTransactionWithSource(ctx, cpfpRootTx, depositTx, vout, 0, bitcointransaction.TxTypeNodeCPFP, rootDestPubkey, networkString)
 	if err != nil {
 		return fmt.Errorf("cpfp root transaction verification failed: %w", err)
-	}
-
-	// Currently we assume that all refund transactions pay to same pubkey
-	refundDestPubkey, err := keys.ParsePublicKey(req.RefundTxSigningJob.SigningPublicKey)
-	if err != nil {
-		return fmt.Errorf("invalid refund tx signing public key: %w", err)
 	}
 
 	// We add TimeLockInterval to ensure that expectedTx has locktime
 	// set to InitialTimeLock
 	cpfpTimelock := spark.InitialTimeLock + spark.TimeLockInterval
 	// Validate cpfp refund tx based on cpfp root tx
-	err = bitcointransaction.VerifyTransactionWithSource(cpfpRefundTx, cpfpRootTx, 0, cpfpTimelock, bitcointransaction.TxTypeRefundCPFP, refundDestPubkey)
+	err = bitcointransaction.VerifyTransactionWithSource(ctx, cpfpRefundTx, cpfpRootTx, 0, cpfpTimelock, bitcointransaction.TxTypeRefundCPFP, refundDestPubkey, networkString)
 	if err != nil {
 		return fmt.Errorf("cpfp refund transaction verification failed: %w", err)
 	}
 
 	// Validate direct-from-cpfp refund tx based on cpfp root tx (If provided)
-	if req.DirectFromCpfpRefundTxSigningJob != nil {
-		directFromCpfpRefundTx := req.DirectFromCpfpRefundTxSigningJob.RawTx
-
-		err = bitcointransaction.VerifyTransactionWithSource(directFromCpfpRefundTx, cpfpRootTx, 0, cpfpTimelock, bitcointransaction.TxTypeRefundDirectFromCPFP, refundDestPubkey)
+	if len(directFromCpfpRefundTx) > 0 {
+		err = bitcointransaction.VerifyTransactionWithSource(ctx, directFromCpfpRefundTx, cpfpRootTx, 0, cpfpTimelock, bitcointransaction.TxTypeRefundDirectFromCPFP, refundDestPubkey, networkString)
 		if err != nil {
 			return fmt.Errorf("direct-from-cpfp refund transaction verification failed: %w", err)
 		}
@@ -1308,18 +1900,155 @@ func (h *DepositHandler) validateBitcoinTransactions(req *pb.StartDepositTreeCre
 
 	// Only validate direct tx if both are provided
 	// Validate direct refund tx based on direct root tx
-	if req.DirectRootTxSigningJob != nil && req.DirectRefundTxSigningJob != nil {
-		directRootTx := req.DirectRootTxSigningJob.RawTx
-		err = bitcointransaction.VerifyTransactionWithSource(directRootTx, depositTx, vout, 0, bitcointransaction.TxTypeNodeDirect, rootDestPubkey)
+	if len(directRootTx) > 0 && len(directRefundTx) > 0 {
+		err = bitcointransaction.VerifyTransactionWithSource(ctx, directRootTx, depositTx, vout, 0, bitcointransaction.TxTypeNodeDirect, rootDestPubkey, networkString)
 		if err != nil {
 			return fmt.Errorf("direct root transaction verification failed: %w", err)
 		}
 
-		directRefundTx := req.DirectRefundTxSigningJob.RawTx
-		err = bitcointransaction.VerifyTransactionWithSource(directRefundTx, directRootTx, 0, cpfpTimelock, bitcointransaction.TxTypeRefundDirect, refundDestPubkey)
+		err = bitcointransaction.VerifyTransactionWithSource(ctx, directRefundTx, directRootTx, 0, cpfpTimelock, bitcointransaction.TxTypeRefundDirect, refundDestPubkey, networkString)
 		if err != nil {
 			return fmt.Errorf("direct refund transaction verification failed: %w", err)
 		}
 	}
 	return nil
+}
+
+// FinalizeDepositTreeCreation finalizes the tree creation for a deposit by aggregating
+// user signature shares with SE signature shares to produce final signatures.
+// This is part of the new deposit flow where:
+// 1. Client calls get_signing_commitments to get SE commitments
+// 2. Client signs locally to produce signature shares
+// 3. Client calls this endpoint to have SE aggregate and finalize the tree
+func (o *DepositHandler) FinalizeDepositTreeCreation(ctx context.Context, config *so.Config, req *pb.FinalizeDepositTreeCreationRequest) (*pb.FinalizeDepositTreeCreationResponse, error) {
+	ctx, span := tracer.Start(ctx, "DepositHandler.FinalizeDepositTreeCreation")
+	defer span.End()
+
+	logger := logging.GetLoggerFromContext(ctx)
+
+	// Validate request
+	err := validateFinalizeDepositTreeCreationRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate identity
+	reqIDPubKey, err := validateIdentity(ctx, config, req.IdentityPublicKey)
+	if err != nil {
+		return nil, err
+	}
+
+	network, err := convertAndValidateProtoNetwork(config, req.OnChainUtxo.Network)
+	if err != nil {
+		return nil, fmt.Errorf("invalid network %s: %w", req.OnChainUtxo.Network, err)
+	}
+
+	// Step 1: Validate request and get deposit address
+	depositAddress, onChainTx, onChainOutput, additionalUtxos, err := loadAndValidateDepositAddress(ctx, network, req, reqIDPubKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if tree already exists for this deposit address
+	if depositAddress.Edges.Tree != nil {
+		return nil, errors.AlreadyExistsDuplicateOperation(fmt.Errorf("tree already exists for deposit address %s", depositAddress.Address))
+	}
+
+	logger.Sugar().Infof("Finalizing deposit tree creation for address %s", depositAddress.Address)
+
+	// Step 2: Prepare signing jobs with pregenerated nonces
+	signingJobs, verifyingKey, rootTxInputCount, err := o.prepareSigningJobs(req, depositAddress, onChainTx, onChainOutput, additionalUtxos)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to SigningJobWithPregeneratedNonce using SE commitments from request
+	signingJobsWithNonce, err := o.convertToSigningJobsWithPregeneratedNonce(signingJobs, req, rootTxInputCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert signing jobs: %w", err)
+	}
+
+	// Step 3: SE signs all transactions using pregenerated commitments
+	logger.Sugar().Infof("SE signing %d transactions for deposit using pregenerated nonces", len(signingJobsWithNonce))
+	signingResults, err := helper.SignFrostWithPregeneratedNonce(ctx, config, signingJobsWithNonce)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign transactions: %w", err)
+	}
+	if len(signingResults) != len(signingJobs) {
+		return nil, fmt.Errorf("expected %d signing results, got %d", len(signingJobs), len(signingResults))
+	}
+	for i, signingResult := range signingResults {
+		if signingResult.JobID != signingJobs[i].JobID {
+			return nil, fmt.Errorf("signing results do not match signing jobs (i=%d resultID=%s jobID=%s)", i, signingResult.JobID, signingJobs[i].JobID)
+		}
+	}
+
+	// Step 4: Aggregate signatures (SE + user)
+	rootSigningPubKey, err := keys.ParsePublicKey(req.RootTxSigningJob.SigningPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse root signing key: %w", err)
+	}
+	signatures, err := o.aggregateSignatures(ctx, config, req, signingResults, verifyingKey, rootSigningPubKey, rootTxInputCount)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Sugar().Infof("Successfully aggregated %d signatures", len(signatures))
+
+	// Step 5: Apply signatures to transactions
+	signedCpfpRootTx, signedCpfpRefundTx, signedDirectFromCpfpRefundTx, err := o.applySignaturesToTransactions(req, signatures, rootTxInputCount)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 5b: Verify signed transactions using Bitcoin script engine
+	if err := o.verifySignedTransactions(signedCpfpRootTx, signedCpfpRefundTx, signedDirectFromCpfpRefundTx, onChainTx, onChainOutput, additionalUtxos); err != nil {
+		return nil, fmt.Errorf("signed transaction verification failed: %w", err)
+	}
+
+	// Step 6: Create tree and node in database with signed transactions
+	// Note: The tree is automatically linked to deposit address via SetDepositAddress() in createTreeAndNode
+	createdTree, createdNode, err := o.createTreeAndNode(ctx, depositAddress, onChainTx, onChainOutput, additionalUtxos, req.OnChainUtxo.Vout, network, verifyingKey, signedCpfpRootTx, signedCpfpRefundTx, signedDirectFromCpfpRefundTx)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Sugar().Infof("Successfully finalized deposit tree with root node %s", createdNode.ID)
+
+	// Marshal the response BEFORE sending gossip (which commits the transaction)
+	// MarshalSparkProto may need to load edges from the database
+	pbNode, err := createdNode.MarshalSparkProto(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 7: Send gossip to other SOs
+	// Note: CreateCommitAndSendGossipMessage will commit the transaction
+	err = o.sendFinalizeNodeGossip(ctx, createdTree, createdNode)
+	if err != nil {
+		logger.With(zap.Error(err)).Sugar().Errorf(
+			"failed to send gossip for new tree (%s) and node (%s)",
+			createdTree.ID.String(), createdNode.ID.String())
+		// Don't return error - gossip failure shouldn't fail the entire operation
+		// The local SO will process the gossip through the normal retry mechanism
+	}
+
+	// Return response
+	return &pb.FinalizeDepositTreeCreationResponse{
+		RootNode: pbNode,
+	}, nil
+}
+
+func convertAndValidateProtoNetwork(
+	config *so.Config,
+	protoNetwork pb.Network,
+) (btcnetwork.Network, error) {
+	network, err := btcnetwork.FromProtoNetwork(protoNetwork)
+	if err != nil {
+		return btcnetwork.Unspecified, err
+	}
+	if !config.IsNetworkSupported(network) {
+		return btcnetwork.Unspecified, ErrInvalidNetwork
+	}
+	return network, nil
 }

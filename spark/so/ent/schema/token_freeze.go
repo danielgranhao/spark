@@ -2,6 +2,7 @@ package schema
 
 import (
 	"entgo.io/ent"
+	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
@@ -28,10 +29,13 @@ func (TokenFreeze) Fields() []ent.Field {
 	return []ent.Field{
 		field.Enum("status").
 			GoType(st.TokenFreezeStatus("")).
+			Comment("Current freeze status of the token output (FROZEN or THAWED).").
 			Annotations(entexample.Default(st.TokenFreezeStatusThawed)),
 		field.Bytes("owner_public_key").
+			Optional().
 			Immutable().
 			GoType(keys.Public{}).
+			Comment("The public key of the token owner being frozen; null for a global pause.").
 			Annotations(entexample.Default(
 				"02ca75659458529755b77663f18282f4aa130313e098fac40deffb1208207a2ffe",
 			)),
@@ -39,6 +43,7 @@ func (TokenFreeze) Fields() []ent.Field {
 			Optional().
 			Immutable().
 			GoType(keys.Public{}).
+			Comment("The public key identifying the specific token type being frozen.").
 			Annotations(entexample.Default(
 				"033e40d72117ee89f7bda15d2b3d779843e6721e8e4c5078c192b50fb3782de2f5",
 			)),
@@ -46,17 +51,21 @@ func (TokenFreeze) Fields() []ent.Field {
 			NotEmpty().
 			Immutable().
 			Unique().
+			Comment("The issuer's signature authorizing this freeze or thaw action.").
 			Annotations(entexample.Default(
 				"304402207608dd0339b19f4be059b9ca48bfe17f580f887227e30451eb35f6eb5c59ec7e02201950d40ae09d7d6c2c7ede109573021ac59a65347b0512d94172758ab4a3918f",
 			)),
 		field.Uint64("wallet_provided_freeze_timestamp").
 			Immutable().
+			Comment("Wallet-provided timestamp when the freeze was initiated.").
 			Annotations(entexample.Default(1747337980820)),
 		field.Uint64("wallet_provided_thaw_timestamp").
 			Optional().
+			Comment("Wallet-provided timestamp when the thaw was initiated.").
 			Annotations(entexample.Default(1747338083725)),
 		field.UUID("token_create_id", uuid.UUID{}).
 			Immutable().
+			Comment("Foreign key referencing the associated TokenCreate record.").
 			Annotations(entexample.Default("01982f4a-791d-78cd-892b-8e558d509271")),
 	}
 }
@@ -80,7 +89,7 @@ func (TokenFreeze) Edges() []ent.Edge {
 // Indexes are the indexes for the token leafs table.
 func (TokenFreeze) Indexes() []ent.Index {
 	return []ent.Index{
-		// Enforce uniqueness to ensure idempotency.
+		// Enforce uniqueness to ensure idempotency (per-owner freezes).
 		index.Fields("owner_public_key", "token_public_key", "wallet_provided_freeze_timestamp").Unique().
 			StorageKey("tokenfreeze_owner_public_key_token_public_key_wallet_provided_f"),
 		index.Fields("owner_public_key", "token_public_key", "wallet_provided_thaw_timestamp").Unique().
@@ -89,5 +98,16 @@ func (TokenFreeze) Indexes() []ent.Index {
 			StorageKey("tokenfreeze_owner_public_key_token_create_id_wallet_provided_f"),
 		index.Fields("owner_public_key", "token_create_id", "wallet_provided_thaw_timestamp").Unique().
 			StorageKey("tokenfreeze_owner_public_key_token_create_id_wallet_provided_t"),
+		// Index for efficient global pause lookups (owner_public_key IS NULL).
+		index.Fields("token_create_id", "status").
+			StorageKey("tokenfreeze_token_create_id_status"),
+		// Enforce at most one active global pause per token.
+		index.Fields("token_create_id").Unique().
+			Annotations(entsql.IndexWhere("owner_public_key IS NULL AND status = 'FROZEN'")).
+			StorageKey("tokenfreeze_unique_active_global_pause"),
+		// Enforce at most one active freeze per owner per token.
+		index.Fields("owner_public_key", "token_create_id").Unique().
+			Annotations(entsql.IndexWhere("owner_public_key IS NOT NULL AND status = 'FROZEN'")).
+			StorageKey("tokenfreeze_unique_active_per_owner_freeze"),
 	}
 }

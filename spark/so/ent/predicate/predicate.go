@@ -24,8 +24,26 @@ type EventMessage func(*sql.Selector)
 // Gossip is the predicate function for gossip builders.
 type Gossip func(*sql.Selector)
 
+// IdempotencyKey is the predicate function for idempotencykey builders.
+type IdempotencyKey func(*sql.Selector)
+
 // L1TokenCreate is the predicate function for l1tokencreate builders.
 type L1TokenCreate func(*sql.Selector)
+
+// L1TokenJusticeTransaction is the predicate function for l1tokenjusticetransaction builders.
+type L1TokenJusticeTransaction func(*sql.Selector)
+
+// L1TokenOutputWithdrawal is the predicate function for l1tokenoutputwithdrawal builders.
+type L1TokenOutputWithdrawal func(*sql.Selector)
+
+// L1WithdrawalTransaction is the predicate function for l1withdrawaltransaction builders.
+type L1WithdrawalTransaction func(*sql.Selector)
+
+// MultisigConfig is the predicate function for multisigconfig builders.
+type MultisigConfig func(*sql.Selector)
+
+// MultisigMember is the predicate function for multisigmember builders.
+type MultisigMember func(*sql.Selector)
 
 // PaymentIntent is the predicate function for paymentintent builders.
 type PaymentIntent func(*sql.Selector)
@@ -77,6 +95,12 @@ type Transfer func(*sql.Selector)
 
 // TransferLeaf is the predicate function for transferleaf builders.
 type TransferLeaf func(*sql.Selector)
+
+// TransferReceiver is the predicate function for transferreceiver builders.
+type TransferReceiver func(*sql.Selector)
+
+// TransferSender is the predicate function for transfersender builders.
+type TransferSender func(*sql.Selector)
 
 // Tree is the predicate function for tree builders.
 type Tree func(*sql.Selector)

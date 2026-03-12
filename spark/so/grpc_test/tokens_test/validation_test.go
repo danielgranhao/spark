@@ -2,18 +2,22 @@ package tokens_test
 
 import (
 	"math/rand/v2"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common/btcnetwork"
 	"github.com/lightsparkdev/spark/common/keys"
+	"github.com/lightsparkdev/spark/common/protohash"
 	sparkpb "github.com/lightsparkdev/spark/proto/spark"
 	tokenpb "github.com/lightsparkdev/spark/proto/spark_token"
+	"github.com/lightsparkdev/spark/so/protoconverter"
 	"github.com/lightsparkdev/spark/so/utils"
 	sparktesting "github.com/lightsparkdev/spark/testing"
 	"github.com/lightsparkdev/spark/testing/wallet"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -299,6 +303,105 @@ func TestPartialTransactionValidationErrors(t *testing.T) {
 	}
 }
 
+func TestTokenMintWithWrongIssuerPublicKeyFails(t *testing.T) {
+	runSignatureTypeTestCases(t, func(t *testing.T, tc signatureTypeTestCase) {
+		config := wallet.NewTestWalletConfigWithIdentityKey(t, staticLocalIssuerKey.IdentityPrivateKey())
+		config.UseTokenTransactionSchnorrSignatures = tc.useSchnorrSignatures
+
+		tokenPrivKey := config.IdentityPrivateKey
+		tokenIdentifier := queryTokenIdentifierOrFail(t, config, tokenPrivKey.Public())
+
+		// Generate a different key to use as the issuer public key in the MintInput
+		wrongKey := keys.GeneratePrivateKey()
+
+		mintTx, _, err := createTestTokenMintTransactionTokenPbWithParams(t, config, tokenTransactionParams{
+			TokenIdentityPubKey: wrongKey.Public(),
+			TokenIdentifier:     tokenIdentifier,
+			NumOutputs:          1,
+			OutputAmounts:       []uint64{uint64(testIssueOutput1Amount)},
+		})
+		require.NoError(t, err)
+
+		_, err = broadcastTokenTransaction(
+			t,
+			t.Context(),
+			config,
+			mintTx,
+			[]keys.Private{wrongKey},
+		)
+		require.Error(t, err, "expected mint with wrong issuer public key to be rejected")
+		require.ErrorContains(t, err, "issuer key mismatch")
+	})
+}
+
+func TestTokenMintUsesCorrectIssuerPublicKey(t *testing.T) {
+	runSignatureTypeTestCases(t, func(t *testing.T, tc signatureTypeTestCase) {
+		// Use a fresh issuer key (not the static one) to demonstrate that the SO resolves
+		// the issuer public key from the TokenCreate record via the token identifier.
+		issuerPrivKey := keys.GeneratePrivateKey()
+		config := wallet.NewTestWalletConfigWithIdentityKey(t, issuerPrivKey)
+		config.UseTokenTransactionSchnorrSignatures = tc.useSchnorrSignatures
+
+		err := testCreateNativeSparkTokenWithParams(t, config, sparkTokenCreationTestParams{
+			issuerPrivateKey: issuerPrivKey,
+			name:             "Key Test Token",
+			ticker:           "KTT",
+			maxSupply:        0,
+		})
+		require.NoError(t, err, "failed to create token")
+
+		// Query the token metadata to get the issuer public key as stored in the SO's TokenCreate record.
+		resp, err := wallet.QueryTokenMetadata(t.Context(), config, nil, []keys.Public{issuerPrivKey.Public()})
+		require.NoError(t, err, "failed to query token metadata")
+		require.Len(t, resp.TokenMetadata, 1, "expected exactly one token")
+		require.Equal(t, issuerPrivKey.Public().Serialize(), resp.TokenMetadata[0].IssuerPublicKey,
+			"issuer public key in token metadata should match the key used to create the token")
+
+		tokenIdentifier := resp.TokenMetadata[0].TokenIdentifier
+
+		mintTx, _, err := createTestTokenMintTransactionTokenPbWithParams(t, config, tokenTransactionParams{
+			TokenIdentityPubKey: issuerPrivKey.Public(),
+			TokenIdentifier:     tokenIdentifier,
+			NumOutputs:          1,
+			OutputAmounts:       []uint64{uint64(testIssueOutput1Amount)},
+		})
+		require.NoError(t, err, "failed to create mint transaction")
+
+		// Mint succeeds because the SO resolves the issuer public key from the TokenCreate record
+		// (via the token identifier) and correctly validates the signature.
+		_, err = broadcastTokenTransaction(t, t.Context(), config, mintTx, []keys.Private{issuerPrivKey})
+		require.NoError(t, err, "mint should succeed when the correct issuer key (resolved from TokenCreate via token identifier) is used")
+	})
+}
+
+func TestTokenMintWithBadSignatureFails(t *testing.T) {
+	runSignatureTypeTestCases(t, func(t *testing.T, tc signatureTypeTestCase) {
+		config := wallet.NewTestWalletConfigWithIdentityKey(t, staticLocalIssuerKey.IdentityPrivateKey())
+		config.UseTokenTransactionSchnorrSignatures = tc.useSchnorrSignatures
+
+		tokenPrivKey := config.IdentityPrivateKey
+		tokenIdentifier := queryTokenIdentifierOrFail(t, config, tokenPrivKey.Public())
+
+		// Create a mint transaction with the correct issuer public key in MintInput,
+		// matching the TokenCreate record, so the key mismatch check passes.
+		mintTx, _, err := createTestTokenMintTransactionTokenPbWithParams(t, config, tokenTransactionParams{
+			TokenIdentityPubKey: tokenPrivKey.Public(),
+			TokenIdentifier:     tokenIdentifier,
+			NumOutputs:          1,
+			OutputAmounts:       []uint64{uint64(testIssueOutput1Amount)},
+		})
+		require.NoError(t, err, "failed to create mint transaction")
+
+		// Sign with a completely different key, producing an invalid signature.
+		// The SO resolves the issuer public key from the TokenCreate record and
+		// uses it to verify the signature — which should fail.
+		wrongSigningKey := keys.GeneratePrivateKey()
+		_, err = broadcastTokenTransaction(t, t.Context(), config, mintTx, []keys.Private{wrongSigningKey})
+		require.Error(t, err, "expected mint with bad signature to be rejected")
+		require.ErrorContains(t, err, "failed to validate mint token transaction signature")
+	})
+}
+
 func TestTokenMintAndTransferTokensTooManyOutputsFails(t *testing.T) {
 	runSignatureTypeTestCases(t, func(t *testing.T, tc signatureTypeTestCase) {
 		config := wallet.NewTestWalletConfigWithIdentityKey(t, staticLocalIssuerKey.IdentityPrivateKey())
@@ -475,4 +578,183 @@ func TestTokenMintAndTransferMaxInputsSucceeds(t *testing.T) {
 		require.NoError(t, err, "failed to get owned token outputs")
 		require.Len(t, tokenOutputsResponse.OutputsWithPreviousTransactionData, 1, "expected 1 consolidated output")
 	})
+}
+
+func TestBroadcastTokenTransactionV3ValidationRules(t *testing.T) {
+	if !broadcastTokenTestsUseV3 {
+		t.Skip("Skipping test for V2 transactions which does not require these values be set by the client.")
+	}
+
+	testCases := []struct {
+		name                  string
+		mutatePartial         func(*tokenpb.PartialTokenTransaction)
+		expectedErrorContains string
+	}{
+		{
+			name: "nanosecond_precision_timestamp_rejected",
+			mutatePartial: func(partial *tokenpb.PartialTokenTransaction) {
+				nanoPrecisionTimestamp := time.Now()
+				if nanoPrecisionTimestamp.Nanosecond()%1000 == 0 {
+					nanoPrecisionTimestamp = nanoPrecisionTimestamp.Add(123 * time.Nanosecond)
+				}
+				partial.TokenTransactionMetadata.ClientCreatedTimestamp = timestamppb.New(nanoPrecisionTimestamp)
+			},
+			expectedErrorContains: "sub-microsecond precision",
+		},
+		{
+			name: "out_of_order_operator_keys_rejected",
+			mutatePartial: func(partial *tokenpb.PartialTokenTransaction) {
+				reversedKeys := slices.Clone(partial.TokenTransactionMetadata.GetSparkOperatorIdentityPublicKeys())
+				slices.Reverse(reversedKeys)
+				partial.TokenTransactionMetadata.SparkOperatorIdentityPublicKeys = reversedKeys
+			},
+			expectedErrorContains: "strictly bytewise ascending",
+		},
+		{
+			name: "out_of_order_invoice_attachments_rejected",
+			mutatePartial: func(partial *tokenpb.PartialTokenTransaction) {
+				reversedInvoices := slices.Clone(partial.TokenTransactionMetadata.GetInvoiceAttachments())
+				slices.Reverse(reversedInvoices)
+				partial.TokenTransactionMetadata.InvoiceAttachments = reversedInvoices
+			},
+			expectedErrorContains: "strictly ascending by spark_invoice",
+		},
+		{
+			name: "nil_metadata_rejected",
+			mutatePartial: func(partial *tokenpb.PartialTokenTransaction) {
+				partial.TokenTransactionMetadata = nil
+			},
+			expectedErrorContains: "token transaction metadata cannot be nil",
+		},
+		{
+			name: "nil_invoice_attachment_rejected",
+			mutatePartial: func(partial *tokenpb.PartialTokenTransaction) {
+				partial.TokenTransactionMetadata.InvoiceAttachments = append(
+					partial.TokenTransactionMetadata.GetInvoiceAttachments(),
+					nil,
+				)
+			},
+			expectedErrorContains: "invoice_attachments must not contain nil or empty entries",
+		},
+		{
+			name: "duplicate_operator_keys_rejected",
+			mutatePartial: func(partial *tokenpb.PartialTokenTransaction) {
+				keys := partial.TokenTransactionMetadata.GetSparkOperatorIdentityPublicKeys()
+				if len(keys) > 0 {
+					partial.TokenTransactionMetadata.SparkOperatorIdentityPublicKeys = append(keys, keys[0])
+				}
+			},
+			expectedErrorContains: "strictly bytewise ascending",
+		},
+		{
+			name: "duplicate_invoice_strings_rejected",
+			mutatePartial: func(partial *tokenpb.PartialTokenTransaction) {
+				invoices := partial.TokenTransactionMetadata.GetInvoiceAttachments()
+				if len(invoices) > 0 {
+					duplicate := &tokenpb.InvoiceAttachment{
+						SparkInvoice: invoices[0].GetSparkInvoice(),
+					}
+					partial.TokenTransactionMetadata.InvoiceAttachments = append(invoices, duplicate)
+				}
+			},
+			expectedErrorContains: "strictly ascending by spark_invoice",
+		},
+		{
+			name: "zero_validity_duration_rejected",
+			mutatePartial: func(partial *tokenpb.PartialTokenTransaction) {
+				partial.TokenTransactionMetadata.ValidityDurationSeconds = 0
+			},
+			expectedErrorContains: "value must be inside range [1, 300]",
+		},
+	}
+
+	for _, tc := range testCases {
+		for _, sigTC := range signatureTypeTestCases {
+			testName := tc.name + "_" + sigTC.name + "_[" + currentBroadcastRunLabel() + "]"
+			t.Run(testName, func(t *testing.T) {
+				config := wallet.NewTestWalletConfigWithIdentityKey(t, staticLocalIssuerKey.IdentityPrivateKey())
+				config.UseTokenTransactionSchnorrSignatures = sigTC.useSchnorrSignatures
+
+				tokenPrivKey := config.IdentityPrivateKey
+				tokenIdentifier := queryTokenIdentifierOrFail(t, config, tokenPrivKey.Public())
+				issueTokenTransaction, userOutput1PrivKey, _, err := createTestTokenMintTransactionTokenPb(t, config, tokenPrivKey.Public(),
+					tokenIdentifier)
+				require.NoError(t, err, "failed to create test token issuance transaction")
+
+				finalIssueTokenTransaction, err := broadcastTokenTransaction(
+					t,
+					t.Context(),
+					config,
+					issueTokenTransaction,
+					[]keys.Private{tokenPrivKey},
+				)
+				require.NoError(t, err, "failed to broadcast issuance token transaction")
+
+				finalIssueTokenTransactionHash, err := utils.HashTokenTransaction(finalIssueTokenTransaction, false)
+				require.NoError(t, err, "failed to hash final issuance token transaction")
+
+				transferTokenTransaction := &tokenpb.TokenTransaction{
+					Version:                         3,
+					Network:                         config.ProtoNetwork(),
+					SparkOperatorIdentityPublicKeys: getSigningOperatorPublicKeyBytes(config),
+					ValidityDurationSeconds:         proto.Uint64(180),
+					TokenInputs: &tokenpb.TokenTransaction_TransferInput{
+						TransferInput: &tokenpb.TokenTransferInput{
+							OutputsToSpend: []*tokenpb.TokenOutputToSpend{
+								{
+									PrevTokenTransactionHash: finalIssueTokenTransactionHash,
+									PrevTokenTransactionVout: 0,
+								},
+								{
+									PrevTokenTransactionHash: finalIssueTokenTransactionHash,
+									PrevTokenTransactionVout: 1,
+								},
+							},
+						},
+					},
+					TokenOutputs: []*tokenpb.TokenOutput{
+						{
+							OwnerPublicKey:  userOutput1PrivKey.Public().Serialize(),
+							TokenIdentifier: tokenIdentifier,
+							TokenAmount:     int64ToUint128Bytes(0, testTransferOutput1Amount),
+						},
+					},
+					InvoiceAttachments: []*tokenpb.InvoiceAttachment{
+						{SparkInvoice: "spark:abc123..."},
+						{SparkInvoice: "spark:xyz789..."},
+					},
+				}
+
+				partialTx, err := protoconverter.ConvertV2TxShapeToPartial(transferTokenTransaction)
+				require.NoError(t, err, "failed to convert to partial")
+
+				normalizeV3PartialTokenTransaction(partialTx)
+
+				tc.mutatePartial(partialTx)
+
+				partialHash, err := protohash.Hash(partialTx)
+				require.NoError(t, err, "failed to hash partial")
+
+				ownerSignatures := make([]*tokenpb.SignatureWithIndex, 0)
+				for i, privKey := range []keys.Private{userOutput1PrivKey, userOutput1PrivKey} {
+					sig, err := wallet.SignHashSlice(config, privKey, partialHash)
+					require.NoError(t, err, "failed to sign")
+					ownerSignatures = append(ownerSignatures, &tokenpb.SignatureWithIndex{
+						InputIndex: uint32(i),
+						Signature:  sig,
+					})
+				}
+
+				req := &tokenpb.BroadcastTransactionRequest{
+					IdentityPublicKey:               config.IdentityPublicKey().Serialize(),
+					PartialTokenTransaction:         partialTx,
+					TokenTransactionOwnerSignatures: ownerSignatures,
+				}
+				_, err = wallet.BroadcastTokenTransactionV3Request(t.Context(), config, req)
+
+				require.Error(t, err, "expected transaction to be rejected")
+				require.Contains(t, err.Error(), tc.expectedErrorContains)
+			})
+		}
+	}
 }

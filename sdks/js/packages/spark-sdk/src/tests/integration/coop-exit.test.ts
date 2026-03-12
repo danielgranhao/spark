@@ -5,6 +5,7 @@ import { Address, OutScript, Transaction } from "@scure/btc-signer";
 import { TransactionInput } from "@scure/btc-signer/psbt";
 import { equalBytes } from "@scure/btc-signer/utils";
 import { uuidv7 } from "uuidv7";
+import { TransferStatus } from "../../proto/spark.js";
 import { WalletConfigService } from "../../services/config.js";
 import { ConnectionManagerNodeJS } from "../../services/connection/connection.node.js";
 import { CoopExitService } from "../../services/coop-exit.js";
@@ -12,18 +13,16 @@ import { SigningService } from "../../services/signing.js";
 import type { LeafKeyTweak } from "../../services/transfer.js";
 import { TransferService } from "../../services/transfer.js";
 import { ConfigOptions } from "../../services/wallet-config.js";
+import { KeyDerivation, KeyDerivationType } from "../../signer/types.js";
 import {
   getP2TRAddressFromPublicKey,
   getP2TRScriptFromPublicKey,
   getTxId,
-  getTxIdNoReverse,
 } from "../../utils/bitcoin.js";
 import { getNetwork, Network } from "../../utils/network.js";
 import { walletTypes } from "../test-utils.js";
 import { SparkWalletTesting } from "../utils/spark-testing-wallet.js";
 import { BitcoinFaucet } from "../utils/test-faucet.js";
-import { KeyDerivation, KeyDerivationType } from "../../signer/types.js";
-import { TransferStatus } from "../../proto/spark.js";
 
 describe.each(walletTypes)("coop exit", ({ name, Signer, createTree }) => {
   it(`${name} - test coop exit`, async () => {
@@ -159,10 +158,11 @@ describe.each(walletTypes)("coop exit", ({ name, Signer, createTree }) => {
     const transferId = uuidv7();
     const senderTransfer = await coopExitService.getConnectorRefundSignatures({
       leaves: [transferNode],
-      exitTxId: hexToBytes(getTxIdNoReverse(exitTx)),
+      exitTxId: hexToBytes(getTxId(exitTx)),
       connectorOutputs,
       receiverPubKey: hexToBytes(sspPubkey),
       transferId,
+      connectorTx: connectorTx.toBytes(),
     });
 
     const receiverTransfer = await sspTransferService.queryTransfer(
@@ -190,28 +190,10 @@ describe.each(walletTypes)("coop exit", ({ name, Signer, createTree }) => {
     ).toBe(true);
 
     // Try to claim leaf before exit tx confirms -> should fail
-    const leavesToClaim: LeafKeyTweak[] = receiverTransfer!.leaves.map(
-      (leaf) => ({
-        leaf: {
-          ...leaf.leaf!,
-          refundTx: leaf.intermediateRefundTx,
-          directRefundTx: leaf.intermediateDirectRefundTx,
-          directFromCpfpRefundTx: leaf.intermediateDirectFromCpfpRefundTx,
-        },
-        keyDerivation: {
-          type: KeyDerivationType.ECIES,
-          path: leaf.secretCipher,
-        },
-        newKeyDerivation: {
-          type: KeyDerivationType.LEAF,
-          path: leaf.leaf!.id,
-        },
-      }),
-    );
 
     let hasError = false;
     try {
-      await sspTransferService.claimTransfer(receiverTransfer!, leavesToClaim);
+      await sspTransferService.claimTransfer(receiverTransfer!);
     } catch (e) {
       hasError = true;
     }
@@ -237,15 +219,21 @@ describe.each(walletTypes)("coop exit", ({ name, Signer, createTree }) => {
     // So that we don't race the chain watcher in this test
     await faucet.generateToAddress(30, randomAddress);
 
-    // Sleep to allow the SO chain watcher to catch up
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Generate 2 more blocks for key tweaking requirement (knob requires 2+ confirmations)
+    await faucet.generateToAddress(2, randomAddress);
 
-    // Refetch and claim incoming transfer
-    const transfers = await sspWallet.queryPendingTransfers();
+    // Sleep to allow the SO chain watcher to catch up and process key tweaking
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // Refetch and claim incoming transfer - retry with backoff to handle timing
+    let transfers = await sspWallet.queryPendingTransfers();
+    let retries = 0;
+    while (transfers.transfers.length === 0 && retries < 5) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      transfers = await sspWallet.queryPendingTransfers();
+      retries++;
+    }
     expect(transfers.transfers.length).toBe(1);
-    await sspTransferService.claimTransfer(
-      transfers.transfers[0]!,
-      leavesToClaim,
-    );
+    await sspTransferService.claimTransfer(transfers.transfers[0]!);
   }, 30000);
 });

@@ -27,15 +27,15 @@ type Tree struct {
 	CreateTime time.Time `json:"create_time,omitempty"`
 	// The time when the entity was last updated.
 	UpdateTime time.Time `json:"update_time,omitempty"`
-	// OwnerIdentityPubkey holds the value of the "owner_identity_pubkey" field.
+	// The identity public key of the user who owns this tree.
 	OwnerIdentityPubkey keys.Public `json:"owner_identity_pubkey,omitempty"`
-	// Status holds the value of the "status" field.
+	// Current lifecycle status of the tree (e.g., AVAILABLE, EXITING).
 	Status schematype.TreeStatus `json:"status,omitempty"`
-	// Network holds the value of the "network" field.
+	// The Bitcoin network this tree is anchored on.
 	Network btcnetwork.Network `json:"network,omitempty"`
-	// BaseTxid holds the value of the "base_txid" field.
+	// The transaction ID of the L1 UTXO that anchors this tree.
 	BaseTxid schematype.TxID `json:"base_txid,omitempty"`
-	// Vout holds the value of the "vout" field.
+	// The output index within the base transaction that anchors this tree.
 	Vout int16 `json:"vout,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the TreeQuery when eager-loading is set.
@@ -49,13 +49,15 @@ type Tree struct {
 type TreeEdges struct {
 	// Root holds the value of the root edge.
 	Root *TreeNode `json:"root,omitempty"`
+	// Utxos holds the value of the utxos edge.
+	Utxos []*Utxo `json:"utxos,omitempty"`
 	// Nodes holds the value of the nodes edge.
 	Nodes []*TreeNode `json:"nodes,omitempty"`
 	// DepositAddress holds the value of the deposit_address edge.
 	DepositAddress *DepositAddress `json:"deposit_address,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [3]bool
+	loadedTypes [4]bool
 }
 
 // RootOrErr returns the Root value or an error if the edge
@@ -69,10 +71,19 @@ func (e TreeEdges) RootOrErr() (*TreeNode, error) {
 	return nil, &NotLoadedError{edge: "root"}
 }
 
+// UtxosOrErr returns the Utxos value or an error if the edge
+// was not loaded in eager-loading.
+func (e TreeEdges) UtxosOrErr() ([]*Utxo, error) {
+	if e.loadedTypes[1] {
+		return e.Utxos, nil
+	}
+	return nil, &NotLoadedError{edge: "utxos"}
+}
+
 // NodesOrErr returns the Nodes value or an error if the edge
 // was not loaded in eager-loading.
 func (e TreeEdges) NodesOrErr() ([]*TreeNode, error) {
-	if e.loadedTypes[1] {
+	if e.loadedTypes[2] {
 		return e.Nodes, nil
 	}
 	return nil, &NotLoadedError{edge: "nodes"}
@@ -83,7 +94,7 @@ func (e TreeEdges) NodesOrErr() ([]*TreeNode, error) {
 func (e TreeEdges) DepositAddressOrErr() (*DepositAddress, error) {
 	if e.DepositAddress != nil {
 		return e.DepositAddress, nil
-	} else if e.loadedTypes[2] {
+	} else if e.loadedTypes[3] {
 		return nil, &NotFoundError{label: depositaddress.Label}
 	}
 	return nil, &NotLoadedError{edge: "deposit_address"}
@@ -205,6 +216,11 @@ func (t *Tree) Value(name string) (ent.Value, error) {
 // QueryRoot queries the "root" edge of the Tree entity.
 func (t *Tree) QueryRoot() *TreeNodeQuery {
 	return NewTreeClient(t.config).QueryRoot(t)
+}
+
+// QueryUtxos queries the "utxos" edge of the Tree entity.
+func (t *Tree) QueryUtxos() *UtxoQuery {
+	return NewTreeClient(t.config).QueryUtxos(t)
 }
 
 // QueryNodes queries the "nodes" edge of the Tree entity.

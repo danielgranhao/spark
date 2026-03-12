@@ -18,7 +18,13 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/entitydkgkey"
 	"github.com/lightsparkdev/spark/so/ent/eventmessage"
 	"github.com/lightsparkdev/spark/so/ent/gossip"
+	"github.com/lightsparkdev/spark/so/ent/idempotencykey"
 	"github.com/lightsparkdev/spark/so/ent/l1tokencreate"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenjusticetransaction"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenoutputwithdrawal"
+	"github.com/lightsparkdev/spark/so/ent/l1withdrawaltransaction"
+	"github.com/lightsparkdev/spark/so/ent/multisigconfig"
+	"github.com/lightsparkdev/spark/so/ent/multisigmember"
 	"github.com/lightsparkdev/spark/so/ent/paymentintent"
 	"github.com/lightsparkdev/spark/so/ent/pendingsendtransfer"
 	"github.com/lightsparkdev/spark/so/ent/preimagerequest"
@@ -36,6 +42,8 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/tokentransactionpeersignature"
 	"github.com/lightsparkdev/spark/so/ent/transfer"
 	"github.com/lightsparkdev/spark/so/ent/transferleaf"
+	"github.com/lightsparkdev/spark/so/ent/transferreceiver"
+	"github.com/lightsparkdev/spark/so/ent/transfersender"
 	"github.com/lightsparkdev/spark/so/ent/tree"
 	"github.com/lightsparkdev/spark/so/ent/treenode"
 	"github.com/lightsparkdev/spark/so/ent/usersignedtransaction"
@@ -108,7 +116,13 @@ func checkColumn(table, column string) error {
 			entitydkgkey.Table:                      entitydkgkey.ValidColumn,
 			eventmessage.Table:                      eventmessage.ValidColumn,
 			gossip.Table:                            gossip.ValidColumn,
+			idempotencykey.Table:                    idempotencykey.ValidColumn,
 			l1tokencreate.Table:                     l1tokencreate.ValidColumn,
+			l1tokenjusticetransaction.Table:         l1tokenjusticetransaction.ValidColumn,
+			l1tokenoutputwithdrawal.Table:           l1tokenoutputwithdrawal.ValidColumn,
+			l1withdrawaltransaction.Table:           l1withdrawaltransaction.ValidColumn,
+			multisigconfig.Table:                    multisigconfig.ValidColumn,
+			multisigmember.Table:                    multisigmember.ValidColumn,
 			paymentintent.Table:                     paymentintent.ValidColumn,
 			pendingsendtransfer.Table:               pendingsendtransfer.ValidColumn,
 			preimagerequest.Table:                   preimagerequest.ValidColumn,
@@ -126,6 +140,8 @@ func checkColumn(table, column string) error {
 			tokentransactionpeersignature.Table:     tokentransactionpeersignature.ValidColumn,
 			transfer.Table:                          transfer.ValidColumn,
 			transferleaf.Table:                      transferleaf.ValidColumn,
+			transferreceiver.Table:                  transferreceiver.ValidColumn,
+			transfersender.Table:                    transfersender.ValidColumn,
 			tree.Table:                              tree.ValidColumn,
 			treenode.Table:                          treenode.ValidColumn,
 			usersignedtransaction.Table:             usersignedtransaction.ValidColumn,

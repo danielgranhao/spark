@@ -11,22 +11,26 @@ import {
   type Channel as ChannelWeb,
   type ClientFactory as ClientFactoryWeb,
 } from "nice-grpc-web";
-import { clientEnv } from "../../constants.js";
+import { getClientEnv } from "../../constants.js";
 import { SparkRequestError } from "../../errors/types.js";
 import type { SparkServiceDefinition } from "../../proto/spark.js";
 import type { SparkAuthnServiceDefinition } from "../../proto/spark_authn.js";
 import type { SparkTokenServiceDefinition } from "../../proto/spark_token.js";
-import { getMonotonicTime } from "../time-sync.js";
 import { WalletConfigService } from "../config.js";
-import { ConnectionManager } from "./connection.js";
+import { getMonotonicTime } from "../time-sync.js";
+import { AuthMode, ConnectionManager } from "./connection.js";
 
 export type Transport = NonNullable<Parameters<typeof createChannel>[1]>;
 
 export class ConnectionManagerBrowser extends ConnectionManager {
   protected transport: Transport;
 
-  constructor(config: WalletConfigService, transport = FetchTransport()) {
-    super(config);
+  constructor(
+    config: WalletConfigService,
+    authMode: AuthMode = "identity",
+    transport = FetchTransport(),
+  ) {
+    super(config, authMode);
     this.transport = transport;
   }
 
@@ -38,7 +42,7 @@ export class ConnectionManagerBrowser extends ConnectionManager {
     return metadata
       .set("X-Requested-With", "XMLHttpRequest")
       .set("X-Grpc-Web", "1")
-      .set("X-Client-Env", clientEnv)
+      .set("X-Client-Env", getClientEnv())
       .set("Content-Type", "application/grpc-web+proto");
   }
 

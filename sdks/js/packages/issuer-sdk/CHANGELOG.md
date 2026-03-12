@@ -1,5 +1,113 @@
 # @buildonspark/issuer-sdk
 
+## 0.1.18
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.7.0
+
+## 0.1.17
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.7
+
+## 0.1.16
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.6
+
+## 0.1.15
+
+### Patch Changes
+
+- - Upgrade `@noble/curves` minimum version to `^1.9.7`
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.5
+
+## 0.1.14
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.4
+
+## 0.1.13
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.3
+
+## 0.1.12
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.2
+
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.1
+
+## 0.1.10
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.0
+
+## 0.1.9
+
+### Patch Changes
+
+- - Freeze/Unfreeze Return Type Change: freezeTokens() and unfreezeTokens() now return impactedTokenOutputs: TokenOutputRef[] instead of impactedOutputIds: string[]. This provides richer output information including the token ID for each affected output.
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.9
+
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.8
+
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.7
+
+## 0.1.6
+
+### Patch Changes
+
+- ### Improved Token Ownership Validation
+
+  Token metadata fetches now return only tokens owned by the issuer, with centralized ownership validation to prevent operating on non-owned tokens.
+
+  ### Stricter Token Identifier Requirements
+
+  Mint, burn, freeze, and unfreeze flows now require explicit token identifiers or validate that only a single token is available. This provides clearer validation and more descriptive error messages when operations fail.
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.6
+
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.5
+
 ## 0.1.4
 
 ### Patch Changes

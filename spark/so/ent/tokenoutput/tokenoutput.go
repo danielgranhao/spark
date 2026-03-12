@@ -43,6 +43,10 @@ const (
 	FieldCreatedTransactionOutputVout = "created_transaction_output_vout"
 	// FieldCreatedTransactionFinalizedHash holds the string denoting the created_transaction_finalized_hash field in the database.
 	FieldCreatedTransactionFinalizedHash = "created_transaction_finalized_hash"
+	// FieldSeFinalizationAdaptorSig holds the string denoting the se_finalization_adaptor_sig field in the database.
+	FieldSeFinalizationAdaptorSig = "se_finalization_adaptor_sig"
+	// FieldSeWithdrawalSignature holds the string denoting the se_withdrawal_signature field in the database.
+	FieldSeWithdrawalSignature = "se_withdrawal_signature"
 	// FieldSpentOwnershipSignature holds the string denoting the spent_ownership_signature field in the database.
 	FieldSpentOwnershipSignature = "spent_ownership_signature"
 	// FieldSpentOperatorSpecificOwnershipSignature holds the string denoting the spent_operator_specific_ownership_signature field in the database.
@@ -51,8 +55,6 @@ const (
 	FieldSpentTransactionInputVout = "spent_transaction_input_vout"
 	// FieldSpentRevocationSecret holds the string denoting the spent_revocation_secret field in the database.
 	FieldSpentRevocationSecret = "spent_revocation_secret"
-	// FieldConfirmedWithdrawBlockHash holds the string denoting the confirmed_withdraw_block_hash field in the database.
-	FieldConfirmedWithdrawBlockHash = "confirmed_withdraw_block_hash"
 	// FieldNetwork holds the string denoting the network field in the database.
 	FieldNetwork = "network"
 	// FieldTokenIdentifier holds the string denoting the token_identifier field in the database.
@@ -71,6 +73,10 @@ const (
 	EdgeTokenPartialRevocationSecretShares = "token_partial_revocation_secret_shares"
 	// EdgeTokenCreate holds the string denoting the token_create edge name in mutations.
 	EdgeTokenCreate = "token_create"
+	// EdgeWithdrawal holds the string denoting the withdrawal edge name in mutations.
+	EdgeWithdrawal = "withdrawal"
+	// EdgeJusticeTx holds the string denoting the justice_tx edge name in mutations.
+	EdgeJusticeTx = "justice_tx"
 	// Table holds the table name of the tokenoutput in the database.
 	Table = "token_outputs"
 	// RevocationKeyshareTable is the table that holds the revocation_keyshare relation/edge.
@@ -113,6 +119,20 @@ const (
 	TokenCreateInverseTable = "token_creates"
 	// TokenCreateColumn is the table column denoting the token_create relation/edge.
 	TokenCreateColumn = "token_create_id"
+	// WithdrawalTable is the table that holds the withdrawal relation/edge.
+	WithdrawalTable = "l1token_output_withdrawals"
+	// WithdrawalInverseTable is the table name for the L1TokenOutputWithdrawal entity.
+	// It exists in this package in order to avoid circular dependency with the "l1tokenoutputwithdrawal" package.
+	WithdrawalInverseTable = "l1token_output_withdrawals"
+	// WithdrawalColumn is the table column denoting the withdrawal relation/edge.
+	WithdrawalColumn = "token_output_withdrawal"
+	// JusticeTxTable is the table that holds the justice_tx relation/edge.
+	JusticeTxTable = "l1token_justice_transactions"
+	// JusticeTxInverseTable is the table name for the L1TokenJusticeTransaction entity.
+	// It exists in this package in order to avoid circular dependency with the "l1tokenjusticetransaction" package.
+	JusticeTxInverseTable = "l1token_justice_transactions"
+	// JusticeTxColumn is the table column denoting the justice_tx relation/edge.
+	JusticeTxColumn = "token_output_justice_tx"
 )
 
 // Columns holds all SQL columns for tokenoutput fields.
@@ -130,11 +150,12 @@ var Columns = []string{
 	FieldAmount,
 	FieldCreatedTransactionOutputVout,
 	FieldCreatedTransactionFinalizedHash,
+	FieldSeFinalizationAdaptorSig,
+	FieldSeWithdrawalSignature,
 	FieldSpentOwnershipSignature,
 	FieldSpentOperatorSpecificOwnershipSignature,
 	FieldSpentTransactionInputVout,
 	FieldSpentRevocationSecret,
-	FieldConfirmedWithdrawBlockHash,
 	FieldNetwork,
 	FieldTokenIdentifier,
 	FieldTokenCreateID,
@@ -321,6 +342,20 @@ func ByTokenCreateField(field string, opts ...sql.OrderTermOption) OrderOption {
 		sqlgraph.OrderByNeighborTerms(s, newTokenCreateStep(), sql.OrderByField(field, opts...))
 	}
 }
+
+// ByWithdrawalField orders the results by withdrawal field.
+func ByWithdrawalField(field string, opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newWithdrawalStep(), sql.OrderByField(field, opts...))
+	}
+}
+
+// ByJusticeTxField orders the results by justice_tx field.
+func ByJusticeTxField(field string, opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newJusticeTxStep(), sql.OrderByField(field, opts...))
+	}
+}
 func newRevocationKeyshareStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(
 		sqlgraph.From(Table, FieldID),
@@ -361,5 +396,19 @@ func newTokenCreateStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(TokenCreateInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.M2O, true, TokenCreateTable, TokenCreateColumn),
+	)
+}
+func newWithdrawalStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(WithdrawalInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2O, false, WithdrawalTable, WithdrawalColumn),
+	)
+}
+func newJusticeTxStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(JusticeTxInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2O, false, JusticeTxTable, JusticeTxColumn),
 	)
 }

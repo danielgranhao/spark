@@ -1,5 +1,4 @@
-import { CurrencyUnit, isObject } from "@lightsparkdev/core";
-import { schnorr, secp256k1 } from "@noble/curves/secp256k1";
+import { CurrencyUnit } from "@lightsparkdev/core";
 import {
   bytesToHex,
   bytesToNumberBE,
@@ -7,11 +6,19 @@ import {
   hexToBytes,
   numberToVarBytesBE,
 } from "@noble/curves/utils";
+import { sha256 } from "@noble/hashes/sha2";
+import { type Tracer } from "@opentelemetry/api";
+import {
+  ConsoleSpanExporter,
+  SimpleSpanProcessor,
+  SpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 import { validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
-import { Address, OutScript, SigHash, Transaction } from "@scure/btc-signer";
+import { Address, OutScript, Transaction } from "@scure/btc-signer";
 import { TransactionInput } from "@scure/btc-signer/psbt";
 import { Mutex } from "async-mutex";
+import { EventEmitter } from "eventemitter3";
 import { uuidv7, uuidv7obj } from "uuidv7";
 import { isReactNative } from "../constants.js";
 import {
@@ -30,24 +37,22 @@ import {
   CoopExitRequest,
   ExitSpeed,
   LeavesSwapFeeEstimateOutput,
-  LeavesSwapRequest,
   LightningReceiveRequest,
   LightningSendFeeEstimateInput,
   LightningSendRequest,
   RequestCoopExitInput,
-  SparkLeavesSwapRequestStatus,
   SparkWalletUserToUserRequestsConnection,
   StaticDepositQuoteOutput,
-  UserLeafInput,
 } from "../graphql/objects/index.js";
 import {
   ConnectedEvent,
   DepositAddressQueryResult,
+  Direction,
+  Network as NetworkProto,
+  networkToJSON,
   PreimageRequestRole,
   PreimageRequestStatus,
   QueryHtlcResponse,
-  QueryNodesRequest,
-  QueryNodesResponse,
   QuerySparkInvoicesResponse,
   SigningJob,
   SubscribeToEventsResponse,
@@ -55,75 +60,42 @@ import {
   TransferStatus,
   TransferType,
   TreeNode,
-  TreeNodeStatus,
   UtxoSwapRequestType,
 } from "../proto/spark.js";
 import {
-  createSenderSpendTx,
-  createReceiverSpendTx,
-} from "../utils/htlc-transactions.js";
-import {
-  QueryTokenTransactionsResponse,
   OutputWithPreviousTransactionData,
+  QueryTokenTransactionsResponse,
 } from "../proto/spark_token.js";
+import type { DecodedInvoice } from "../services/bolt11-spark.js";
+import type { GetUtxosForAddressesParams } from "../spark-readonly-client/types.js";
+import {
+  decodeInvoice,
+  getNetworkFromInvoice,
+  isValidSparkAddressFallback,
+} from "../services/bolt11-spark.js";
 import { WalletConfigService } from "../services/config.js";
 import { ConnectionManager } from "../services/connection/connection.js";
 import { CoopExitService } from "../services/coop-exit.js";
 import { DepositService } from "../services/deposit.js";
+import LeafManager from "../services/leaf-manager.js";
 import { LightningService } from "../services/lightning.js";
+import { SigningService } from "../services/signing.js";
+import SwapService from "../services/swap.js";
+import { TokenOutputManager } from "../services/tokens/output-manager.js";
 import {
   MAX_TOKEN_OUTPUTS_TX,
   TokenTransactionService,
-} from "../services/token-transactions.js";
+} from "../services/tokens/token-transactions.js";
 import type { LeafKeyTweak } from "../services/transfer.js";
 import { TransferService } from "../services/transfer.js";
 import {
   ConfigOptions,
   ELECTRS_CREDENTIALS,
 } from "../services/wallet-config.js";
-import {
-  applyAdaptorToSignature,
-  generateAdaptorFromSignature,
-  generateSignatureFromExistingAdaptor,
-} from "../utils/adaptor-signature.js";
-import {
-  computeTaprootKeyNoScript,
-  getP2TRScriptFromPublicKey,
-  getP2WPKHAddressFromPublicKey,
-  getSigHashFromTx,
-  getTxEstimatedVbytesSizeByNumberOfInputsOutputs,
-  getTxFromRawTxBytes,
-  getTxFromRawTxHex,
-  getTxId,
-} from "../utils/bitcoin.js";
-import { HashSparkInvoice } from "../utils/invoice-hashing.js";
-import {
-  getNetwork,
-  Network,
-  NetworkToProto,
-  NetworkType,
-} from "../utils/network.js";
-import { sumAvailableTokens } from "../utils/token-transactions.js";
-import { doesTxnNeedRenewed, isZeroTimelock } from "../utils/transaction.js";
-import { sha256 } from "@noble/hashes/sha2";
-import { type Tracer } from "@opentelemetry/api";
-import {
-  ConsoleSpanExporter,
-  SimpleSpanProcessor,
-  SpanProcessor,
-} from "@opentelemetry/sdk-trace-base";
-import { EventEmitter } from "eventemitter3";
-import { ClientError, Status } from "nice-grpc-common";
-import { Network as NetworkProto, networkToJSON } from "../proto/spark.js";
-import {
-  decodeInvoice,
-  getNetworkFromInvoice,
-  isValidSparkFallback,
-} from "../services/bolt11-spark.js";
-import { SigningService } from "../services/signing.js";
 import { DefaultSparkSigner, SparkSigner } from "../signer/signer.js";
 import { KeyDerivation, KeyDerivationType } from "../signer/types.js";
 import { BitcoinFaucet } from "../tests/utils/test-faucet.js";
+import { Interval } from "../types/index.js";
 import {
   mapSettingsProtoToWalletSettings,
   mapTransferToWalletTransfer,
@@ -137,29 +109,48 @@ import {
   decodeSparkAddress,
   encodeSparkAddress,
   encodeSparkAddressWithSignature,
+  getNetworkFromSparkAddress,
   isLegacySparkAddress,
   isSafeForNumber,
   SparkAddressFormat,
   validateSparkInvoiceFields,
 } from "../utils/address.js";
-import { chunkArray } from "../utils/chunkArray.js";
+import {
+  getP2TRScriptFromPublicKey,
+  getP2WPKHAddressFromPublicKey,
+  getSigHashFromTx,
+  getTxEstimatedVbytesSizeByNumberOfInputsOutputs,
+  getTxFromRawTxBytes,
+  getTxFromRawTxHex,
+  getTxId,
+} from "../utils/bitcoin.js";
 import { getFetch } from "../utils/fetch.js";
-import { addPublicKeys } from "../utils/keys.js";
-import { optimize, shouldOptimize } from "../utils/optimize.js";
-import { RetryContext, withRetry } from "../utils/retry.js";
+import {
+  createReceiverSpendTx,
+  createSenderSpendTx,
+} from "../utils/htlc-transactions.js";
+import { HashSparkInvoice } from "../utils/invoice-hashing.js";
+import {
+  getNetwork,
+  Network,
+  NetworkToProto,
+  NetworkType,
+} from "../utils/network.js";
 import {
   Bech32mTokenIdentifier,
   decodeBech32mTokenIdentifier,
   encodeBech32mTokenIdentifier,
 } from "../utils/token-identifier.js";
+import { sumTokenOutputs } from "../utils/token-transactions.js";
 import type {
   CreateHTLCParams,
+  CreateLightningHodlInvoiceParams,
   CreateLightningInvoiceParams,
   DepositParams,
   FulfillSparkInvoiceResponse,
   GroupSparkInvoicesResult,
-  InitWalletResponse,
   HandlePublicMethodErrorParams,
+  InitWalletResponse,
   InvalidInvoice,
   PayLightningInvoiceParams,
   SparkWalletEvents,
@@ -176,7 +167,6 @@ import type {
   WithdrawParams,
 } from "./types.js";
 import { SparkWalletEvent } from "./types.js";
-import { Interval } from "../types/index.js";
 
 /**
  * The SparkWallet class is the primary interface for interacting with the Spark network.
@@ -193,22 +183,18 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
   protected sspClient: SspClient | null = null;
   protected tokenTransactionService: TokenTransactionService;
   protected transferService: TransferService;
+  protected swapService: SwapService;
+  protected leafManager: LeafManager;
 
   private claimTransferMutex = new Mutex();
   private claimTransfersInterval: Interval | null = null;
-  private leavesMutex = new Mutex();
   private mutexes: Map<string, Mutex> = new Map();
-  private optimizationInProgress = false;
-  private pendingWithdrawnOutputIds: string[] = [];
   private sparkAddress: SparkAddressFormat | undefined;
   private streamController: AbortController | null = null;
   private tokenOptimizationInProgress = false;
   private tokenOptimizationInterval: Interval | null = null;
-  private tokenOutputsMutex = new Mutex();
-
-  protected leaves: TreeNode[] = [];
+  private tokenOutputManager: TokenOutputManager;
   protected tokenMetadata: TokenMetadataMap = new Map();
-  protected tokenOutputs: TokenOutputsMap = new Map();
   protected tracer: Tracer | null = null;
   protected tracerId = "spark-sdk";
 
@@ -244,6 +230,9 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       this.config,
       this.connectionManager,
     );
+    this.tokenOutputManager = new TokenOutputManager(
+      this.config.getTokenOutputLockExpiryMs(),
+    );
     this.lightningService = new LightningService(
       this.config,
       this.connectionManager,
@@ -253,6 +242,30 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       this.config,
       this.connectionManager,
       this.signingService,
+    );
+    this.sspClient = new SspClient(this.config);
+    this.swapService = new SwapService(
+      this.config,
+      this.transferService,
+      this.sspClient,
+    );
+    this.leafManager = new LeafManager(
+      this.config,
+      this.swapService,
+      this.transferService,
+      this.connectionManager,
+      (balance) => {
+        this.emit(SparkWalletEvent.BalanceUpdate, {
+          available: BigInt(balance.available),
+          owned: BigInt(balance.owned),
+          incoming: BigInt(balance.incoming),
+        });
+      },
+      async () => {
+        for await (const _ of this.optimizeLeaves()) {
+          // run all steps
+        }
+      },
     );
 
     if (this.getTracer()) {
@@ -285,8 +298,11 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
   }
 
   private async createClientsAndSyncWallet() {
-    this.sspClient = new SspClient(this.config);
     await this.connectionManager.createClients();
+
+    // Initialize leaf manager before the stream starts so
+    // handleTransferEvent can identify sender events.
+    await this.leafManager.initialize();
 
     if (isReactNative) {
       this.startPeriodicClaimTransfers();
@@ -315,34 +331,45 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
   private async handleStreamEvent({ event }: SubscribeToEventsResponse) {
     try {
       if (
-        isTransferStreamEvent(event) &&
-        event.transfer.transfer.type !== TransferType.COUNTER_SWAP
+        isReceiverTransferStreamEvent(event) &&
+        event.receiverTransfer.transfer.type !== TransferType.COUNTER_SWAP &&
+        event.receiverTransfer.transfer.type !== TransferType.COUNTER_SWAP_V3
       ) {
-        const { senderIdentityPublicKey, receiverIdentityPublicKey } =
-          event.transfer.transfer;
+        const transfer = event.receiverTransfer.transfer;
+        const { senderIdentityPublicKey, receiverIdentityPublicKey } = transfer;
 
         // Don't claim if this is a self transfer, that's handled elsewhere
-        if (
-          event.transfer.transfer &&
-          !equalBytes(senderIdentityPublicKey, receiverIdentityPublicKey)
-        ) {
+        if (!equalBytes(senderIdentityPublicKey, receiverIdentityPublicKey)) {
+          // Add leaves as INCOMING immediately so balance reflects them during claim
+          const incomingLeaves = transfer.leaves
+            .map((l) => l.leaf)
+            .filter((l): l is TreeNode => !!l);
+          if (incomingLeaves.length > 0) {
+            await this.leafManager.addIncomingLeaves(
+              incomingLeaves,
+              transfer.id,
+            );
+          }
+
           await this.claimTransfer({
-            transfer: event.transfer.transfer,
+            transfer,
             emit: true,
           });
         }
+      } else if (isSenderTransferStreamEvent(event)) {
+        await this.leafManager.handleTransferEvent(
+          event.senderTransfer.transfer,
+        );
       } else if (isDepositStreamEvent(event)) {
         const deposit = event.deposit.deposit;
-
-        await this.withLeaves(async () => {
-          this.leaves.push(deposit);
-        });
-
-        this.emit(
-          SparkWalletEvent.DepositConfirmed,
-          deposit.id,
-          (await this.getBalance()).balance,
-        );
+        const wasAdded = await this.leafManager.handleDepositEvent(deposit);
+        if (deposit.status === "AVAILABLE" && wasAdded) {
+          this.emit(
+            SparkWalletEvent.DepositConfirmed,
+            deposit.id,
+            BigInt(this.leafManager.getAvailableBalance()),
+          );
+        }
       }
     } catch (error) {
       console.error("Error processing event", error);
@@ -395,8 +422,10 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
             }
 
             if (
-              isTransferStreamEvent(data.event) &&
-              claimedTransfersIds.includes(data.event.transfer.transfer.id)
+              isReceiverTransferStreamEvent(data.event) &&
+              claimedTransfersIds.includes(
+                data.event.receiverTransfer.transfer.id,
+              )
             ) {
               continue;
             }
@@ -449,254 +478,7 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
   }
 
   public async getLeaves(isBalanceCheck: boolean = false): Promise<TreeNode[]> {
-    const operatorToLeaves = new Map<string, QueryNodesResponse>();
-    const ownerIdentityPubkey = await this.config.signer.getIdentityPublicKey();
-
-    let signingOperators = Object.entries(this.config.getSigningOperators());
-    if (isBalanceCheck) {
-      // If we're just checking the balance, we can just query the coordinator.
-      signingOperators = signingOperators.filter(
-        ([id, _]) => id === this.config.getCoordinatorIdentifier(),
-      );
-    }
-    await Promise.all(
-      signingOperators.map(async ([id, operator]) => {
-        const leaves = await this.queryNodes(
-          {
-            source: {
-              $case: "ownerIdentityPubkey",
-              ownerIdentityPubkey,
-            },
-            includeParents: false,
-            network: NetworkToProto[this.config.getNetwork()],
-            statuses: [TreeNodeStatus.TREE_NODE_STATUS_AVAILABLE],
-          },
-          operator.address,
-        );
-        operatorToLeaves.set(id, leaves);
-      }),
-    );
-
-    const leaves = operatorToLeaves.get(
-      this.config.getCoordinatorIdentifier(),
-    )!;
-    const leavesToIgnore: Set<string> = new Set();
-    if (!isBalanceCheck) {
-      // Query the leaf states from other operators.
-      // We'll ignore the leaves that are out of sync for now.
-      // Still include the leaves that are out of sync for balance check.
-      for (const [id, operatorLeaves] of operatorToLeaves) {
-        if (id !== this.config.getCoordinatorIdentifier()) {
-          // Loop over leaves returned by coordinator.
-          // If the leaf is not present in the operator's leaves, we'll ignore it.
-          // If the leaf is present, we'll check if the leaf is in sync with the operator's leaf.
-          // If the leaf is not in sync, we'll ignore it.
-          for (const [nodeId, leaf] of Object.entries(leaves.nodes)) {
-            const operatorLeaf = operatorLeaves.nodes[nodeId];
-
-            if (!operatorLeaf) {
-              leavesToIgnore.add(nodeId);
-              continue;
-            }
-
-            if (
-              leaf.status !== operatorLeaf.status ||
-              !leaf.signingKeyshare ||
-              !operatorLeaf.signingKeyshare ||
-              !equalBytes(
-                leaf.signingKeyshare.publicKey,
-                operatorLeaf.signingKeyshare.publicKey,
-              ) ||
-              !equalBytes(leaf.nodeTx, operatorLeaf.nodeTx)
-            ) {
-              leavesToIgnore.add(nodeId);
-            }
-          }
-        }
-      }
-    }
-
-    const availableLeaves = Object.entries(leaves.nodes).filter(
-      ([_, node]) => node.status === "AVAILABLE",
-    );
-
-    for (const [id, leaf] of availableLeaves) {
-      if (
-        leaf.parentNodeId &&
-        leaf.status === "AVAILABLE" &&
-        this.verifyKey(
-          await this.config.signer.getPublicKeyFromDerivation({
-            type: KeyDerivationType.LEAF,
-            path: leaf.parentNodeId,
-          }),
-          leaf.signingKeyshare?.publicKey ?? new Uint8Array(),
-          leaf.verifyingPublicKey,
-        )
-      ) {
-        this.transferLeavesToSelf([leaf], {
-          type: KeyDerivationType.LEAF,
-          path: leaf.parentNodeId,
-        });
-        leavesToIgnore.add(id);
-      } else if (
-        !this.verifyKey(
-          await this.config.signer.getPublicKeyFromDerivation({
-            type: KeyDerivationType.LEAF,
-            path: leaf.id,
-          }),
-          leaf.signingKeyshare?.publicKey ?? new Uint8Array(),
-          leaf.verifyingPublicKey,
-        )
-      ) {
-        leavesToIgnore.add(id);
-      }
-    }
-
-    return availableLeaves
-      .filter(([_, node]) => !leavesToIgnore.has(node.id))
-      .map(([_, node]) => node);
-  }
-
-  private verifyKey(
-    pubkey1: Uint8Array,
-    pubkey2: Uint8Array,
-    verifyingKey: Uint8Array,
-  ): boolean {
-    return equalBytes(addPublicKeys(pubkey1, pubkey2), verifyingKey);
-  }
-
-  private popOrThrow<T>(arr: T[] | undefined, msg: string): T {
-    if (!arr || arr.length === 0) throw new SparkValidationError(msg);
-    return arr.pop() as T;
-  }
-
-  private async selectLeaves(
-    targetAmounts: number[],
-  ): Promise<Map<number, TreeNode[][]>> {
-    if (targetAmounts.length === 0) {
-      throw new SparkValidationError("Target amounts must be non-empty", {
-        field: "targetAmounts",
-        value: targetAmounts,
-      });
-    }
-
-    if (targetAmounts.some((amount) => amount <= 0)) {
-      throw new SparkValidationError("Target amount must be positive", {
-        field: "targetAmounts",
-        value: targetAmounts,
-      });
-    }
-
-    const totalTargetAmount = targetAmounts.reduce(
-      (acc, amount) => acc + amount,
-      0,
-    );
-    const totalBalance = this.getInternalBalance();
-
-    if (totalTargetAmount > totalBalance) {
-      throw new SparkValidationError(
-        "Total target amount exceeds available balance",
-        {
-          field: "targetAmounts",
-          value: totalTargetAmount,
-          expected: `less than or equal to ${totalBalance}`,
-        },
-      );
-    }
-
-    const leaves = await this.getLeaves();
-    if (leaves.length === 0) {
-      throw new SparkValidationError("No owned leaves found", {
-        field: "leaves",
-      });
-    }
-
-    leaves.sort((a, b) => b.value - a.value);
-
-    const selectLeavesForTargets = (
-      targetAmounts: number[],
-      leaves: TreeNode[],
-    ) => {
-      const usedLeaves = new Set<string>();
-      const results: Map<number, TreeNode[][]> = new Map();
-      let totalAmount = 0;
-
-      for (const targetAmount of targetAmounts) {
-        const nodes: TreeNode[] = [];
-        let amount = 0;
-
-        for (const leaf of leaves) {
-          if (usedLeaves.has(leaf.id)) {
-            continue;
-          }
-
-          if (targetAmount - amount >= leaf.value) {
-            amount += leaf.value;
-            nodes.push(leaf);
-            usedLeaves.add(leaf.id);
-          }
-        }
-
-        totalAmount += amount;
-        if (results.has(targetAmount)) {
-          results.get(targetAmount)!.push(nodes);
-        } else {
-          results.set(targetAmount, [nodes]);
-        }
-      }
-
-      return {
-        results,
-        foundSelections: totalAmount === totalTargetAmount,
-      };
-    };
-
-    let { results, foundSelections } = selectLeavesForTargets(
-      targetAmounts,
-      leaves,
-    );
-
-    if (!foundSelections) {
-      const newLeaves = await this.requestLeavesSwap({ targetAmounts });
-
-      newLeaves.sort((a, b) => b.value - a.value);
-
-      ({ results, foundSelections } = selectLeavesForTargets(
-        targetAmounts,
-        newLeaves,
-      ));
-    }
-
-    if (!foundSelections) {
-      throw new Error(
-        `Failed to select leaves for target amount ${totalTargetAmount}`,
-      );
-    }
-
-    return results;
-  }
-
-  private async selectLeavesForSwap(targetAmount: number) {
-    if (targetAmount == 0) {
-      throw new Error("Target amount needs to > 0");
-    }
-    const leaves = await this.getLeaves();
-    leaves.sort((a, b) => a.value - b.value);
-
-    let amount = 0;
-    const nodes: TreeNode[] = [];
-    for (const leaf of leaves) {
-      if (amount < targetAmount) {
-        amount += leaf.value;
-        nodes.push(leaf);
-      }
-    }
-
-    if (amount < targetAmount) {
-      throw new Error("Not enough leaves to swap for the target amount");
-    }
-
-    return nodes;
+    return this.leafManager.getLeaves(isBalanceCheck);
   }
 
   public async *optimizeLeaves(
@@ -710,91 +492,13 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
     void,
     void
   > {
-    const multiplicityValue =
-      multiplicity ?? this.config.getOptimizationOptions().multiplicity ?? 0;
-    if (multiplicityValue < 0) {
-      throw new SparkValidationError("Multiplicity cannot be negative");
-    } else if (multiplicityValue > 5) {
-      throw new SparkValidationError("Multiplicity cannot be greater than 5");
-    }
-
-    if (this.optimizationInProgress) {
-      return;
-    }
-
-    const controller = new AbortController();
-    const release = await this.leavesMutex.acquire();
-    try {
-      this.optimizationInProgress = true;
-
-      this.leaves = await this.getLeaves();
-      const swaps = optimize(
-        this.leaves.map((leaf) => leaf.value),
-        multiplicityValue,
-      );
-      if (swaps.length === 0) {
-        return;
-      }
-
-      yield {
-        step: 0,
-        total: swaps.length,
-        controller,
-      };
-
-      // Build a map from the denomination to the indices
-      const valueToNodes = new Map<number, TreeNode[]>();
-      this.leaves.forEach((leaf) => {
-        if (!valueToNodes.has(leaf.value)) {
-          valueToNodes.set(leaf.value, []);
-        }
-        valueToNodes.get(leaf.value)!.push(leaf);
-      });
-
-      // Select the leaves to send for each swap.
-      for (const swap of swaps) {
-        if (controller.signal.aborted) {
-          break;
-        }
-
-        const leavesToSend: TreeNode[] = [];
-        for (const leafValue of swap.inLeaves) {
-          const nodes = valueToNodes.get(leafValue);
-          if (nodes && nodes.length > 0) {
-            const node = nodes.shift()!;
-            leavesToSend.push(node);
-          } else {
-            throw new SparkError(
-              `No unused leaf with value ${leafValue} found in leaves`,
-            );
-          }
-        }
-
-        // TODO: Parallelize this.
-        await this.requestLeavesSwap({
-          leaves: leavesToSend,
-          targetAmounts: swap.outLeaves,
-        });
-
-        yield {
-          step: swaps.indexOf(swap) + 1,
-          total: swaps.length,
-          controller,
-        };
-      }
-
-      this.leaves = await this.getLeaves();
-    } finally {
-      this.optimizationInProgress = false;
-      release();
-    }
+    yield* this.leafManager.optimizeLeaves(multiplicity);
   }
 
   /**
    * Optimizes token outputs by consolidating them when there are more than the configured threshold.
-   * Processes one token at a time that has more than 50 outputs (configurable).
-   * On each run, it will find the next token identifier that needs consolidation and process it.
-   * Respects the maximum of 500 outputs per transaction.
+   * Processes as many token outputs as possible in one transaction, up to MAX_TOKEN_OUTPUTS_TX.
+   * Consolidates each eligible token identifier into a single output for this wallet address.
    */
   public async optimizeTokenOutputs(): Promise<void> {
     if (this.tokenOptimizationInProgress) {
@@ -809,53 +513,69 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       const tokenOptConfig = this.config.getTokenOptimizationOptions();
       const minOutputsThreshold = tokenOptConfig?.minOutputsThreshold ?? 50;
 
-      await this.withTokenOutputs(async () => {
-        // Find the next token that has more than the threshold number of outputs
-        for (const [tokenIdentifier, outputs] of this.tokenOutputs.entries()) {
-          if (outputs.length <= minOutputsThreshold) {
-            continue;
-          }
+      const entries = await this.tokenOutputManager.entries();
+      const acquireRequests = entries
+        .filter(([, allOutputs]) => allOutputs.length > minOutputsThreshold)
+        .map(([tokenIdentifier]) => ({
+          tokenIdentifier,
+          selector: (
+            available: OutputWithPreviousTransactionData[],
+            remainingCapacity: number,
+          ) => available.slice(0, remainingCapacity),
+        }));
 
-          try {
-            const receiverSparkAddress = await this.getSparkAddress();
+      if (acquireRequests.length === 0) {
+        return;
+      }
 
-            // Take only up to MAX_OUTPUTS_PER_TX outputs to respect transaction limits
-            const outputsToConsolidate = outputs.slice(0, MAX_TOKEN_OUTPUTS_TX);
-            const totalAmount = sumAvailableTokens(outputsToConsolidate);
+      const outputsByToken = await this.tokenOutputManager.acquireOutputsBatch(
+        acquireRequests,
+        MAX_TOKEN_OUTPUTS_TX,
+        "optimize-token-outputs",
+      );
 
-            const txId = await this.tokenTransactionService.tokenTransfer({
-              tokenOutputs: new Map([[tokenIdentifier, outputsToConsolidate]]),
-              receiverOutputs: [
-                {
-                  tokenIdentifier,
-                  tokenAmount: totalAmount,
-                  receiverSparkAddress,
-                },
-              ],
-              outputSelectionStrategy: "SMALL_FIRST",
-            });
+      if (outputsByToken.size === 0) {
+        return;
+      }
 
-            for (const output of outputsToConsolidate) {
-              if (output.output?.id) {
-                this.pendingWithdrawnOutputIds.push(output.output.id);
-              }
-            }
+      const receiverSparkAddress = await this.getSparkAddress();
+      const receiverOutputs: {
+        tokenIdentifier: Bech32mTokenIdentifier;
+        tokenAmount: bigint;
+        receiverSparkAddress: string;
+      }[] = [];
+      const selectedOutputs: OutputWithPreviousTransactionData[] = [];
 
-            console.log(
-              `Consolidated ${outputsToConsolidate.length} outputs for token ${tokenIdentifier} in transaction ${txId}`,
-            );
-
-            // Process only one token per run
-            break;
-          } catch (error) {
-            console.error(
-              `Failed to optimize token outputs for ${tokenIdentifier}:`,
-              error,
-            );
-            // Continue to next token if this one fails
-          }
+      for (const [tokenIdentifier, outputs] of outputsByToken) {
+        if (outputs.length === 0) {
+          continue;
         }
-      });
+        receiverOutputs.push({
+          tokenIdentifier,
+          tokenAmount: sumTokenOutputs(outputs),
+          receiverSparkAddress,
+        });
+        selectedOutputs.push(...outputs);
+      }
+
+      if (receiverOutputs.length === 0) {
+        return;
+      }
+
+      try {
+        const txId = await this.tokenTransactionService.tokenTransfer({
+          tokenOutputs: outputsByToken,
+          receiverOutputs,
+          outputSelectionStrategy: "SMALL_FIRST",
+          selectedOutputs,
+        });
+
+        console.log(
+          `Consolidated ${selectedOutputs.length} outputs across ${receiverOutputs.length} tokens in transaction ${txId}`,
+        );
+      } catch (error) {
+        console.error("Failed to optimize token outputs:", error);
+      }
     } finally {
       this.tokenOptimizationInProgress = false;
     }
@@ -886,42 +606,7 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
 
   private async syncWallet() {
     await this.syncTokenOutputs();
-
-    let leaves = await this.getLeaves();
-
-    leaves = await this.checkRenewLeaves(leaves);
-
-    this.leaves = leaves;
-
-    if (
-      this.config.getOptimizationOptions().auto &&
-      shouldOptimize(
-        this.leaves.map((leaf) => leaf.value),
-        this.config.getOptimizationOptions().multiplicity ?? 0,
-      )
-    ) {
-      for await (const _ of this.optimizeLeaves()) {
-        // run all optimizer steps, do nothing with them
-      }
-    }
-  }
-
-  private async withLeaves<T>(operation: () => Promise<T>): Promise<T> {
-    const release = await this.leavesMutex.acquire();
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
-  }
-
-  private async withTokenOutputs<T>(operation: () => Promise<T>): Promise<T> {
-    const release = await this.tokenOutputsMutex.acquire();
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
+    await this.leafManager.sync();
   }
 
   /**
@@ -959,6 +644,7 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
    * @param {string} [params.memo] - The memo for the payment
    * @param {string} [params.senderSparkAddress] - The spark address of the expected sender
    * @param {Date} [params.expiryTime] - The expiry time of the payment
+   * @param {string} [params.receiverIdentityPubkey] - Optional public key of the wallet receiving the invoice. If not present, the receiver will be the creator of this request. If provided and different from the creator's identity public key, the created invoice will be unsigned.
    * @returns {Promise<SparkAddressFormat>} The Spark address for the sats payment
    */
   public async createSatsInvoice({
@@ -966,11 +652,13 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
     memo,
     senderSparkAddress,
     expiryTime,
+    receiverIdentityPubkey,
   }: {
     amount?: number;
     memo?: string;
     senderSparkAddress?: SparkAddressFormat;
     expiryTime?: Date;
+    receiverIdentityPubkey?: string;
   }): Promise<SparkAddressFormat> {
     const MAX_SATS_AMOUNT = 2_100_000_000_000_000; // 21_000_000 BTC * 100_000_000 sats/BTC
     if (amount && (amount < 0 || amount > MAX_SATS_AMOUNT)) {
@@ -1005,15 +693,23 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
     };
     validateSparkInvoiceFields(invoiceFields);
     const identityPublicKey = await this.config.signer.getIdentityPublicKey();
-    const hash = HashSparkInvoice(
-      invoiceFields,
-      identityPublicKey,
-      this.config.getNetworkType(),
-    );
-    const signature = await this.config.signer.signSchnorrWithIdentityKey(hash);
+    const shouldSignInvoice =
+      !receiverIdentityPubkey ||
+      receiverIdentityPubkey.toLowerCase() ===
+        bytesToHex(identityPublicKey).toLowerCase();
+    let signature: Uint8Array | undefined = undefined;
+    if (shouldSignInvoice) {
+      const hash = HashSparkInvoice(
+        invoiceFields,
+        identityPublicKey,
+        this.config.getNetworkType(),
+      );
+      signature = await this.config.signer.signSchnorrWithIdentityKey(hash);
+    }
     return encodeSparkAddressWithSignature(
       {
-        identityPublicKey: bytesToHex(identityPublicKey),
+        identityPublicKey:
+          receiverIdentityPubkey ?? bytesToHex(identityPublicKey),
         network: this.config.getNetworkType(),
         sparkInvoiceFields: invoiceFields,
       },
@@ -1235,626 +931,195 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
   }
 
   /**
-   * Requests a swap of leaves to optimize wallet structure.
-   *
-   * @param {Object} params - Parameters for the leaves swap
-   * @param {number} [params.targetAmount] - Target amount for the swap
-   * @param {TreeNode[]} [params.leaves] - Specific leaves to swap
-   * @returns {Promise<Object>} The completed swap response
-   * @private
-   */
-  private async requestLeavesSwap({
-    targetAmounts,
-    leaves,
-  }: {
-    targetAmounts?: number[];
-    leaves?: TreeNode[];
-  }): Promise<TreeNode[]> {
-    if (targetAmounts && targetAmounts.some((amount) => amount <= 0)) {
-      throw new Error("specified targetAmount must be positive");
-    }
-
-    if (
-      targetAmounts &&
-      targetAmounts.some((amount) => !Number.isSafeInteger(amount))
-    ) {
-      throw new SparkValidationError("targetAmount must be less than 2^53", {
-        field: "targetAmounts",
-        value: targetAmounts,
-        expected: "smaller or equal to " + Number.MAX_SAFE_INTEGER,
-      });
-    }
-
-    let leavesToSwap: TreeNode[];
-    const totalTargetAmount = targetAmounts?.reduce(
-      (acc, amount) => acc + amount,
-      0,
-    );
-
-    if (totalTargetAmount) {
-      const totalBalance = this.getInternalBalance();
-
-      if (totalTargetAmount > totalBalance) {
-        throw new SparkValidationError(
-          "Total target amount exceeds available balance",
-          {
-            field: "targetAmounts",
-            value: totalTargetAmount,
-            expected: `less than or equal to ${totalBalance}`,
-          },
-        );
-      }
-    }
-
-    if (totalTargetAmount && leaves && leaves.length > 0) {
-      if (
-        totalTargetAmount < leaves.reduce((acc, leaf) => acc + leaf.value, 0)
-      ) {
-        throw new Error("targetAmount is less than the sum of leaves");
-      }
-      leavesToSwap = leaves;
-    } else if (totalTargetAmount) {
-      leavesToSwap = await this.selectLeavesForSwap(totalTargetAmount);
-    } else if (leaves && leaves.length > 0) {
-      leavesToSwap = leaves;
-    } else {
-      throw new Error("targetAmount or leaves must be provided");
-    }
-
-    leavesToSwap.sort((a, b) => a.value - b.value);
-
-    const batches = chunkArray(leavesToSwap, 64);
-
-    const results: TreeNode[] = [];
-    for (const batch of batches) {
-      const result = await this.processSwapBatch(batch, targetAmounts);
-      results.push(...result);
-    }
-
-    return results;
-  }
-
-  /**
-   * Processes a single batch of leaves for swapping.
-   */
-  private async processSwapBatch(
-    leavesBatch: TreeNode[],
-    targetAmounts?: number[],
-  ): Promise<TreeNode[]> {
-    const leafKeyTweaks: LeafKeyTweak[] = await Promise.all(
-      leavesBatch.map(async (leaf) => ({
-        leaf,
-        keyDerivation: {
-          type: KeyDerivationType.LEAF,
-          path: leaf.id,
-        },
-        newKeyDerivation: {
-          type: KeyDerivationType.RANDOM,
-        },
-      })),
-    );
-
-    const {
-      transfer,
-      signatureMap,
-      directSignatureMap,
-      directFromCpfpSignatureMap,
-    } = await this.transferService.startSwapSignRefund(
-      leafKeyTweaks,
-      hexToBytes(this.config.getSspIdentityPublicKey()),
-      new Date(Date.now() + 2 * 60 * 1000),
-    );
-
-    try {
-      if (!transfer.leaves[0]?.leaf) {
-        console.error("[processSwapBatch] First leaf is missing");
-        throw new Error("Failed to get leaf");
-      }
-
-      const cpfpRefundSignature = signatureMap.get(transfer.leaves[0].leaf.id);
-      if (!cpfpRefundSignature) {
-        console.error(
-          "[processSwapBatch] Missing CPFP refund signature for first leaf",
-        );
-        throw new Error("Failed to get CPFP refund signature");
-      }
-
-      const directRefundSignature = directSignatureMap.get(
-        transfer.leaves[0].leaf.id,
-      );
-      if (!directRefundSignature) {
-        console.error(
-          "[processSwapBatch] Missing direct refund signature for first leaf",
-        );
-        throw new Error("Failed to get direct refund signature");
-      }
-
-      const directFromCpfpRefundSignature = directFromCpfpSignatureMap.get(
-        transfer.leaves[0].leaf.id,
-      );
-      if (!directFromCpfpRefundSignature) {
-        console.error(
-          "[processSwapBatch] Missing direct from CPFP refund signature for first leaf",
-        );
-        throw new Error("Failed to get direct from CPFP refund signature");
-      }
-
-      const {
-        adaptorPrivateKey: cpfpAdaptorPrivateKey,
-        adaptorSignature: cpfpAdaptorSignature,
-      } = generateAdaptorFromSignature(cpfpRefundSignature);
-
-      let directAdaptorPrivateKey: Uint8Array = new Uint8Array();
-      let directAdaptorSignature: Uint8Array = new Uint8Array();
-      let directFromCpfpAdaptorPrivateKey: Uint8Array = new Uint8Array();
-      let directFromCpfpAdaptorSignature: Uint8Array = new Uint8Array();
-
-      if (directRefundSignature.length > 0) {
-        const { adaptorPrivateKey, adaptorSignature } =
-          generateAdaptorFromSignature(directRefundSignature);
-
-        directAdaptorPrivateKey = adaptorPrivateKey;
-        directAdaptorSignature = adaptorSignature;
-      }
-
-      if (directFromCpfpRefundSignature.length > 0) {
-        const { adaptorPrivateKey, adaptorSignature } =
-          generateAdaptorFromSignature(directFromCpfpRefundSignature);
-        directFromCpfpAdaptorPrivateKey = adaptorPrivateKey;
-        directFromCpfpAdaptorSignature = adaptorSignature;
-      }
-
-      if (!transfer.leaves[0].leaf) {
-        console.error(
-          "[processSwapBatch] First leaf missing when preparing user leaves",
-        );
-        throw new Error("Failed to get leaf");
-      }
-
-      const userLeaves: UserLeafInput[] = [];
-      userLeaves.push({
-        leaf_id: transfer.leaves[0].leaf.id,
-        raw_unsigned_refund_transaction: bytesToHex(
-          transfer.leaves[0].intermediateRefundTx,
-        ),
-        direct_raw_unsigned_refund_transaction: bytesToHex(
-          transfer.leaves[0].intermediateDirectRefundTx,
-        ),
-        direct_from_cpfp_raw_unsigned_refund_transaction: bytesToHex(
-          transfer.leaves[0].intermediateDirectFromCpfpRefundTx,
-        ),
-        adaptor_added_signature: bytesToHex(cpfpAdaptorSignature),
-        direct_adaptor_added_signature: bytesToHex(directAdaptorSignature),
-        direct_from_cpfp_adaptor_added_signature: bytesToHex(
-          directFromCpfpAdaptorSignature,
-        ),
-      });
-
-      for (let i = 1; i < transfer.leaves.length; i++) {
-        const leaf = transfer.leaves[i];
-        if (!leaf?.leaf) {
-          console.error(`[processSwapBatch] Leaf ${i + 1} is missing`);
-          throw new Error("Failed to get leaf");
-        }
-
-        const cpfpRefundSignature = signatureMap.get(leaf.leaf.id);
-        if (!cpfpRefundSignature) {
-          console.error(
-            `[processSwapBatch] Missing CPFP refund signature for leaf ${i + 1}`,
-          );
-          throw new Error("Failed to get CPFP refund signature");
-        }
-
-        const directRefundSignature = directSignatureMap.get(leaf.leaf.id);
-        if (!directRefundSignature) {
-          console.error(
-            `[processSwapBatch] Missing direct refund signature for leaf ${i + 1}`,
-          );
-          throw new Error("Failed to get direct refund signature");
-        }
-
-        const directFromCpfpRefundSignature = directFromCpfpSignatureMap.get(
-          leaf.leaf.id,
-        );
-        if (!directFromCpfpRefundSignature) {
-          console.error(
-            `[processSwapBatch] Missing direct from CPFP refund signature for leaf ${i + 1}`,
-          );
-          throw new Error("Failed to get direct from CPFP refund signature");
-        }
-
-        const cpfpSignature = generateSignatureFromExistingAdaptor(
-          cpfpRefundSignature,
-          cpfpAdaptorPrivateKey,
-        );
-
-        let directSignature: Uint8Array = new Uint8Array();
-        if (directRefundSignature.length > 0) {
-          directSignature = generateSignatureFromExistingAdaptor(
-            directRefundSignature,
-            directAdaptorPrivateKey,
-          );
-        }
-
-        let directFromCpfpSignature: Uint8Array = new Uint8Array();
-        if (directFromCpfpRefundSignature.length > 0) {
-          directFromCpfpSignature = generateSignatureFromExistingAdaptor(
-            directFromCpfpRefundSignature,
-            directFromCpfpAdaptorPrivateKey,
-          );
-        }
-
-        userLeaves.push({
-          leaf_id: leaf.leaf.id,
-          raw_unsigned_refund_transaction: bytesToHex(
-            leaf.intermediateRefundTx,
-          ),
-          direct_raw_unsigned_refund_transaction: bytesToHex(
-            leaf.intermediateDirectRefundTx,
-          ),
-          direct_from_cpfp_raw_unsigned_refund_transaction: bytesToHex(
-            leaf.intermediateDirectFromCpfpRefundTx,
-          ),
-          adaptor_added_signature: bytesToHex(cpfpSignature),
-          direct_adaptor_added_signature: bytesToHex(directSignature),
-          direct_from_cpfp_adaptor_added_signature: bytesToHex(
-            directFromCpfpSignature,
-          ),
-        });
-      }
-
-      const sspClient = this.getSspClient();
-      const cpfpAdaptorPubkey = bytesToHex(
-        secp256k1.getPublicKey(cpfpAdaptorPrivateKey),
-      );
-      if (!cpfpAdaptorPubkey) {
-        throw new Error("Failed to generate CPFP adaptor pubkey");
-      }
-
-      let directAdaptorPubkey: string | undefined;
-      if (directAdaptorPrivateKey.length > 0) {
-        directAdaptorPubkey = bytesToHex(
-          secp256k1.getPublicKey(directAdaptorPrivateKey),
-        );
-      }
-
-      let directFromCpfpAdaptorPubkey: string | undefined;
-      if (directFromCpfpAdaptorPrivateKey.length > 0) {
-        directFromCpfpAdaptorPubkey = bytesToHex(
-          secp256k1.getPublicKey(directFromCpfpAdaptorPrivateKey),
-        );
-      }
-
-      let request: LeavesSwapRequest | null | undefined = null;
-      const targetAmountSats =
-        targetAmounts?.reduce((acc, amount) => acc + amount, 0) ||
-        leavesBatch.reduce((acc, leaf) => acc + leaf.value, 0);
-      const totalAmountSats = leavesBatch.reduce(
-        (acc, leaf) => acc + leaf.value,
-        0,
-      );
-
-      request = await sspClient.requestLeaveSwap({
-        userLeaves,
-        adaptorPubkey: cpfpAdaptorPubkey,
-        directAdaptorPubkey: directAdaptorPubkey,
-        directFromCpfpAdaptorPubkey: directFromCpfpAdaptorPubkey,
-        targetAmountSats,
-        totalAmountSats,
-        targetAmountSatsList: targetAmounts,
-        // TODO: Request fee from SSP
-        feeSats: 0,
-        idempotencyKey: uuidv7(),
-      });
-
-      if (!request) {
-        console.error("[processSwapBatch] Leave swap request returned null");
-        throw new Error("Failed to request leaves swap. No response returned.");
-      }
-
-      if (
-        request.swapLeaves.length === 0 ||
-        request.status === SparkLeavesSwapRequestStatus.FAILED
-      ) {
-        console.error("[processSwapBatch] Leaves swap request failed", request);
-        throw new Error("Failed to request leaves swap. Request failed.");
-      }
-
-      const nodes = await this.queryNodes({
-        source: {
-          $case: "nodeIds",
-          nodeIds: {
-            nodeIds: request.swapLeaves.map((leaf) => leaf.leafId),
-          },
-        },
-        includeParents: false,
-        network: NetworkToProto[this.config.getNetwork()],
-        statuses: [],
-      });
-
-      if (Object.values(nodes.nodes).length !== request.swapLeaves.length) {
-        console.error("[processSwapBatch] Node count mismatch:", {
-          actual: Object.values(nodes.nodes).length,
-          expected: request.swapLeaves.length,
-        });
-        throw new Error("Expected same number of nodes as swapLeaves");
-      }
-
-      for (const [nodeId, node] of Object.entries(nodes.nodes)) {
-        if (!node.nodeTx) {
-          console.error(`[processSwapBatch] Node tx missing for ${nodeId}`);
-          throw new Error(`Node tx not found for leaf ${nodeId}`);
-        }
-
-        if (!node.verifyingPublicKey) {
-          console.error(
-            `[processSwapBatch] Verifying public key missing for ${nodeId}`,
-          );
-          throw new Error(`Node public key not found for leaf ${nodeId}`);
-        }
-
-        const leaf = request.swapLeaves.find((leaf) => leaf.leafId === nodeId);
-        if (!leaf) {
-          console.error(`[processSwapBatch] Leaf not found for node ${nodeId}`);
-          throw new Error(`Leaf not found for node ${nodeId}`);
-        }
-        // Apply CPFP adaptor signature
-        const cpfpNodeTx = getTxFromRawTxBytes(node.nodeTx);
-        const cpfpRefundTxBytes = hexToBytes(leaf.rawUnsignedRefundTransaction);
-        const cpfpRefundTx = getTxFromRawTxBytes(cpfpRefundTxBytes);
-        const cpfpSighash = getSigHashFromTx(
-          cpfpRefundTx,
-          0,
-          cpfpNodeTx.getOutput(0),
-        );
-
-        const nodePublicKey = node.verifyingPublicKey;
-        const taprootKey = computeTaprootKeyNoScript(nodePublicKey.slice(1));
-        const cpfpAdaptorSignatureBytes = hexToBytes(
-          leaf.adaptorSignedSignature,
-        );
-        applyAdaptorToSignature(
-          taprootKey.slice(1),
-          cpfpSighash,
-          cpfpAdaptorSignatureBytes,
-          cpfpAdaptorPrivateKey,
-        );
-
-        // Apply direct adaptor signature
-
-        if (leaf.directRawUnsignedRefundTransaction) {
-          const directNodeTx = getTxFromRawTxBytes(node.directTx);
-          const directRefundTxBytes = hexToBytes(
-            leaf.directRawUnsignedRefundTransaction,
-          );
-          const directRefundTx = getTxFromRawTxBytes(directRefundTxBytes);
-          const directSighash = getSigHashFromTx(
-            directRefundTx,
-            0,
-            directNodeTx.getOutput(0),
-          );
-          if (!leaf.directAdaptorSignedSignature) {
-            throw new Error(
-              `Direct adaptor signed signature missing for node ${nodeId}`,
-            );
-          }
-          const directAdaptorSignatureBytes = hexToBytes(
-            leaf.directAdaptorSignedSignature,
-          );
-
-          applyAdaptorToSignature(
-            taprootKey.slice(1),
-            directSighash,
-            directAdaptorSignatureBytes,
-            directAdaptorPrivateKey,
-          );
-        }
-
-        if (leaf.directFromCpfpRawUnsignedRefundTransaction) {
-          const directFromCpfpRefundTxBytes = hexToBytes(
-            leaf.directFromCpfpRawUnsignedRefundTransaction,
-          );
-          const directFromCpfpRefundTx = getTxFromRawTxBytes(
-            directFromCpfpRefundTxBytes,
-          );
-          const directFromCpfpSighash = getSigHashFromTx(
-            directFromCpfpRefundTx,
-            0,
-            cpfpNodeTx.getOutput(0),
-          );
-          if (!leaf.directFromCpfpAdaptorSignedSignature) {
-            throw new Error(
-              `Direct adaptor signed signature missing for node ${nodeId}`,
-            );
-          }
-          const directFromCpfpAdaptorSignatureBytes = hexToBytes(
-            leaf.directFromCpfpAdaptorSignedSignature,
-          );
-          applyAdaptorToSignature(
-            taprootKey.slice(1),
-            directFromCpfpSighash,
-            directFromCpfpAdaptorSignatureBytes,
-            directFromCpfpAdaptorPrivateKey,
-          );
-        }
-      }
-      await this.transferService.deliverTransferPackage(
-        transfer,
-        leafKeyTweaks,
-        signatureMap,
-        directSignatureMap,
-        directFromCpfpSignatureMap,
-      );
-
-      // At this point the leaves are considered outgoing.
-      // Remove them from internal state so we don't select them again
-      const leavesToRemove = new Set(leavesBatch.map((leaf) => leaf.id));
-      this.leaves = [
-        ...this.leaves.filter((leaf) => !leavesToRemove.has(leaf.id)),
-      ];
-
-      const completeResponse = await sspClient.completeLeaveSwap({
-        adaptorSecretKey: bytesToHex(cpfpAdaptorPrivateKey),
-        directAdaptorSecretKey: bytesToHex(directAdaptorPrivateKey),
-        directFromCpfpAdaptorSecretKey: bytesToHex(
-          directFromCpfpAdaptorPrivateKey,
-        ),
-        userOutboundTransferExternalId: transfer.id,
-        leavesSwapRequestId: request.id,
-      });
-
-      if (!completeResponse || !completeResponse.inboundTransfer?.sparkId) {
-        console.error(
-          "[processSwapBatch] Invalid complete response:",
-          completeResponse,
-        );
-        throw new Error("Failed to complete leaves swap");
-      }
-
-      const incomingTransfer = await this.transferService.queryTransfer(
-        completeResponse.inboundTransfer.sparkId,
-      );
-
-      if (!incomingTransfer) {
-        console.error("[processSwapBatch] No incoming transfer found");
-        throw new Error("Failed to get incoming transfer");
-      }
-
-      return await this.claimTransfer({
-        transfer: incomingTransfer,
-        emit: false,
-      });
-    } catch (e) {
-      console.error("[processSwapBatch] Error details:", {
-        error: e,
-        message: (e as Error).message,
-        stack: (e as Error).stack,
-      });
-      throw new Error(`Failed to request leaves swap: ${e}`);
-    }
-  }
-
-  /**
-   * Gets the current balance of the wallet.
-   * You can use the forceRefetch option to synchronize your wallet and claim any
-   * pending incoming lightning payment, spark transfer, or bitcoin deposit before returning the balance.
+   * Gets the current balance of the wallet by querying the coordinator for
+   * fresh leaf state and syncing token outputs. Use {@link getCachedBalance}
+   * for instant reads from the in-memory cache (kept up-to-date by the event
+   * stream).
    *
    * @returns {Promise<Object>} Object containing:
-   *   - balance: The wallet's current balance in satoshis
-   *   - tokenBalances: Map of the bech32m encodedtoken identifier to token balances and token info
+   *   - balance: Immediately spendable sats balance (deprecated — use satsBalance.available)
+   *   - satsBalance: Breakdown of sats balance by status
+   *     - available: Immediately spendable
+   *     - owned: All leaves owned (available + locked in outgoing transfers/swaps)
+   *     - incoming: Pending inbound transfers not yet claimed
+   *   - tokenBalances: Map of the bech32m encoded token identifier to token balances and token info
    */
   public async getBalance(): Promise<{
+    /** @deprecated Use satsBalance.available instead */
     balance: bigint;
+    satsBalance: {
+      available: bigint;
+      owned: bigint;
+      incoming: bigint;
+    };
     tokenBalances: TokenBalanceMap;
   }> {
-    const leaves = await this.getLeaves(true);
+    // Queries coordinator for fresh AVAILABLE leaves and updates the cache.
+    // `available` is computed directly from the fresh response (not from the
+    // cache) so stale AVAILABLE entries from concurrent-wallet spends can't
+    // inflate the value. owned/incoming are read from the event-driven cache.
+    const freshLeaves = await this.leafManager.getLeaves(true);
     await this.syncTokenOutputs();
 
-    let tokenBalances: TokenBalanceMap;
+    // Update cache with fresh AVAILABLE data and evict stale AVAILABLE entries
+    // not reported by the coordinator. Only evicts entries with source "none"
+    // (from addLeaves/sync) — freshly claimed leaves (source "transfer") are
+    // preserved since they may not yet appear in the coordinator response.
+    const freshIds = new Set(freshLeaves.map((l) => l.id));
+    await this.leafManager.addLeaves(freshLeaves);
+    await this.leafManager.evictStaleAvailable(freshIds);
 
-    if (this.tokenOutputs.size !== 0) {
-      tokenBalances = await this.getTokenBalance();
-    } else {
-      tokenBalances = new Map();
-    }
+    const available = BigInt(freshLeaves.reduce((sum, l) => sum + l.value, 0));
+    const owned = BigInt(this.leafManager.getOwnedBalance());
+    const incoming = BigInt(this.leafManager.getIncomingBalance());
 
     return {
-      balance: BigInt(leaves.reduce((acc, leaf) => acc + leaf.value, 0)),
-      tokenBalances,
+      balance: available,
+      satsBalance: { available, owned, incoming },
+      tokenBalances: await this.getTokenBalanceMap(),
     };
+  }
+
+  /**
+   * Returns sats balance from the in-memory cache (no network calls for sats).
+   * Token balances may require a network call for metadata. The cache is kept
+   * up-to-date by the event stream (deposits, transfers, swaps). For
+   * guaranteed-fresh data, use {@link getBalance} instead.
+   */
+  public async getCachedBalance(): Promise<{
+    /** @deprecated Use satsBalance.available instead */
+    balance: bigint;
+    satsBalance: {
+      available: bigint;
+      owned: bigint;
+      incoming: bigint;
+    };
+    tokenBalances: TokenBalanceMap;
+  }> {
+    return this.buildBalanceResponse();
+  }
+
+  private async buildBalanceResponse(): Promise<{
+    balance: bigint;
+    satsBalance: {
+      available: bigint;
+      owned: bigint;
+      incoming: bigint;
+    };
+    tokenBalances: TokenBalanceMap;
+  }> {
+    const available = BigInt(this.leafManager.getAvailableBalance());
+    return {
+      balance: available,
+      satsBalance: {
+        available,
+        owned: BigInt(this.leafManager.getOwnedBalance()),
+        incoming: BigInt(this.leafManager.getIncomingBalance()),
+      },
+      tokenBalances: await this.getTokenBalanceMap(),
+    };
+  }
+
+  private async getTokenBalanceMap(): Promise<TokenBalanceMap> {
+    const hasTokenOutputs = !(await this.tokenOutputManager.isEmpty());
+    return hasTokenOutputs ? await this.getTokenBalance() : new Map();
   }
 
   private async getTokenMetadata(): Promise<
     Map<Bech32mTokenIdentifier, UserTokenMetadata>
   > {
-    return await this.withTokenOutputs(async () => {
-      let metadataToFetch = new Array<Bech32mTokenIdentifier>();
-      for (const tokenIdentifier of this.tokenOutputs.keys()) {
-        if (!this.tokenMetadata.has(tokenIdentifier)) {
-          metadataToFetch.push(tokenIdentifier);
-        }
+    const tokenIdentifierKeys =
+      await this.tokenOutputManager.getTokenIdentifiers();
+    let metadataToFetch = new Array<Bech32mTokenIdentifier>();
+    for (const tokenIdentifier of tokenIdentifierKeys) {
+      if (!this.tokenMetadata.has(tokenIdentifier)) {
+        metadataToFetch.push(tokenIdentifier);
       }
+    }
 
-      if (metadataToFetch.length > 0) {
-        const sparkTokenClient =
-          await this.connectionManager.createSparkTokenClient(
-            this.config.getCoordinatorAddress(),
-          );
+    if (metadataToFetch.length > 0) {
+      const sparkTokenClient =
+        await this.connectionManager.createSparkTokenClient(
+          this.config.getCoordinatorAddress(),
+        );
 
-        try {
-          const response = await sparkTokenClient.query_token_metadata({
-            tokenIdentifiers: metadataToFetch.map(
-              (tokenIdentifier) =>
-                decodeBech32mTokenIdentifier(
-                  tokenIdentifier,
-                  this.config.getNetworkType(),
-                ).tokenIdentifier,
-            ),
+      try {
+        const response = await sparkTokenClient.query_token_metadata({
+          tokenIdentifiers: metadataToFetch.map(
+            (tokenIdentifier) =>
+              decodeBech32mTokenIdentifier(
+                tokenIdentifier,
+                this.config.getNetworkType(),
+              ).tokenIdentifier,
+          ),
+        });
+
+        for (const tokenMetadata of response.tokenMetadata) {
+          const tokenIdentifier = encodeBech32mTokenIdentifier({
+            tokenIdentifier: tokenMetadata.tokenIdentifier,
+            network: this.config.getNetworkType(),
           });
 
-          for (const tokenMetadata of response.tokenMetadata) {
-            const tokenIdentifier = encodeBech32mTokenIdentifier({
-              tokenIdentifier: tokenMetadata.tokenIdentifier,
-              network: this.config.getNetworkType(),
-            });
-
-            this.tokenMetadata.set(tokenIdentifier, tokenMetadata);
-          }
-        } catch (error) {
-          throw new SparkRequestError("Failed to fetch token metadata", {
-            error,
-          });
+          this.tokenMetadata.set(tokenIdentifier, tokenMetadata);
         }
-      }
-
-      let tokenMetadataMap = new Map<
-        Bech32mTokenIdentifier,
-        UserTokenMetadata
-      >();
-
-      for (const [tokenIdentifier, metadata] of this.tokenMetadata) {
-        tokenMetadataMap.set(tokenIdentifier, {
-          tokenPublicKey: bytesToHex(metadata.issuerPublicKey),
-          rawTokenIdentifier: metadata.tokenIdentifier,
-          tokenName: metadata.tokenName,
-          tokenTicker: metadata.tokenTicker,
-          decimals: metadata.decimals,
-          maxSupply: bytesToNumberBE(metadata.maxSupply),
-          extraMetadata: metadata.extraMetadata
-            ? new Uint8Array(metadata.extraMetadata)
-            : undefined,
+      } catch (error) {
+        throw new SparkRequestError("Failed to fetch token metadata", {
+          error,
         });
       }
+    }
 
-      return tokenMetadataMap;
-    });
+    let tokenMetadataMap = new Map<Bech32mTokenIdentifier, UserTokenMetadata>();
+
+    for (const [tokenIdentifier, metadata] of this.tokenMetadata) {
+      tokenMetadataMap.set(tokenIdentifier, {
+        tokenPublicKey: bytesToHex(metadata.issuerPublicKey),
+        rawTokenIdentifier: metadata.tokenIdentifier,
+        tokenName: metadata.tokenName,
+        tokenTicker: metadata.tokenTicker,
+        decimals: metadata.decimals,
+        maxSupply: bytesToNumberBE(metadata.maxSupply),
+        extraMetadata: metadata.extraMetadata
+          ? new Uint8Array(metadata.extraMetadata)
+          : undefined,
+      });
+    }
+
+    return tokenMetadataMap;
   }
 
   private async getTokenBalance(): Promise<TokenBalanceMap> {
     const tokenMetadataMap = await this.getTokenMetadata();
+    const result: TokenBalanceMap = new Map();
 
-    return await this.withTokenOutputs(async () => {
-      const result: TokenBalanceMap = new Map();
-      for (const [tokenIdentifier, tokenMetadata] of tokenMetadataMap) {
-        const outputs = this.tokenOutputs.get(tokenIdentifier);
+    for (const [tokenIdentifier, tokenMetadata] of tokenMetadataMap) {
+      const availableOutputs =
+        await this.tokenOutputManager.getAvailableOutputs(tokenIdentifier);
 
-        const humanReadableTokenIdentifier = encodeBech32mTokenIdentifier({
-          tokenIdentifier: tokenMetadata.rawTokenIdentifier,
-          network: this.config.getNetworkType(),
-        });
+      const humanReadableTokenIdentifier = encodeBech32mTokenIdentifier({
+        tokenIdentifier: tokenMetadata.rawTokenIdentifier,
+        network: this.config.getNetworkType(),
+      });
 
-        result.set(humanReadableTokenIdentifier, {
-          balance: outputs ? sumAvailableTokens(outputs) : BigInt(0),
-          tokenMetadata: tokenMetadata,
-        });
-      }
+      const pendingOutputs =
+        await this.tokenOutputManager.getPendingOutboundOutputs(
+          humanReadableTokenIdentifier,
+        );
 
-      return result;
-    });
-  }
+      const allOutputsSum = sumTokenOutputs([
+        ...availableOutputs,
+        ...pendingOutputs,
+      ]);
+      const availableToSendBalance = sumTokenOutputs(availableOutputs);
 
-  private getInternalBalance(): number {
-    return this.leaves.reduce((acc, leaf) => acc + leaf.value, 0);
+      result.set(humanReadableTokenIdentifier, {
+        ownedBalance: allOutputsSum,
+        availableToSendBalance,
+        tokenMetadata: tokenMetadata,
+      });
+    }
+
+    return result;
   }
 
   // ***** Deposit Flow *****
@@ -1977,6 +1242,106 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
         error,
       });
     }
+  }
+
+  /**
+   * Returns static deposit UTXOs for a batch of Spark deposit addresses.
+   *
+   * @param params - Batch UTXO query params.
+   */
+  public async getUtxosForDepositAddresses(
+    params: GetUtxosForAddressesParams,
+  ): Promise<{
+    utxos: {
+      address: string;
+      txid: string;
+      vout: number;
+      isConfirmed: boolean;
+    }[];
+    pageResponse: {
+      hasNextPage: boolean;
+      hasPreviousPage: boolean;
+      nextCursor: string;
+      previousCursor: string;
+    };
+  }> {
+    const {
+      depositAddresses,
+      pageSize = 50,
+      cursor = "",
+      direction = "NEXT",
+      excludeClaimed = false,
+      includePending = false,
+    } = params;
+
+    if (depositAddresses.length === 0) {
+      throw new SparkValidationError("Deposit addresses cannot be empty", {
+        field: "depositAddresses",
+      });
+    }
+
+    if (!Number.isInteger(pageSize) || pageSize <= 0) {
+      throw new SparkValidationError("Page size must be a positive integer", {
+        field: "pageSize",
+        pageSize,
+      });
+    }
+    if (direction === "PREVIOUS") {
+      throw new SparkValidationError(
+        "Backward pagination is not currently supported for getUtxosForDepositAddresses",
+        { field: "direction" },
+      );
+    }
+
+    const sparkClient = await this.connectionManager.createSparkClient(
+      this.config.getCoordinatorAddress(),
+    );
+
+    let response: Awaited<
+      ReturnType<typeof sparkClient.get_utxos_for_addresses>
+    >;
+    try {
+      response = await sparkClient.get_utxos_for_addresses({
+        addresses: depositAddresses,
+        network: NetworkToProto[this.config.getNetwork()],
+        excludeClaimed,
+        includePending,
+        page: {
+          pageSize,
+          cursor,
+          direction: Direction.NEXT,
+        },
+      });
+    } catch (error) {
+      throw new SparkRequestError("Failed to get UTXOs for deposit addresses", {
+        operation: "get_utxos_for_addresses",
+        error,
+      });
+    }
+
+    return {
+      utxos:
+        response.utxos.map((addressedUtxo) => {
+          if (!addressedUtxo.utxo) {
+            throw new SparkRequestError("Malformed UTXO response payload", {
+              operation: "get_utxos_for_addresses",
+              addressedUtxo,
+            });
+          }
+          return {
+            address: addressedUtxo.address,
+            txid: bytesToHex(addressedUtxo.utxo.txid),
+            vout: addressedUtxo.utxo.vout,
+            isConfirmed: addressedUtxo.isConfirmed,
+          };
+        }) ?? [],
+      pageResponse: {
+        hasNextPage: response.page?.hasNextPage ?? false,
+        hasPreviousPage: response.page?.hasPreviousPage ?? false,
+        nextCursor: response.page?.nextCursor ?? "",
+        previousCursor: response.page?.previousCursor ?? "",
+      },
+    };
   }
 
   /**
@@ -2229,7 +1594,9 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       );
     }
 
-    const tx = new Transaction();
+    const tx = new Transaction({
+      version: 3,
+    });
 
     tx.addInput({
       txid: depositTransactionId,
@@ -2761,14 +2128,158 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
         vout,
       });
 
-      await this.withLeaves(async () => {
-        this.leaves.push(...nodes);
-      });
+      const availableNodes = nodes.filter(
+        (node) => node.status === "AVAILABLE",
+      );
+      await this.leafManager.addLeaves(availableNodes);
+
+      // Track CREATING nodes as INCOMING — they'll transition to AVAILABLE
+      // when the deposit stream event arrives with status AVAILABLE.
+      const creatingNodes = nodes.filter((node) => node.status === "CREATING");
+      if (creatingNodes.length > 0) {
+        await this.leafManager.addIncomingLeaves(creatingNodes, txid);
+      }
 
       return nodes;
     });
 
     this.mutexes.delete(txid);
+
+    return nodes.map(mapTreeNodeToWalletLeaf);
+  }
+
+  /**
+   * Claims a multi-UTXO deposit where multiple on-chain transactions sent
+   * funds to the same deposit address. All UTXOs are consolidated into a
+   * single root node via a multi-input root transaction.
+   *
+   * @param {string[]} txids - Transaction IDs of the deposit transactions
+   * @returns {Promise<WalletLeaf[]>} The wallet leaf created from the consolidated deposit
+   */
+  public async claimMultiUtxoDeposit(txids: string[]): Promise<WalletLeaf[]> {
+    if (txids.length < 2) {
+      throw new SparkValidationError(
+        "claimMultiUtxoDeposit requires at least 2 transaction IDs",
+        {
+          field: "txids",
+          value: txids.length,
+          expected: "At least 2 transaction IDs",
+        },
+      );
+    }
+
+    // Use a composite mutex key to prevent concurrent claims of the same set
+    const mutexKey = txids.slice().sort().join(",");
+    let mutex = this.mutexes.get(mutexKey);
+    if (!mutex) {
+      mutex = new Mutex();
+      this.mutexes.set(mutexKey, mutex);
+    }
+
+    const nodes = await mutex.runExclusive(async () => {
+      // Fetch all deposit transactions
+      const depositTxs = await Promise.all(
+        txids.map((txid) => this.getDepositTransaction(txid)),
+      );
+
+      const unusedDepositAddresses: Map<string, DepositAddressQueryResult> =
+        new Map(
+          (
+            await this.queryAllUnusedDepositAddresses({
+              identityPublicKey:
+                await this.config.signer.getIdentityPublicKey(),
+              network: NetworkToProto[this.config.getNetwork()],
+            })
+          ).map((addr) => [addr.depositAddress, addr]),
+        );
+
+      // For each fetched tx, find the output matching a deposit address.
+      // All UTXOs must match the same deposit address for multi-UTXO consolidation.
+      let depositAddress: DepositAddressQueryResult | undefined;
+      const matchedTxs: { tx: Transaction; vout: number }[] = [];
+
+      for (const depositTx of depositTxs) {
+        let found = false;
+        for (let i = 0; i < depositTx.outputsLength; i++) {
+          const output = depositTx.getOutput(i);
+          if (!output) continue;
+          const parsedScript = OutScript.decode(output.script!);
+          const address = Address(getNetwork(this.config.getNetwork())).encode(
+            parsedScript,
+          );
+
+          const matchedAddr = unusedDepositAddresses.get(address);
+          if (matchedAddr) {
+            if (depositAddress && depositAddress.depositAddress !== address) {
+              throw new SparkValidationError(
+                "All UTXOs must be to the same deposit address for multi-UTXO claim",
+                {
+                  field: "depositAddress",
+                  value: address,
+                  expected: depositAddress.depositAddress,
+                },
+              );
+            }
+            depositAddress = matchedAddr;
+            matchedTxs.push({ tx: depositTx, vout: i });
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          throw new SparkValidationError(
+            "No matching unused deposit address found for transaction",
+            {
+              field: "txid",
+              value: getTxId(depositTx),
+            },
+          );
+        }
+      }
+
+      if (!depositAddress) {
+        throw new SparkValidationError(
+          "No matching unused deposit address found",
+          { field: "depositAddress" },
+        );
+      }
+
+      let keyDerivation: KeyDerivation;
+      if (!depositAddress.leafId) {
+        keyDerivation = {
+          type: KeyDerivationType.DEPOSIT,
+        };
+      } else {
+        keyDerivation = {
+          type: KeyDerivationType.LEAF,
+          path: depositAddress.leafId,
+        };
+      }
+
+      const res = await this.depositService!.createTreeRootMultiUtxo({
+        keyDerivation,
+        verifyingKey: depositAddress.verifyingPublicKey,
+        depositTxs: matchedTxs,
+      });
+
+      const availableNodes = res.nodes.filter(
+        (node) => node.status === "AVAILABLE",
+      );
+      await this.leafManager.addLeaves(availableNodes);
+
+      // Track CREATING nodes as INCOMING — they'll transition to AVAILABLE
+      // when the deposit stream event arrives with status AVAILABLE.
+      const creatingNodes = res.nodes.filter(
+        (node) => node.status === "CREATING",
+      );
+      if (creatingNodes.length > 0) {
+        await this.leafManager.addIncomingLeaves(creatingNodes, mutexKey);
+      }
+
+      return res.nodes;
+    });
+
+    this.mutexes.delete(mutexKey);
 
     return nodes.map(mapTreeNodeToWalletLeaf);
   }
@@ -2838,50 +2349,6 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
     return responses;
   }
 
-  /**
-   * Transfers deposit to self to claim ownership.
-   *
-   * @param {TreeNode[]} leaves - The leaves to transfer
-   * @param {Uint8Array} signingPubKey - The signing public key
-   * @returns {Promise<TreeNode[] | undefined>} The nodes resulting from the transfer
-   * @private
-   */
-  private async transferLeavesToSelf(
-    leaves: TreeNode[],
-    keyDerivation: KeyDerivation,
-  ): Promise<TreeNode[]> {
-    const leafKeyTweaks: LeafKeyTweak[] = await Promise.all(
-      leaves.map(async (leaf) => ({
-        leaf,
-        keyDerivation,
-        newKeyDerivation: {
-          type: KeyDerivationType.RANDOM,
-        },
-      })),
-    );
-
-    const transfer = await this.transferService.sendTransferWithKeyTweaks(
-      leafKeyTweaks,
-      await this.config.signer.getIdentityPublicKey(),
-    );
-
-    const pendingTransfer = await this.transferService.queryTransfer(
-      transfer.id,
-    );
-
-    const resultNodes = !pendingTransfer
-      ? []
-      : await this.claimTransfer({ transfer: pendingTransfer });
-
-    const leavesToRemove = new Set(leaves.map((leaf) => leaf.id));
-
-    this.leaves = [
-      ...this.leaves.filter((leaf) => !leavesToRemove.has(leaf.id)),
-      ...resultNodes,
-    ];
-
-    return resultNodes;
-  }
   // ***** Transfer Flow *****
 
   /**
@@ -2961,122 +2428,85 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       amountSatsArray.push(amountSats);
     }
 
-    return await this.withLeaves(async () => {
-      const selectLeavesToSendMap: Map<number, TreeNode[][]> =
-        await this.selectLeaves(amountSatsArray);
-
-      for (const [amount, selection] of selectLeavesToSendMap) {
-        for (let groupIndex = 0; groupIndex < selection.length; groupIndex++) {
-          const group = selection[groupIndex];
-          if (!group) {
-            throw new SparkValidationError(
-              `TreeNode group at index ${groupIndex} not found for amount ${amount} after selection`,
+    return await this.leafManager.selectLeavesAndExecute(
+      amountSatsArray,
+      async (selected) => {
+        const jobs = await Promise.all(
+          params.map(async (param, i) => {
+            const { receiverIdentityPubkey, sparkInvoice } = param;
+            const leaves = selected[i] as TreeNode[];
+            const leafKeyTweaks: LeafKeyTweak[] = leaves.map((leaf) =>
+              this.toSendTweak(leaf),
             );
-          }
-          const available = await this.checkRenewLeaves(group);
-
-          if (available.length < group.length) {
-            throw new Error(
-              `Not enough available nodes after refresh/extend. Expected ${group.length}, got ${available.length}`,
-            );
-          }
-          selection[groupIndex] = available;
-        }
-      }
-
-      const tweaksByAmount = this.buildTweaksByAmount(selectLeavesToSendMap);
-
-      const jobs = params.map((param) => {
-        const { amountSats, receiverIdentityPubkey, sparkInvoice } = param;
-        const leafKeyTweaks = this.popOrThrow(
-          tweaksByAmount.get(amountSats),
-          `no leaves key tweaks for ${amountSats}`,
+            return {
+              leafKeyTweaks,
+              receiverIdentityPubkey,
+              sparkInvoice,
+              param,
+            };
+          }),
         );
 
-        return { leafKeyTweaks, receiverIdentityPubkey, sparkInvoice, param };
-      });
+        const signerIdentityPublicKey =
+          await this.config.signer.getIdentityPublicKey();
 
-      const signerIdentityPublicKey =
-        await this.config.signer.getIdentityPublicKey();
+        const outcomes = await Promise.all(
+          jobs.map(async (job) => {
+            try {
+              const transfer =
+                await this.transferService.sendTransferWithKeyTweaks(
+                  job.leafKeyTweaks,
+                  job.receiverIdentityPubkey,
+                  job.sparkInvoice,
+                );
 
-      const outcomes = await Promise.all(
-        jobs.map(async (job) => {
-          try {
-            const transfer =
-              await this.transferService.sendTransferWithKeyTweaks(
-                job.leafKeyTweaks,
+              const isSelfTransfer = equalBytes(
+                signerIdentityPublicKey,
                 job.receiverIdentityPubkey,
-                job.sparkInvoice,
               );
-            const isSelfTransfer = equalBytes(
-              signerIdentityPublicKey,
-              job.receiverIdentityPubkey,
-            );
-            if (isSelfTransfer) {
-              const pending = await this.transferService.queryTransfer(
-                transfer.id,
-              );
-              if (pending) {
-                await this.claimTransfer({ transfer: pending });
+
+              if (isSelfTransfer) {
+                // Self-transfer: skip handleTransferEvent to avoid a
+                // LOCAL_LOCKED → SPENT deletion that creates a brief owned
+                // dip before registerClaimedLeaves re-adds the leaf. The
+                // claim path sets the leaf directly to AVAILABLE.
+                const pending = await this.transferService.queryTransfer(
+                  transfer.id,
+                );
+                if (pending) {
+                  await this.claimTransfer({ transfer: pending });
+                }
+              } else {
+                // Non-self transfer: advance local state immediately
+                await this.leafManager.handleTransferEvent(transfer);
               }
+              return {
+                ok: true as const,
+                transfer: mapTransferToWalletTransfer(
+                  transfer,
+                  bytesToHex(await this.config.signer.getIdentityPublicKey()),
+                ),
+                param: job.param,
+              };
+            } catch (error) {
+              // Restore failed-job leaves to AVAILABLE so the post-executor
+              // transition doesn't incorrectly mark them OUTGOING.
+              this.leafManager.restoreLocalLockedToAvailable(
+                job.leafKeyTweaks.map((t) => t.leaf.id),
+              );
+              return {
+                ok: false as const,
+                error:
+                  error instanceof Error ? error : new Error(String(error)),
+                param: job.param,
+              };
             }
-            return {
-              ok: true as const,
-              transfer: mapTransferToWalletTransfer(
-                transfer,
-                bytesToHex(await this.config.signer.getIdentityPublicKey()),
-              ),
-              param: job.param,
-            };
-          } catch (error) {
-            return {
-              ok: false as const,
-              error: error instanceof Error ? error : new Error(String(error)),
-              param: job.param,
-            };
-          }
-        }),
-      );
+          }),
+        );
 
-      const idsToRemove = new Set<string>();
-      for (const outcome of outcomes) {
-        if (outcome.ok) {
-          for (const leaf of outcome.transfer.leaves) {
-            if (leaf.leaf) {
-              idsToRemove.add(leaf.leaf.id);
-            }
-          }
-        }
-      }
-
-      if (idsToRemove.size > 0) {
-        this.leaves = this.leaves.filter((leaf) => !idsToRemove.has(leaf.id));
-      }
-      return outcomes;
-    });
-  }
-
-  private buildTweaksByAmount(
-    selectedByAmount: Map<number, TreeNode[][]>,
-  ): Map<number, LeafKeyTweak[][]> {
-    const tweaksByAmount = new Map<number, LeafKeyTweak[][]>();
-    for (const [amount, treeNodes] of selectedByAmount) {
-      const keyTweaksForAmount: LeafKeyTweak[][] = [];
-      for (const nodes of treeNodes) {
-        const batch: LeafKeyTweak[] = [];
-        for (let i = 0; i < nodes.length; i++) {
-          if (!nodes[i]) {
-            throw new SparkValidationError(
-              `TreeNode at index ${i} not found for amount ${amount} while building key tweaks by amount`,
-            );
-          }
-          batch.push(this.toSendTweak(nodes[i]!));
-        }
-        keyTweaksForAmount.push(batch);
-      }
-      tweaksByAmount.set(amount, keyTweaksForAmount);
-    }
-    return tweaksByAmount;
+        return outcomes;
+      },
+    );
   }
 
   private toSendTweak(node: TreeNode): LeafKeyTweak {
@@ -3087,183 +2517,18 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
     };
   }
 
-  private async checkRenewLeaves(nodes: TreeNode[]): Promise<TreeNode[]> {
-    const nodesToRenewNode: TreeNode[] = [];
-    const nodesToRenewRefund: TreeNode[] = [];
-    const nodesToRenewZeroTimelock: TreeNode[] = [];
-
-    const nodeIds: string[] = [];
-    const validNodes: TreeNode[] = [];
-
-    for (const node of nodes) {
-      const nodeTx = getTxFromRawTxBytes(node.nodeTx);
-      const refundTx = getTxFromRawTxBytes(node.refundTx);
-
-      const nodeSequence = nodeTx.getInput(0).sequence;
-      const refundSequence = refundTx.getInput(0).sequence;
-
-      if (nodeSequence === undefined) {
-        throw new SparkValidationError("Invalid node transaction", {
-          field: "sequence",
-          value: nodeTx.getInput(0),
-          expected: "Non-null sequence",
-        });
-      }
-      if (!refundSequence) {
-        throw new SparkValidationError("Invalid refund transaction", {
-          field: "sequence",
-          value: refundTx.getInput(0),
-          expected: "Non-null sequence",
-        });
-      }
-
-      if (doesTxnNeedRenewed(refundSequence)) {
-        if (isZeroTimelock(nodeSequence)) {
-          nodesToRenewZeroTimelock.push(node);
-        } else if (doesTxnNeedRenewed(nodeSequence)) {
-          nodesToRenewNode.push(node);
-        } else {
-          nodesToRenewRefund.push(node);
-        }
-        nodeIds.push(node.id);
-      } else {
-        validNodes.push(node);
-      }
-    }
-
-    if (
-      nodesToRenewNode.length === 0 &&
-      nodesToRenewRefund.length === 0 &&
-      nodesToRenewZeroTimelock.length === 0
-    ) {
-      return validNodes;
-    }
-
-    const nodesResp = await this.queryNodes({
-      source: {
-        $case: "nodeIds",
-        nodeIds: {
-          nodeIds,
-        },
-      },
-      includeParents: true,
-      network: NetworkToProto[this.config.getNetwork()],
-      statuses: [],
-    });
-
-    const nodesMap = new Map<string, TreeNode>();
-    for (const node of Object.values(nodesResp.nodes)) {
-      nodesMap.set(node.id, node);
-    }
-
-    const nodesToAdd: TreeNode[] = [];
-    for (const node of nodesToRenewNode) {
-      if (!node.parentNodeId) {
-        throw new Error(`node ${node.id} has no parent`);
-      }
-
-      const parentNode = nodesMap.get(node.parentNodeId);
-      if (!parentNode) {
-        throw new Error(`parent node ${node.parentNodeId} not found`);
-      }
-
-      const newNode = await this.transferService.renewNodeTxn(node, parentNode);
-      nodesToAdd.push(newNode);
-    }
-
-    for (const node of nodesToRenewRefund) {
-      if (!node.parentNodeId) {
-        throw new Error(`node ${node.id} has no parent`);
-      }
-
-      const parentNode = nodesMap.get(node.parentNodeId);
-      if (!parentNode) {
-        throw new Error(`parent node ${node.parentNodeId} not found`);
-      }
-
-      const newNode = await this.transferService.renewRefundTxn(
-        node,
-        parentNode,
-      );
-      nodesToAdd.push(newNode);
-    }
-
-    for (const node of nodesToRenewZeroTimelock) {
-      const newNode = await this.transferService.renewZeroTimelockNodeTxn(node);
-      nodesToAdd.push(newNode);
-    }
-
-    this.updateLeaves(nodeIds, nodesToAdd);
-    validNodes.push(...nodesToAdd);
-
-    return validNodes;
-  }
-
-  private async claimTransferCore(transfer: Transfer) {
-    return await this.claimTransferMutex.runExclusive(async () => {
-      const leafPubKeyMap =
-        await this.transferService.verifyPendingTransfer(transfer);
-
-      let leavesToClaim: LeafKeyTweak[] = [];
-
-      for (const leaf of transfer.leaves) {
-        if (leaf.leaf) {
-          const leafPubKey = leafPubKeyMap.get(leaf.leaf.id);
-          if (leafPubKey) {
-            leavesToClaim.push({
-              leaf: {
-                ...leaf.leaf,
-                refundTx: leaf.intermediateRefundTx,
-                directRefundTx: leaf.intermediateDirectRefundTx,
-                directFromCpfpRefundTx: leaf.intermediateDirectFromCpfpRefundTx,
-              },
-              keyDerivation: {
-                type: KeyDerivationType.ECIES,
-                path: leaf.secretCipher,
-              },
-              newKeyDerivation: {
-                type: KeyDerivationType.LEAF,
-                path: leaf.leaf.id,
-              },
-            });
-          }
-        }
-      }
-
-      const response = await this.transferService.claimTransfer(
-        transfer,
-        leavesToClaim,
-      );
-
-      return response.nodes;
-    });
-  }
-
   private async processClaimedTransferResults(
     result: TreeNode[],
     transfer: Transfer,
     emit?: boolean,
   ): Promise<TreeNode[]> {
-    result = await this.checkRenewLeaves(result);
-
-    const existingIds = new Set(this.leaves.map((leaf) => leaf.id));
-    const uniqueResults = result.filter((node) => !existingIds.has(node.id));
-    this.leaves.push(...uniqueResults);
+    result = await this.leafManager.registerClaimedLeaves(result, transfer.id);
 
     if (
+      emit &&
       transfer.type !== TransferType.COUNTER_SWAP &&
-      this.config.getOptimizationOptions().auto &&
-      shouldOptimize(
-        this.leaves.map((leaf) => leaf.value),
-        this.config.getOptimizationOptions().multiplicity ?? 0,
-      )
+      transfer.type !== TransferType.COUNTER_SWAP_V3
     ) {
-      for await (const _ of this.optimizeLeaves()) {
-        // run all optimizer steps, do nothing with them
-      }
-    }
-
-    if (emit) {
       this.emit(
         SparkWalletEvent.TransferClaimed,
         transfer.id,
@@ -3286,74 +2551,12 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
   }: {
     transfer: Transfer;
     emit?: boolean;
-  }) {
-    const onError = async (
-      context: RetryContext<TreeNode[], Transfer>,
-    ): Promise<TreeNode[] | undefined> => {
-      const error = context.error;
-      if (
-        error instanceof SparkRequestError &&
-        error.originalError instanceof ClientError &&
-        error.originalError.code === Status.ALREADY_EXISTS
-      ) {
-        const transferToUse = context.data || transfer;
-        const updatedTransfer = await this.transferService.queryTransfer(
-          transferToUse.id,
-        );
-
-        if (!updatedTransfer) {
-          return undefined;
-        }
-
-        const leaves = updatedTransfer.leaves.flatMap((leaf) =>
-          leaf.leaf ? [leaf.leaf] : [],
-        );
-
-        return leaves;
-      }
-      return;
-    };
-
-    const fetchData = async (context: RetryContext<TreeNode[], Transfer>) => {
-      const transferToUse = context.data || transfer;
-      const updatedTransfer = await this.transferService.queryPendingTransfers([
-        transferToUse.id,
-      ]);
-      if (!updatedTransfer.transfers[0]) {
-        return undefined;
-      }
-      return updatedTransfer.transfers[0];
-    };
-
-    try {
-      const result = await withRetry(
-        async (updatedTransfer?: Transfer) => {
-          const transferToUse = updatedTransfer ?? transfer;
-          return await this.claimTransferCore(transferToUse);
-        },
-        {
-          callbacks: {
-            onError,
-            fetchData,
-          },
-        },
-      );
-
-      if (result.length === 0) {
-        return [];
-      }
-
-      return await this.processClaimedTransferResults(result, transfer, emit);
-    } catch (error) {
-      console.warn(
-        `Failed to claim transfer after all retries. Please try reinitializing your wallet in a few minutes. Transfer ID: ${transfer.id}`,
-        error,
-      );
-
-      throw new SparkError("Failed to claim transfer", { error });
-    }
+  }): Promise<TreeNode[]> {
+    const result = await this.claimTransferMutex.runExclusive(async () => {
+      return await this.transferService.claimTransfer(transfer);
+    });
+    return await this.processClaimedTransferResults(result, transfer, emit);
   }
-
   /**
    * Claims all pending transfers.
    *
@@ -3361,13 +2564,13 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
    * @private
    */
   private async claimTransfers(
-    type?: TransferType,
+    types?: TransferType[],
     emit?: boolean,
   ): Promise<string[]> {
     const transfers = await this.transferService.queryPendingTransfers();
     const promises: Promise<string | null>[] = [];
     for (const transfer of transfers.transfers) {
-      if (type && transfer.type !== type) {
+      if (types && !types.includes(transfer.type)) {
         continue;
       }
 
@@ -3410,7 +2613,8 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
    * @param {number} params.amountSats - Amount in satoshis
    * @param {string} [params.memo] - Description for the invoice. Should not be provided if the descriptionHash is provided.
    * @param {number} [params.expirySeconds] - Optional expiry time in seconds
-   * @param {boolean} [params.includeSparkAddress] - Optional boolean signalling whether or not to include the spark address in the invoice
+   * @param {boolean} [params.includeSparkAddress] - Optional boolean signalling whether or not to include the spark address in the invoice. Mutually exclusive with includeSparkInvoice.
+   * @param {boolean} [params.includeSparkInvoice] - Optional boolean signalling whether to include a spark invoice in the invoice routing hints. Mutually exclusive with includeSparkAddress.
    * @param {string} [params.receiverIdentityPubkey] - Optional public key of the wallet receiving the lightning invoice. If not present, the receiver will be the creator of this request.
    * @param {string} [params.descriptionHash] - Optional h tag of the invoice. This is the hash of a longer description to include in the lightning invoice. It is used in LNURL and UMA as the hash of the metadata. This field is mutually exclusive with the memo field. Only one or the other should be provided.
    * @returns {Promise<LightningReceiveRequest>} BOLT11 encoded invoice
@@ -3420,9 +2624,59 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
     memo,
     expirySeconds = 60 * 60 * 24 * 30,
     includeSparkAddress = false,
+    includeSparkInvoice = false,
     receiverIdentityPubkey,
     descriptionHash,
   }: CreateLightningInvoiceParams): Promise<LightningReceiveRequest> {
+    const requestLightningInvoice = async (
+      amountSats: number,
+      paymentHash: Uint8Array,
+      memo?: string,
+      receiverIdentityPubkey?: string,
+      descriptionHash?: string,
+    ) => {
+      return await this.validateAndCreateLightningInvoice({
+        amountSats,
+        paymentHashHex: bytesToHex(paymentHash),
+        memo,
+        expirySeconds,
+        includeSparkAddress,
+        includeSparkInvoice,
+        receiverIdentityPubkey,
+        descriptionHash,
+      });
+    };
+
+    const invoice = await this.lightningService.createLightningInvoice({
+      amountSats,
+      memo,
+      invoiceCreator: requestLightningInvoice,
+      receiverIdentityPubkey,
+      descriptionHash,
+    });
+
+    return invoice;
+  }
+
+  private async validateAndCreateLightningInvoice({
+    amountSats,
+    paymentHashHex,
+    memo,
+    expirySeconds,
+    includeSparkAddress,
+    includeSparkInvoice,
+    receiverIdentityPubkey,
+    descriptionHash,
+  }: {
+    amountSats: number;
+    paymentHashHex: string;
+    memo?: string;
+    expirySeconds: number;
+    includeSparkAddress: boolean;
+    includeSparkInvoice: boolean;
+    receiverIdentityPubkey?: string;
+    descriptionHash?: string;
+  }): Promise<LightningReceiveRequest> {
     const sspClient = this.getSspClient();
 
     if (isNaN(amountSats) || amountSats < 0) {
@@ -3476,118 +2730,348 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       );
     }
 
-    const requestLightningInvoice = async (
-      amountSats: number,
-      paymentHash: Uint8Array,
-      memo?: string,
-      receiverIdentityPubkey?: string,
-      descriptionHash?: string,
-    ) => {
-      const network = this.config.getNetwork();
-      let bitcoinNetwork: BitcoinNetwork = BitcoinNetwork.REGTEST;
-      if (network === Network.MAINNET) {
-        bitcoinNetwork = BitcoinNetwork.MAINNET;
-      } else if (network === Network.REGTEST) {
-        bitcoinNetwork = BitcoinNetwork.REGTEST;
-      }
+    if (includeSparkAddress && includeSparkInvoice) {
+      throw new SparkValidationError(
+        "includeSparkAddress and includeSparkInvoice are mutually exclusive",
+        {
+          field: "includeSparkInvoice",
+          value: includeSparkInvoice,
+          expected: "Only one of includeSparkAddress or includeSparkInvoice",
+        },
+      );
+    }
 
-      const invoice = await sspClient.requestLightningReceive({
-        amountSats,
-        network: bitcoinNetwork,
-        paymentHash: bytesToHex(paymentHash),
-        expirySecs: expirySeconds,
-        memo,
-        includeSparkAddress: includeSparkAddress,
-        receiverIdentityPubkey,
-        descriptionHash,
+    let sparkInvoice: string | undefined;
+    if (includeSparkInvoice) {
+      const sparkAmount = amountSats > 0 ? amountSats : undefined;
+      sparkInvoice = await this.createSatsInvoice({
+        amount: sparkAmount,
+        expiryTime: new Date(Date.now() + expirySeconds * 1000),
+        receiverIdentityPubkey: receiverIdentityPubkey,
+        // Note: memo does not need to be duplicated in the spark invoice.
       });
+    }
 
-      if (!invoice) {
-        throw new Error("Failed to create lightning invoice");
-      }
+    const network = this.config.getNetwork();
+    let bitcoinNetwork: BitcoinNetwork = BitcoinNetwork.REGTEST;
+    if (network === Network.MAINNET) {
+      bitcoinNetwork = BitcoinNetwork.MAINNET;
+    } else if (network === Network.REGTEST) {
+      bitcoinNetwork = BitcoinNetwork.REGTEST;
+    }
 
-      const decodedInvoice = decodeInvoice(invoice.invoice.encodedInvoice);
+    const invoice = await sspClient.requestLightningReceive({
+      amountSats,
+      network: bitcoinNetwork,
+      paymentHash: paymentHashHex,
+      expirySecs: expirySeconds,
+      memo,
+      includeSparkAddress,
+      receiverIdentityPubkey,
+      descriptionHash,
+      sparkInvoice,
+    });
 
-      if (
-        invoice.invoice.paymentHash !== bytesToHex(paymentHash) ||
-        decodedInvoice.paymentHash !== bytesToHex(paymentHash)
-      ) {
-        throw new SparkValidationError("Payment hash mismatch", {
-          field: "paymentHash",
-          value: invoice.invoice.paymentHash,
-          expected: bytesToHex(paymentHash),
-        });
-      }
+    if (!invoice) {
+      throw new Error("Failed to create lightning invoice");
+    }
 
-      if (decodedInvoice.amountMSats === null && amountSats !== 0) {
-        throw new SparkValidationError("Amount mismatch", {
-          field: "amountMSats",
-          value: "null",
-          expected: amountSats * 1000,
-        });
-      }
+    const decodedInvoice = decodeInvoice(invoice.invoice.encodedInvoice);
 
-      if (
-        decodedInvoice.amountMSats !== null &&
-        decodedInvoice.amountMSats !== BigInt(amountSats * 1000)
-      ) {
-        throw new SparkValidationError("Amount mismatch", {
-          field: "amountMSats",
-          value: decodedInvoice.amountMSats,
-          expected: amountSats * 1000,
-        });
-      }
+    if (
+      invoice.invoice.paymentHash !== paymentHashHex ||
+      decodedInvoice.paymentHash !== paymentHashHex
+    ) {
+      throw new SparkValidationError("Payment hash mismatch", {
+        field: "paymentHash",
+        value: invoice.invoice.paymentHash,
+        expected: paymentHashHex,
+      });
+    }
 
-      // Validate the spark address embedded in the lightning invoice
-      if (includeSparkAddress) {
-        const sparkFallbackAddress = decodedInvoice.fallbackAddress;
+    if (decodedInvoice.amountMSats === null && amountSats !== 0) {
+      throw new SparkValidationError("Amount mismatch", {
+        field: "amountMSats",
+        value: "null",
+        expected: amountSats * 1000,
+      });
+    }
 
-        if (!sparkFallbackAddress) {
-          throw new SparkValidationError(
-            "No spark fallback address found in lightning invoice",
-            {
-              field: "sparkFallbackAddress",
-              value: sparkFallbackAddress,
-              expected: "Valid spark fallback address",
-            },
-          );
-        }
+    if (
+      decodedInvoice.amountMSats !== null &&
+      decodedInvoice.amountMSats !== BigInt(amountSats * 1000)
+    ) {
+      throw new SparkValidationError("Amount mismatch", {
+        field: "amountMSats",
+        value: decodedInvoice.amountMSats.toString(),
+        expected: amountSats * 1000,
+      });
+    }
 
-        const expectedIdentityPubkey =
-          receiverIdentityPubkey ?? (await this.getIdentityPublicKey());
+    // Validate the spark address embedded in the lightning invoice
+    if (includeSparkAddress) {
+      const sparkFallbackAddress = decodedInvoice.fallbackAddress;
 
-        if (sparkFallbackAddress !== expectedIdentityPubkey) {
-          throw new SparkValidationError(
-            "Mismatch between spark identity embedded in lightning invoice and designated recipient spark identity",
-            {
-              field: "sparkFallbackAddress",
-              value: sparkFallbackAddress,
-              expected: expectedIdentityPubkey,
-            },
-          );
-        }
-      } else if (decodedInvoice.fallbackAddress !== undefined) {
+      if (!sparkFallbackAddress) {
+        console.warn(
+          "No spark fallback address found in lightning invoice",
+          invoice.invoice.encodedInvoice,
+        );
         throw new SparkValidationError(
-          "Spark fallback address found in lightning invoice but includeSparkAddress is false",
+          "No spark fallback address found in lightning invoice",
           {
             field: "sparkFallbackAddress",
-            value: decodedInvoice.fallbackAddress,
+            value: sparkFallbackAddress,
+            expected: "Valid spark fallback address",
           },
         );
       }
 
-      return invoice;
-    };
+      const expectedIdentityPubkey =
+        receiverIdentityPubkey ?? (await this.getIdentityPublicKey());
 
-    const invoice = await this.lightningService.createLightningInvoice({
+      if (sparkFallbackAddress !== expectedIdentityPubkey) {
+        throw new SparkValidationError(
+          "Mismatch between spark identity embedded in lightning invoice and designated recipient spark identity",
+          {
+            field: "sparkFallbackAddress",
+            value: sparkFallbackAddress,
+            expected: expectedIdentityPubkey,
+          },
+        );
+      }
+    } else if (includeSparkInvoice) {
+      // Validate the spark invoice embedded in the lightning invoice
+      const embeddedSparkInvoice = decodedInvoice.fallbackAddress;
+
+      if (!embeddedSparkInvoice) {
+        throw new SparkValidationError(
+          "No spark invoice found in lightning invoice",
+          {
+            field: "sparkInvoice",
+            value: embeddedSparkInvoice,
+            expected: "Valid spark invoice",
+          },
+        );
+      }
+
+      if (embeddedSparkInvoice !== sparkInvoice) {
+        throw new SparkValidationError(
+          "Mismatch between spark invoice embedded in lightning invoice and expected spark invoice",
+          {
+            field: "sparkInvoice",
+            value: embeddedSparkInvoice,
+            expected: sparkInvoice,
+          },
+        );
+      }
+    } else if (decodedInvoice.fallbackAddress !== undefined) {
+      throw new SparkValidationError(
+        "Spark fallback address found in lightning invoice but includeSparkAddress is false",
+        {
+          field: "sparkFallbackAddress",
+          value: decodedInvoice.fallbackAddress,
+        },
+      );
+    }
+
+    return invoice;
+  }
+
+  /**
+   * Creates a Lightning Hodl invoice with a user-provided payment hash.
+   * Hodl invoices allow the receiver to hold the HTLC until they decide to settle or fail it.
+   *
+   * @param {Object} params - Lightning invoice parameters
+   * @param {number} params.amountSats - Amount in satoshis
+   * @param {string} params.paymentHash - Payment hash as hex string (64 characters)
+   * @param {string} [params.memo] - Optional description of the invoice
+   * @param {number} [params.expirySeconds=2592000] - Invoice expiry time in seconds (default: 30 days)
+   * @param {boolean} [params.includeSparkAddress=false] - Whether to include a Spark address as fallback
+   * @param {boolean} [params.includeSparkInvoice=false] - Whether to include a Spark invoice as fallback
+   * @param {string} [params.receiverIdentityPubkey] - Optional receiver identity public key (hex)
+   * @param {string} [params.descriptionHash] - Optional h tag of the invoice. This is the hash of a longer description to include in the lightning invoice. It is used in LNURL and UMA as the hash of the metadata. This field is mutually exclusive with the memo field. Only one or the other should be provided.
+   * @returns {Promise<LightningReceiveRequest>} BOLT11 encoded invoice
+   */
+  public async createLightningHodlInvoice({
+    amountSats,
+    paymentHash,
+    memo,
+    expirySeconds = 60 * 60 * 24 * 30,
+    includeSparkAddress = false,
+    includeSparkInvoice = false,
+    receiverIdentityPubkey,
+    descriptionHash,
+  }: CreateLightningHodlInvoiceParams): Promise<LightningReceiveRequest> {
+    if (!/^[0-9a-fA-F]{64}$/.test(paymentHash)) {
+      throw new SparkValidationError("Invalid payment hash", {
+        field: "paymentHash",
+        value: paymentHash,
+        expected: "64 character hex string",
+      });
+    }
+
+    return await this.validateAndCreateLightningInvoice({
       amountSats,
+      paymentHashHex: paymentHash,
       memo,
-      invoiceCreator: requestLightningInvoice,
+      expirySeconds,
+      includeSparkAddress,
+      includeSparkInvoice,
       receiverIdentityPubkey,
       descriptionHash,
     });
+  }
 
-    return invoice;
+  /**
+   * Attempts to pay over Spark using the fallback data embedded in a Lightning invoice.
+   * Returns the transfer if successful, or undefined if the fallback data is not valid Spark data.
+   */
+  private async tryPayOverSpark(
+    decodedInvoice: DecodedInvoice,
+    amountSats: number,
+    network: Network,
+  ): Promise<WalletTransfer | undefined> {
+    const fallbackAddress = decodedInvoice.fallbackAddress;
+    if (!fallbackAddress) {
+      console.warn("No fallback address found in invoice");
+      return undefined;
+    }
+
+    // Try bech32m spark address/invoice first
+    // Auto-detect network from spark address prefix since REGTEST and LOCAL
+    // share the same lightning invoice prefix (lnbcrt) but have different
+    // spark address prefixes (sparkrt vs sparkl)
+    const sparkNetwork = this.tryGetNetworkFromSparkAddress(fallbackAddress);
+    if (sparkNetwork && !this.isCompatibleNetwork(network, sparkNetwork)) {
+      console.warn(
+        `Spark address network ${sparkNetwork} incompatible with invoice network ${Network[network]}`,
+      );
+      return undefined;
+    }
+    const networkType = sparkNetwork ?? (Network[network] as NetworkType);
+    const decoded = this.tryDecodeSparkAddress(fallbackAddress, networkType);
+    if (decoded?.sparkInvoiceFields) {
+      const isZeroAmountInvoice = !decodedInvoice.amountMSats;
+      this.validateSparkInvoiceAmount(
+        decoded.sparkInvoiceFields,
+        amountSats,
+        isZeroAmountInvoice,
+      );
+      return this.fulfillSparkInvoiceInternal(
+        fallbackAddress as SparkAddressFormat,
+        amountSats,
+      );
+    }
+    if (decoded) {
+      return this.transfer({
+        amountSats,
+        receiverSparkAddress: fallbackAddress as SparkAddressFormat,
+      });
+    }
+
+    if (!isValidSparkAddressFallback(fallbackAddress)) {
+      console.warn("Invalid spark fallback address", fallbackAddress);
+      return undefined;
+    }
+
+    const sparkAddress = encodeSparkAddress({
+      identityPublicKey: fallbackAddress,
+      network: Network[network] as NetworkType,
+    });
+    return this.transfer({ amountSats, receiverSparkAddress: sparkAddress });
+  }
+
+  private tryDecodeSparkAddress(
+    address: string,
+    networkType: NetworkType,
+  ): ReturnType<typeof decodeSparkAddress> | undefined {
+    try {
+      return decodeSparkAddress(address, networkType);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private tryGetNetworkFromSparkAddress(
+    address: string,
+  ): NetworkType | undefined {
+    try {
+      return getNetworkFromSparkAddress(address);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private isCompatibleNetwork(
+    invoiceNetwork: Network,
+    sparkNetwork: NetworkType,
+  ): boolean {
+    const invoiceNetworkType = Network[invoiceNetwork] as NetworkType;
+    if (invoiceNetworkType === sparkNetwork) return true;
+    // REGTEST and LOCAL share the same lightning invoice prefix (lnbcrt)
+    if (
+      (invoiceNetworkType === "REGTEST" || invoiceNetworkType === "LOCAL") &&
+      (sparkNetwork === "REGTEST" || sparkNetwork === "LOCAL")
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  private validateSparkInvoiceAmount(
+    sparkInvoiceFields: NonNullable<
+      ReturnType<typeof decodeSparkAddress>["sparkInvoiceFields"]
+    >,
+    expectedAmountSats: number,
+    isZeroAmountLightningInvoice: boolean,
+  ): void {
+    const paymentType = sparkInvoiceFields.paymentType;
+    if (paymentType?.type !== "sats") {
+      throw new SparkValidationError(
+        "Lightning invoice should only contain sats payment type",
+      );
+    }
+    const invoiceAmount = Number(paymentType.amount || 0);
+    const isZeroAmountSparkInvoice = invoiceAmount === 0;
+    if (isZeroAmountSparkInvoice !== isZeroAmountLightningInvoice) {
+      throw new SparkValidationError(
+        "Zero amount mismatch. Either both or neither the lightning invoice and the spark invoice should have a zero amount",
+        {
+          field: "isZeroAmountLightningInvoice",
+          value: isZeroAmountLightningInvoice,
+          expected: isZeroAmountSparkInvoice,
+        },
+      );
+    }
+    if (invoiceAmount !== expectedAmountSats && !isZeroAmountSparkInvoice) {
+      throw new SparkValidationError(
+        "Lightning invoice amount does not match embedded spark invoice amount",
+        {
+          field: "amountSats",
+          value: expectedAmountSats,
+          expected: invoiceAmount,
+        },
+      );
+    }
+  }
+
+  private async fulfillSparkInvoiceInternal(
+    invoice: SparkAddressFormat,
+    amountSats: number,
+  ): Promise<WalletTransfer> {
+    const result = await this.fulfillSparkInvoice([
+      { invoice, amount: BigInt(amountSats) },
+    ]);
+    const firstError = result.satsTransactionErrors[0];
+    if (firstError) {
+      throw firstError.error;
+    }
+    const firstSuccess = result.satsTransactionSuccess[0];
+    if (!firstSuccess) {
+      throw new Error("Failed to fulfill spark invoice");
+    }
+    return firstSuccess.transferResponse;
   }
 
   /**
@@ -3597,14 +3081,17 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
    * @param {string} params.invoice - The BOLT11-encoded Lightning invoice to pay
    * @param {boolean} [params.preferSpark] - Whether to prefer a spark transfer over lightning for the payment
    * @param {number} [params.amountSatsToSend] - The amount in sats to send. This is only valid for 0 amount lightning invoices.
-   * @returns {Promise<LightningSendRequest>} The Lightning payment request details
+   * @returns {Promise<LightningSendRequest | WalletTransfer>} The Lightning payment request details or the transfer details if the payment is over Spark
    */
   public async payLightningInvoice({
     invoice,
     maxFeeSats,
     preferSpark = false,
     amountSatsToSend,
-  }: PayLightningInvoiceParams) {
+    idempotencyKey,
+  }: PayLightningInvoiceParams): Promise<
+    LightningSendRequest | WalletTransfer
+  > {
     invoice = invoice.toLowerCase();
 
     const invoiceNetwork = getNetworkFromInvoice(invoice);
@@ -3669,29 +3156,23 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
     const sparkFallbackAddress = decodedInvoice.fallbackAddress;
     const paymentHash = decodedInvoice.paymentHash;
 
-    // Pay over Spark
-    if (preferSpark) {
-      if (
-        sparkFallbackAddress === undefined ||
-        isValidSparkFallback(hexToBytes(sparkFallbackAddress)) === false
-      ) {
-        console.warn(
-          "No valid spark address found in invoice. Defaulting to lightning.",
-        );
-      } else {
-        const receiverSparkAddress = encodeSparkAddress({
-          identityPublicKey: sparkFallbackAddress,
-          network: Network[invoiceNetwork] as NetworkType,
-        });
-        return await this.transfer({
-          amountSats,
-          receiverSparkAddress,
-        });
+    // Try to pay over Spark if preferred
+    if (preferSpark && sparkFallbackAddress) {
+      const sparkPayment = await this.tryPayOverSpark(
+        decodedInvoice,
+        amountSats,
+        invoiceNetwork,
+      );
+      if (sparkPayment) {
+        return sparkPayment;
       }
+      console.warn(
+        "No valid spark data found in invoice. Defaulting to lightning.",
+      );
     }
 
     // Pay over Lightning
-    return await this.withLeaves(async () => {
+    {
       // Make expiry time 16 days from now.
       const expiryTime = new Date(Date.now() + 16 * 24 * 60 * 60 * 1000);
       const sspClient = this.getSspClient();
@@ -3715,82 +3196,74 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
 
       const totalAmount = amountSats + feeEstimate;
 
-      const internalBalance = this.getInternalBalance();
-      if (totalAmount > internalBalance) {
-        throw new SparkValidationError("Insufficient balance", {
-          field: "balance",
-          value: internalBalance,
-          expected: `${totalAmount} sats`,
-        });
-      }
+      return await this.leafManager.selectLeavesAndExecute(
+        [totalAmount],
+        async (selected) => {
+          const leaves = selected[0];
 
-      const selectedLeaves = (await this.selectLeaves([totalAmount])).get(
-        totalAmount,
-      )!;
-      let leaves = this.popOrThrow(
-        selectedLeaves,
-        `no leaves for ${totalAmount}`,
+          const leavesToSend: LeafKeyTweak[] = await Promise.all(
+            leaves.map(async (leaf) => ({
+              leaf,
+              keyDerivation: {
+                type: KeyDerivationType.LEAF,
+                path: leaf.id,
+              },
+              newKeyDerivation: {
+                type: KeyDerivationType.RANDOM,
+              },
+            })),
+          );
+
+          const transferID = uuidv7();
+
+          const startTransferRequest =
+            await this.transferService.prepareTransferForLightning(
+              leavesToSend,
+              hexToBytes(this.config.getSspIdentityPublicKey()),
+              hexToBytes(paymentHash),
+              expiryTime,
+              transferID,
+            );
+
+          const swapResponse = await this.lightningService.swapNodesForPreimage(
+            {
+              leaves: leavesToSend,
+              receiverIdentityPubkey: hexToBytes(
+                this.config.getSspIdentityPublicKey(),
+              ),
+              paymentHash: hexToBytes(paymentHash),
+              isInboundPayment: false,
+              invoiceString: invoice,
+              feeSats: feeEstimate,
+              amountSatsToSend: amountSatsToSend,
+              startTransferRequest,
+              expiryTime,
+              transferID,
+              idempotencyKey,
+            },
+          );
+
+          if (!swapResponse.transfer) {
+            throw new Error("Failed to swap nodes for preimage");
+          }
+
+          // Advance local state — leaves are now locked on the SO
+          await this.leafManager.handleTransferEvent(swapResponse.transfer);
+
+          const sspResponse = await sspClient.requestLightningSend({
+            encodedInvoice: invoice,
+            amountSats: isZeroAmountInvoice ? amountSatsToSend! : undefined,
+            userOutboundTransferExternalId: swapResponse.transfer.id,
+          });
+
+          if (!sspResponse) {
+            throw new Error("Failed to contact SSP");
+          }
+
+          return sspResponse;
+        },
       );
-      leaves = await this.checkRenewLeaves(leaves);
-
-      const leavesToSend: LeafKeyTweak[] = await Promise.all(
-        leaves.map(async (leaf) => ({
-          leaf,
-          keyDerivation: {
-            type: KeyDerivationType.LEAF,
-            path: leaf.id,
-          },
-          newKeyDerivation: {
-            type: KeyDerivationType.RANDOM,
-          },
-        })),
-      );
-
-      const transferID = uuidv7();
-
-      const startTransferRequest =
-        await this.transferService.prepareTransferForLightning(
-          leavesToSend,
-          hexToBytes(this.config.getSspIdentityPublicKey()),
-          hexToBytes(paymentHash),
-          expiryTime,
-          transferID,
-        );
-
-      const swapResponse = await this.lightningService.swapNodesForPreimage({
-        leaves: leavesToSend,
-        receiverIdentityPubkey: hexToBytes(
-          this.config.getSspIdentityPublicKey(),
-        ),
-        paymentHash: hexToBytes(paymentHash),
-        isInboundPayment: false,
-        invoiceString: invoice,
-        feeSats: feeEstimate,
-        amountSatsToSend: amountSatsToSend,
-        startTransferRequest,
-        expiryTime,
-        transferID,
-      });
-
-      if (!swapResponse.transfer) {
-        throw new Error("Failed to swap nodes for preimage");
-      }
-
-      const sspResponse = await sspClient.requestLightningSend({
-        encodedInvoice: invoice,
-        amountSats: isZeroAmountInvoice ? amountSatsToSend! : undefined,
-        userOutboundTransferExternalId: swapResponse.transfer.id,
-      });
-
-      if (!sspResponse) {
-        throw new Error("Failed to contact SSP");
-      }
-
-      const leavesToRemove = new Set(leavesToSend.map((leaf) => leaf.leaf.id));
-      this.leaves = this.leaves.filter((leaf) => !leavesToRemove.has(leaf.id));
-
-      return sspResponse;
-    });
+    }
   }
 
   // ***** HTLC Flow *****
@@ -3818,77 +3291,66 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       });
     }
 
-    return await this.withLeaves(async () => {
-      const internalBalance = this.getInternalBalance();
-      if (amountSats > internalBalance) {
-        throw new SparkValidationError("Insufficient balance", {
-          field: "balance",
-          value: internalBalance,
-          expected: `${amountSats} sats`,
-        });
-      }
-      const selectedLeaves = (await this.selectLeaves([amountSats])).get(
-        amountSats,
-      )!;
-      let leaves = this.popOrThrow(
-        selectedLeaves,
-        `no leaves for ${amountSats}`,
-      );
-      leaves = await this.checkRenewLeaves(leaves);
+    return await this.leafManager.selectLeavesAndExecute(
+      [amountSats],
+      async (selected) => {
+        const leaves = selected[0];
 
-      const leavesToSend: LeafKeyTweak[] = await Promise.all(
-        leaves.map(async (leaf) => ({
-          leaf,
-          keyDerivation: {
-            type: KeyDerivationType.LEAF,
-            path: leaf.id,
-          },
-          newKeyDerivation: {
-            type: KeyDerivationType.RANDOM,
-          },
-        })),
-      );
-
-      const transferID = uuidv7();
-
-      if (!preimage) {
-        const preimageBytes = await this.getHTLCPreimage(transferID);
-        preimage = bytesToHex(preimageBytes);
-      }
-
-      const paymentHash = sha256(hexToBytes(preimage));
-
-      const receiverIdentityPubkey = decodeSparkAddress(
-        receiverSparkAddress,
-        this.config.getNetworkType(),
-      ).identityPublicKey;
-
-      const startTransferRequest =
-        await this.transferService.prepareTransferForLightning(
-          leavesToSend,
-          hexToBytes(receiverIdentityPubkey),
-          paymentHash,
-          expiryTime,
-          transferID,
+        const leavesToSend: LeafKeyTweak[] = await Promise.all(
+          leaves.map(async (leaf) => ({
+            leaf,
+            keyDerivation: {
+              type: KeyDerivationType.LEAF,
+              path: leaf.id,
+            },
+            newKeyDerivation: {
+              type: KeyDerivationType.RANDOM,
+            },
+          })),
         );
 
-      const swapResponse = await this.lightningService.swapNodesForPreimage({
-        leaves: leavesToSend,
-        receiverIdentityPubkey: hexToBytes(receiverIdentityPubkey),
-        paymentHash,
-        isInboundPayment: false,
-        startTransferRequest,
-        expiryTime,
-        transferID,
-      });
-      if (!swapResponse.transfer) {
-        throw new Error("Failed to swap nodes for preimage");
-      }
+        const transferID = uuidv7();
 
-      const leavesToRemove = new Set(leavesToSend.map((leaf) => leaf.leaf.id));
-      this.leaves = this.leaves.filter((leaf) => !leavesToRemove.has(leaf.id));
-      return swapResponse.transfer;
-    });
+        if (!preimage) {
+          const preimageBytes = await this.getHTLCPreimage(transferID);
+          preimage = bytesToHex(preimageBytes);
+        }
+
+        const paymentHash = sha256(hexToBytes(preimage));
+
+        const receiverIdentityPubkey = decodeSparkAddress(
+          receiverSparkAddress,
+          this.config.getNetworkType(),
+        ).identityPublicKey;
+
+        const startTransferRequest =
+          await this.transferService.prepareTransferForLightning(
+            leavesToSend,
+            hexToBytes(receiverIdentityPubkey),
+            paymentHash,
+            expiryTime,
+            transferID,
+          );
+
+        const swapResponse = await this.lightningService.swapNodesForPreimage({
+          leaves: leavesToSend,
+          receiverIdentityPubkey: hexToBytes(receiverIdentityPubkey),
+          paymentHash,
+          isInboundPayment: false,
+          startTransferRequest,
+          expiryTime,
+          transferID,
+        });
+        if (!swapResponse.transfer) {
+          throw new Error("Failed to swap nodes for preimage");
+        }
+
+        // Advance local state — leaves are now locked on the SO
+        await this.leafManager.handleTransferEvent(swapResponse.transfer);
+
+        return swapResponse.transfer;
+      },
+    );
   }
 
   public async getHTLCPreimage(transferID: string): Promise<Uint8Array> {
@@ -4190,21 +3652,50 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
         const invoices = decodedInvoices.map(
           (d) => d.invoice as SparkAddressFormat,
         );
+        const totalTokenAmount = receiverOutputs.reduce(
+          (sum, o) => sum + o.tokenAmount,
+          0n,
+        );
+
         tokenTransferTasks.push(
-          this.tokenTransactionService
-            .tokenTransfer({ tokenOutputs: this.tokenOutputs, receiverOutputs })
-            .then((txid) => ({
-              ok: true as const,
-              tokenIdentifier: tokenIdB32,
-              invoices,
-              txid,
-            }))
-            .catch((e: any) => ({
-              ok: false as const,
-              tokenIdentifier: tokenIdB32,
-              invoices,
-              error: e instanceof Error ? e : new Error(String(e)),
-            })),
+          (async () => {
+            try {
+              const acquiredOutputs =
+                await this.tokenOutputManager.acquireOutputs(
+                  tokenIdB32,
+                  (available) =>
+                    this.tokenTransactionService.selectTokenOutputs(
+                      available,
+                      totalTokenAmount,
+                      "SMALL_FIRST",
+                    ),
+                  `fulfill-invoice-${tokenIdB32}`,
+                );
+
+              const tokenOutputsMap: TokenOutputsMap = new Map([
+                [tokenIdB32, acquiredOutputs],
+              ]);
+              const txid = await this.tokenTransactionService.tokenTransfer({
+                tokenOutputs: tokenOutputsMap,
+                receiverOutputs,
+                selectedOutputs: acquiredOutputs,
+              });
+
+              return {
+                ok: true as const,
+                tokenIdentifier: tokenIdB32,
+                invoices,
+                txid,
+              };
+            } catch (e: any) {
+              return {
+                ok: false as const,
+                tokenIdentifier: tokenIdB32,
+                invoices,
+                error: e instanceof Error ? e : new Error(String(e)),
+              };
+            }
+          })(),
         );
       }
       const results = await Promise.all(tokenTransferTasks);
@@ -4440,15 +3931,20 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       amountSats,
     );
 
-    if (
-      !feeEstimate ||
-      feeEstimate.feeEstimate.originalUnit !== CurrencyUnit.Millisatoshi
-    ) {
+    if (!feeEstimate) {
       throw new Error("Failed to get lightning send fee estimate");
     }
 
-    const satsFeeEstimate = feeEstimate.feeEstimate.originalValue / 1000;
-    return Math.ceil(satsFeeEstimate);
+    switch (feeEstimate.feeEstimate.originalUnit) {
+      case CurrencyUnit.Satoshi:
+        return feeEstimate.feeEstimate.originalValue;
+      case CurrencyUnit.Millisatoshi:
+        return Math.ceil(feeEstimate.feeEstimate.originalValue / 1000);
+      default:
+        throw new Error(
+          `Unsupported fee estimate unit: ${feeEstimate.feeEstimate.originalUnit}`,
+        );
+    }
   }
 
   // ***** Cooperative Exit Flow *****
@@ -4522,16 +4018,14 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       });
     }
 
-    return await this.withLeaves(async () => {
-      return await this.coopExit(
-        onchainAddress,
-        feeAmountSats,
-        feeQuoteId,
-        exitSpeed,
-        deductFeeFromWithdrawalAmount,
-        amountSats,
-      );
-    });
+    return await this.coopExit(
+      onchainAddress,
+      feeAmountSats,
+      feeQuoteId,
+      exitSpeed,
+      deductFeeFromWithdrawalAmount,
+      amountSats,
+    );
   }
 
   /**
@@ -4562,29 +4056,136 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       deductFeeFromWithdrawalAmount = true;
     }
 
-    let leavesToSendToSsp: TreeNode[] = [];
-    let leavesToSendToSE: TreeNode[] = [];
+    const executeCoopExit = async (
+      leavesToSendToSsp: TreeNode[],
+      leavesToSendToSE: TreeNode[],
+    ) => {
+      const leafKeyTweaks: LeafKeyTweak[] = await Promise.all(
+        [...leavesToSendToSE, ...leavesToSendToSsp].map(async (leaf) => ({
+          leaf,
+          keyDerivation: {
+            type: KeyDerivationType.LEAF,
+            path: leaf.id,
+          },
+          newKeyDerivation: {
+            type: KeyDerivationType.RANDOM,
+          },
+        })),
+      );
+
+      const transferId = uuidv7();
+
+      const requestCoopExitParams: RequestCoopExitInput = {
+        leafExternalIds: leavesToSendToSsp.map((leaf) => leaf.id),
+        withdrawalAddress: onchainAddress,
+        exitSpeed,
+        withdrawAll: deductFeeFromWithdrawalAmount,
+        userOutboundTransferExternalId: transferId,
+      };
+
+      if (!deductFeeFromWithdrawalAmount) {
+        requestCoopExitParams.feeQuoteId = feeQuoteId;
+        requestCoopExitParams.feeLeafExternalIds = leavesToSendToSE.map(
+          (leaf) => leaf.id,
+        );
+      }
+
+      const sspClient = this.getSspClient();
+
+      const coopExitRequest = await sspClient.requestCoopExit(
+        requestCoopExitParams,
+      );
+
+      if (!coopExitRequest?.rawConnectorTransaction) {
+        throw new Error("Failed to request coop exit");
+      }
+
+      const connectorTx = getTxFromRawTxHex(
+        coopExitRequest.rawConnectorTransaction,
+      );
+
+      // SSP stores coop_exit_txid in little-endian format and returns it as hex string
+      // Converting hex to bytes gives us the correct little-endian format that SO expects
+      const coopExitTxId = hexToBytes(coopExitRequest.coopExitTxid);
+      const connectorTxId = getTxId(connectorTx);
+
+      const connectorOutputs: TransactionInput[] = [];
+      for (let i = 0; i < connectorTx.outputsLength - 1; i++) {
+        connectorOutputs.push({
+          txid: hexToBytes(connectorTxId),
+          index: i,
+        });
+      }
+
+      const sspPubIdentityKey = hexToBytes(
+        this.config.getSspIdentityPublicKey(),
+      );
+      const connectorTxBytes = hexToBytes(
+        coopExitRequest.rawConnectorTransaction,
+      );
+      const transfer = await this.coopExitService.getConnectorRefundSignatures({
+        leaves: leafKeyTweaks,
+        exitTxId: coopExitTxId,
+        connectorOutputs,
+        receiverPubKey: sspPubIdentityKey,
+        transferId,
+        connectorTx: connectorTxBytes,
+      });
+
+      // Advance local state — leaves are now locked on the SO
+      if (!transfer.transfer) {
+        throw new Error(
+          "Failed to get connector refund signatures: no transfer returned",
+        );
+      }
+      await this.leafManager.handleTransferEvent(transfer.transfer);
+
+      const completeResponse = await sspClient.completeCoopExit({
+        userOutboundTransferExternalId: transfer.transfer.id,
+      });
+
+      return completeResponse;
+    };
 
     if (deductFeeFromWithdrawalAmount) {
-      leavesToSendToSsp = targetAmountSats
-        ? this.popOrThrow(
-            (await this.selectLeaves([targetAmountSats])).get(
-              targetAmountSats,
-            )!,
-            `no leaves for ${targetAmountSats}`,
-          )
-        : this.leaves;
-
-      if (
-        feeAmountSats >
-        leavesToSendToSsp.reduce((acc, leaf) => acc + leaf.value, 0)
-      ) {
-        throw new SparkValidationError(
-          "The fee for the withdrawal is greater than the target withdrawal amount",
-          {
-            field: "fee",
-            value: feeAmountSats,
-            expected: "less than or equal to the target amount",
+      if (targetAmountSats) {
+        return await this.leafManager.selectLeavesAndExecute(
+          [targetAmountSats],
+          async (selected) => {
+            const leavesToSendToSsp = selected[0];
+            if (
+              feeAmountSats >
+              leavesToSendToSsp.reduce((acc, leaf) => acc + leaf.value, 0)
+            ) {
+              throw new SparkValidationError(
+                "The fee for the withdrawal is greater than the target withdrawal amount",
+                {
+                  field: "fee",
+                  value: feeAmountSats,
+                  expected: "less than or equal to the target amount",
+                },
+              );
+            }
+            return await executeCoopExit(leavesToSendToSsp, []);
+          },
+        );
+      } else {
+        return await this.leafManager.executeWithAllLeaves(
+          async (allLeaves) => {
+            if (
+              feeAmountSats >
+              allLeaves.reduce((acc, leaf) => acc + leaf.value, 0)
+            ) {
+              throw new SparkValidationError(
+                "The fee for the withdrawal is greater than the target withdrawal amount",
+                {
+                  field: "fee",
+                  value: feeAmountSats,
+                  expected: "less than or equal to the target amount",
+                },
+              );
+            }
+            return await executeCoopExit(allLeaves, []);
           },
         );
       }
@@ -4600,105 +4201,26 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
         );
       }
 
-      const leaves = await this.selectLeaves([targetAmountSats, feeAmountSats]);
-
-      const leavesForTargetAmount = this.popOrThrow(
-        leaves.get(targetAmountSats)!,
-        `failed to get leaves leaves for targetAmount, val: ${targetAmountSats}`,
-      );
-      const leavesForFee = this.popOrThrow(
-        leaves.get(feeAmountSats)!,
-        `failed to get leaves leaves for fee, val: ${feeAmountSats}`,
-      );
-
-      if (!leavesForTargetAmount || !leavesForFee) {
-        throw new Error("Failed to select leaves for target amount and fee");
-      }
-
-      leavesToSendToSsp = leavesForTargetAmount;
-      leavesToSendToSE = leavesForFee;
-    }
-
-    leavesToSendToSsp = await this.checkRenewLeaves(leavesToSendToSsp);
-    leavesToSendToSE = await this.checkRenewLeaves(leavesToSendToSE);
-
-    const leafKeyTweaks: LeafKeyTweak[] = await Promise.all(
-      [...leavesToSendToSE, ...leavesToSendToSsp].map(async (leaf) => ({
-        leaf,
-        keyDerivation: {
-          type: KeyDerivationType.LEAF,
-          path: leaf.id,
+      return await this.leafManager.selectLeavesAndExecute(
+        [targetAmountSats, feeAmountSats],
+        async (selected) => {
+          const leavesToSendToSsp = selected[0];
+          const leavesToSendToSE = selected[1];
+          return await executeCoopExit(leavesToSendToSsp, leavesToSendToSE);
         },
-        newKeyDerivation: {
-          type: KeyDerivationType.RANDOM,
-        },
-      })),
-    );
-
-    const transferId = uuidv7();
-
-    const requestCoopExitParams: RequestCoopExitInput = {
-      leafExternalIds: leavesToSendToSsp.map((leaf) => leaf.id),
-      withdrawalAddress: onchainAddress,
-      exitSpeed,
-      withdrawAll: deductFeeFromWithdrawalAmount,
-      userOutboundTransferExternalId: transferId,
-    };
-
-    if (!deductFeeFromWithdrawalAmount) {
-      requestCoopExitParams.feeQuoteId = feeQuoteId;
-      requestCoopExitParams.feeLeafExternalIds = leavesToSendToSE.map(
-        (leaf) => leaf.id,
       );
     }
-
-    const sspClient = this.getSspClient();
-
-    const coopExitRequest = await sspClient.requestCoopExit(
-      requestCoopExitParams,
-    );
-
-    if (!coopExitRequest?.rawConnectorTransaction) {
-      throw new Error("Failed to request coop exit");
-    }
-
-    const connectorTx = getTxFromRawTxHex(
-      coopExitRequest.rawConnectorTransaction,
-    );
-
-    const coopExitTxId = connectorTx.getInput(0).txid;
-    const connectorTxId = getTxId(connectorTx);
-
-    if (!coopExitTxId) {
-      throw new Error("Failed to get coop exit tx id");
-    }
-
-    const connectorOutputs: TransactionInput[] = [];
-    for (let i = 0; i < connectorTx.outputsLength - 1; i++) {
-      connectorOutputs.push({
-        txid: hexToBytes(connectorTxId),
-        index: i,
-      });
-    }
-
-    const sspPubIdentityKey = hexToBytes(this.config.getSspIdentityPublicKey());
-    const transfer = await this.coopExitService.getConnectorRefundSignatures({
-      leaves: leafKeyTweaks,
-      exitTxId: coopExitTxId,
-      connectorOutputs,
-      receiverPubKey: sspPubIdentityKey,
-      transferId,
-    });
-
-    const completeResponse = await sspClient.completeCoopExit({
-      userOutboundTransferExternalId: transfer.transfer.id,
-    });
-
-    return completeResponse;
   }
 
   /**
    * Gets fee estimate for cooperative exit (on-chain withdrawal).
+   *
+   * **Note:** If the wallet's current leaves don't exactly match the requested
+   * amount, this method will trigger a swap via the SSP to produce correctly
+   * denominated leaves. This is a side effect — the wallet's leaf set may be
+   * permanently restructured even though this is a "quote" call. This matches
+   * the pre-refactor behavior and ensures the fee quote reflects the actual
+   * leaves that will be used in the subsequent `withdraw()` call.
    *
    * @param {Object} params - Input parameters for fee estimation
    * @param {number} params.amountSats - The amount in satoshis to withdraw
@@ -4722,19 +4244,33 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       });
     }
 
-    let leaves = this.popOrThrow(
-      (await this.selectLeaves([amountSats])).get(amountSats)!,
-      `no leaves for ${amountSats}`,
+    const available = this.leafManager.getAvailableBalance();
+    if (amountSats > available) {
+      throw new SparkValidationError(
+        "Total target amount exceeds available balance",
+        {
+          field: "amountSats",
+          value: amountSats,
+          expected: `less than or equal to ${available}`,
+        },
+      );
+    }
+
+    // selectLeavesAndExecute locks leaves and may trigger a swap if no exact
+    // match exists. After getting the quote, we restore leaves to AVAILABLE
+    // so they're not stuck as LOCAL_LOCKED.
+    return await this.leafManager.selectLeavesAndExecute(
+      [amountSats],
+      async (selected) => {
+        const leafIds = selected[0].map((l) => l.id);
+        const quote = await sspClient.getCoopExitFeeQuote({
+          leafExternalIds: leafIds,
+          withdrawalAddress,
+        });
+        this.leafManager.restoreLocalLockedToAvailable(leafIds);
+        return quote;
+      },
     );
-
-    leaves = await this.checkRenewLeaves(leaves);
-
-    const feeEstimate = await sspClient.getCoopExitFeeQuote({
-      leafExternalIds: leaves.map((leaf) => leaf.id),
-      withdrawalAddress,
-    });
-
-    return feeEstimate;
   }
 
   /**
@@ -4763,8 +4299,10 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
         .filter((transfer) =>
           [
             TransferType.COOPERATIVE_EXIT,
+            TransferType.COUNTER_SWAP_V3,
             TransferType.COUNTER_SWAP,
             TransferType.PREIMAGE_SWAP,
+            TransferType.PRIMARY_SWAP_V3,
             TransferType.SWAP,
             TransferType.UTXO_SWAP,
           ].includes(transfer.type),
@@ -4833,12 +4371,18 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       );
     }
 
-    const transfers = await this.transferService.queryAllTransfers(
+    const transfers = await this.transferService.queryAllTransfers({
       limit,
       offset,
       createdAfter,
       createdBefore,
-    );
+      types: [
+        TransferType.COOPERATIVE_EXIT,
+        TransferType.PREIMAGE_SWAP,
+        TransferType.UTXO_SWAP,
+        TransferType.TRANSFER,
+      ],
+    });
 
     return {
       transfers: await this.constructTransfersWithUserRequest(
@@ -4853,51 +4397,63 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
   /**
    * Synchronizes token outputs for the wallet.
    *
+   * @param {Bech32mTokenIdentifier[]} [tokenIdentifiers] - Optional list of token identifiers to sync.
+   *   If provided, only syncs outputs for the specified tokens (preserving other cached tokens).
+   *   If not provided, syncs all token outputs.
    * @returns {Promise<void>}
    * @private
    */
-  protected async syncTokenOutputs() {
-    return await this.withTokenOutputs(async () => {
-      this.tokenOutputs.clear();
+  protected async syncTokenOutputs(
+    tokenIdentifiers?: Bech32mTokenIdentifier[],
+  ) {
+    const filterByIdentifiers =
+      Array.isArray(tokenIdentifiers) && tokenIdentifiers.length > 0;
 
-      const unsortedTokenOutputs =
-        await this.tokenTransactionService.fetchOwnedTokenOutputs({
-          ownerPublicKeys: [await this.config.signer.getIdentityPublicKey()],
-        });
-      const filteredTokenOutputs = unsortedTokenOutputs.filter(
-        (output) =>
-          !this.pendingWithdrawnOutputIds.includes(output.output?.id || ""),
-      );
+    const rawTokenIdentifiers = filterByIdentifiers
+      ? tokenIdentifiers.map(
+          (id) =>
+            decodeBech32mTokenIdentifier(id, this.config.getNetworkType())
+              .tokenIdentifier,
+        )
+      : undefined;
 
-      const fetchedOutputIds = new Set(
-        unsortedTokenOutputs.map((output) => output.output?.id).filter(Boolean),
-      );
-      this.pendingWithdrawnOutputIds = this.pendingWithdrawnOutputIds.filter(
-        (id) => fetchedOutputIds.has(id),
-      );
-
-      // Group outputs by hex representation of raw token identifier bytes
-      const groupedOutputs: TokenOutputsMap = new Map();
-
-      filteredTokenOutputs.forEach((output) => {
-        const bech32mTokenIdentifier = encodeBech32mTokenIdentifier({
-          tokenIdentifier: output.output!.tokenIdentifier!,
-          network: this.config.getNetworkType(),
-        });
-        const index = output.previousTransactionVout!;
-
-        if (!groupedOutputs.has(bech32mTokenIdentifier)) {
-          groupedOutputs.set(bech32mTokenIdentifier, []);
-        }
-
-        groupedOutputs.get(bech32mTokenIdentifier)!.push({
-          ...output,
-          previousTransactionVout: index,
-        });
+    const unsortedTokenOutputs =
+      await this.tokenTransactionService.fetchOwnedTokenOutputs({
+        ownerPublicKeys: [await this.config.signer.getIdentityPublicKey()],
+        tokenIdentifiers: rawTokenIdentifiers,
       });
 
-      this.tokenOutputs = groupedOutputs;
-    });
+    // Validate and group all outputs by token identifier
+    const groupedOutputs: TokenOutputsMap = new Map();
+
+    for (const output of unsortedTokenOutputs) {
+      if (!output.output?.tokenIdentifier || !output.output.id) {
+        throw new SparkValidationError(
+          "Server returned incomplete token output",
+          {
+            field: "output",
+            value: output,
+            expected:
+              "output.output.tokenIdentifier and output.output.id to be defined",
+          },
+        );
+      }
+
+      const bech32mTokenIdentifier = encodeBech32mTokenIdentifier({
+        tokenIdentifier: output.output.tokenIdentifier,
+        network: this.config.getNetworkType(),
+      });
+
+      if (!groupedOutputs.has(bech32mTokenIdentifier)) {
+        groupedOutputs.set(bech32mTokenIdentifier, []);
+      }
+      groupedOutputs.get(bech32mTokenIdentifier)!.push(output);
+    }
+
+    await this.tokenOutputManager.setOutputs(
+      groupedOutputs,
+      filterByIdentifiers ? tokenIdentifiers : undefined,
+    );
   }
 
   /**
@@ -4938,22 +4494,43 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       );
     }
 
-    await this.syncTokenOutputs();
+    await this.syncTokenOutputs([tokenIdentifier]);
 
-    return await this.withTokenOutputs(async () => {
-      return this.tokenTransactionService.tokenTransfer({
-        tokenOutputs: this.tokenOutputs,
-        receiverOutputs: [
-          {
-            tokenIdentifier,
-            tokenAmount,
-            receiverSparkAddress,
-          },
-        ],
-        outputSelectionStrategy: outputSelectionStrategy ?? "SMALL_FIRST",
-        selectedOutputs,
-      });
+    const strategy = outputSelectionStrategy ?? "SMALL_FIRST";
+    const acquiredOutputs = await this.tokenOutputManager.acquireOutputs(
+      tokenIdentifier,
+      (available) => {
+        if (selectedOutputs) {
+          return selectedOutputs.filter((so) =>
+            available.some((a) => a.output?.id === so.output?.id),
+          );
+        }
+        return this.tokenTransactionService.selectTokenOutputs(
+          available,
+          tokenAmount,
+          strategy,
+        );
+      },
+      `transfer-${tokenIdentifier}`,
+    );
+
+    const tokenOutputsMap: TokenOutputsMap = new Map([
+      [tokenIdentifier, acquiredOutputs],
+    ]);
+    const txHash = await this.tokenTransactionService.tokenTransfer({
+      tokenOutputs: tokenOutputsMap,
+      receiverOutputs: [
+        {
+          tokenIdentifier,
+          tokenAmount,
+          receiverSparkAddress,
+        },
+      ],
+      outputSelectionStrategy: strategy,
+      selectedOutputs: acquiredOutputs,
     });
+
+    return txHash;
   }
 
   /**
@@ -4985,18 +4562,7 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
         },
       );
     }
-    const firstBech32mTokenIdentifier = receiverOutputs[0]!.tokenIdentifier;
     for (const output of receiverOutputs) {
-      if (output.tokenIdentifier !== firstBech32mTokenIdentifier) {
-        throw new SparkValidationError(
-          "All receiver outputs must have the same token public key",
-          {
-            field: "receiverOutputs",
-            value: receiverOutputs,
-            expected: "All outputs must have the same token public key",
-          },
-        );
-      }
       if (output.tokenAmount <= 0n) {
         throw new SparkValidationError("Token amount must be greater than 0", {
           field: "receiverOutputs",
@@ -5006,26 +4572,62 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       }
     }
 
-    await this.syncTokenOutputs();
+    // Group receiver outputs by token identifier
+    const amountsByToken = new Map<Bech32mTokenIdentifier, bigint>();
+    for (const output of receiverOutputs) {
+      const current = amountsByToken.get(output.tokenIdentifier) ?? 0n;
+      amountsByToken.set(output.tokenIdentifier, current + output.tokenAmount);
+    }
 
-    return await this.withTokenOutputs(async () => {
-      // replace bech32m encoded token identifier with raw token identifier bytes
-      const transferOutputs = receiverOutputs.map((output) => ({
-        tokenIdentifier: firstBech32mTokenIdentifier,
-        tokenAmount: output.tokenAmount,
-        receiverSparkAddress: output.receiverSparkAddress,
-      }));
+    const tokenIdentifiers = [...amountsByToken.keys()];
+    await this.syncTokenOutputs(tokenIdentifiers);
 
-      return this.tokenTransactionService.tokenTransfer({
-        tokenOutputs: this.tokenOutputs,
-        receiverOutputs: transferOutputs,
-        outputSelectionStrategy,
-        selectedOutputs,
-      });
+    // Acquire output locks for each token identifier
+    const acquiredByToken = new Map<
+      Bech32mTokenIdentifier,
+      OutputWithPreviousTransactionData[]
+    >();
+
+    for (const tokenId of tokenIdentifiers) {
+      const totalForToken = amountsByToken.get(tokenId)!;
+      const acquiredOutputs = await this.tokenOutputManager.acquireOutputs(
+        tokenId,
+        (available) => {
+          if (selectedOutputs) {
+            return selectedOutputs.filter((so) =>
+              available.some((a) => a.output?.id === so.output?.id),
+            );
+          }
+          return this.tokenTransactionService.selectTokenOutputs(
+            available,
+            totalForToken,
+            outputSelectionStrategy,
+          );
+        },
+        `batch-transfer-${tokenId}`,
+      );
+      acquiredByToken.set(tokenId, acquiredOutputs);
+    }
+
+    const tokenOutputsMap: TokenOutputsMap = new Map();
+    const allAcquiredOutputs: OutputWithPreviousTransactionData[] = [];
+    for (const [tokenId, outputs] of acquiredByToken) {
+      tokenOutputsMap.set(tokenId, outputs);
+      allAcquiredOutputs.push(...outputs);
+    }
+
+    const txHash = await this.tokenTransactionService.tokenTransfer({
+      tokenOutputs: tokenOutputsMap,
+      receiverOutputs,
+      outputSelectionStrategy,
+      selectedOutputs: allAcquiredOutputs,
     });
+
+    return txHash;
   }
 
   /**
+   * @deprecated Use queryTokenTransactionsWithFilters or queryTokenTransactionsByTxHashes instead
    * Retrieves token transaction history for specified tokens
    * Can optionally filter by specific transaction hashes.
    *
@@ -5083,6 +4685,73 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
       await this.config.signer.getIdentityPublicKey(),
       this.config.getNetwork(),
     );
+  }
+
+  /**
+   * Retrieves specific token transactions by their transaction hashes
+   * Primarily meant for retrieving and/or confirming the status of specific token transactions.
+   *
+   * @param tokenTransactionHashes - Array of transaction hashes
+   * @returns Promise resolving to array of token transactions with their current status
+   */
+  public async queryTokenTransactionsByTxHashes(
+    tokenTransactionHashes: string[],
+  ): Promise<QueryTokenTransactionsResponse> {
+    return this.tokenTransactionService.queryTokenTransactionsByTxHashes(
+      tokenTransactionHashes,
+    );
+  }
+
+  /**
+   * Retrieves token transaction history with optional filters
+   *
+   * @param sparkAddresses - Optional array of Spark addresses to query transactions for
+   * @param issuerPublicKeys - Optional array of issuer public keys to query transactions for
+   * @param tokenIdentifiers - Optional array of token identifiers to filter by
+   * @param outputIds - Optional array of output IDs to filter by
+   * @param pageSize - Optional page size (defaults to 50)
+   * @param cursor - Optional cursor for pagination
+   * @param direction - Optional direction for pagination ("NEXT" or "PREVIOUS", defaults to "NEXT")
+   * @returns Promise resolving to array of token transactions with their current status
+   */
+  public async queryTokenTransactionsWithFilters({
+    sparkAddresses,
+    issuerPublicKeys,
+    tokenIdentifiers,
+    outputIds,
+    pageSize,
+    cursor,
+    direction,
+  }: {
+    sparkAddresses?: string[];
+    issuerPublicKeys?: string[];
+    tokenIdentifiers?: string[];
+    outputIds?: string[];
+    pageSize?: number;
+    cursor?: string;
+    direction?: "NEXT" | "PREVIOUS";
+  }): Promise<QueryTokenTransactionsResponse> {
+    return this.tokenTransactionService.queryTokenTransactionsWithFilters({
+      sparkAddresses,
+      issuerPublicKeys,
+      tokenIdentifiers,
+      outputIds,
+      pageSize,
+      cursor,
+      direction,
+    });
+  }
+
+  // For internal use only
+  async getTokenOutputStats(
+    tokenIdentifier: Bech32mTokenIdentifier,
+  ): Promise<{ outputCount: number; totalAmount: bigint }> {
+    const availableOutputs =
+      await this.tokenOutputManager.getAvailableOutputs(tokenIdentifier);
+    return {
+      outputCount: availableOutputs.length,
+      totalAmount: sumTokenOutputs(availableOutputs),
+    };
   }
 
   /**
@@ -5462,68 +5131,31 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
   }
 
   // Add this new method to start periodic claiming
-  private startPeriodicClaimTransfers() {
+  private async startPeriodicClaimTransfers() {
     // Clear any existing interval first
     if (this.claimTransfersInterval) {
       clearInterval(this.claimTransfersInterval);
     }
 
+    await this.claimTransfers();
+
     // Set up new interval to claim transfers every 5 seconds
     // @ts-ignore
     this.claimTransfersInterval = setInterval(async () => {
       try {
-        await this.claimTransfers(undefined, true);
+        await this.claimTransfers(
+          [
+            TransferType.TRANSFER,
+            TransferType.COOPERATIVE_EXIT,
+            TransferType.PREIMAGE_SWAP,
+            TransferType.UTXO_SWAP,
+          ],
+          true,
+        );
       } catch (error) {
         console.error("Error in periodic transfer claiming:", error);
       }
     }, 10000);
-  }
-
-  private async updateLeaves(
-    leavesToRemove: string[],
-    leavesToAdd: TreeNode[],
-  ) {
-    const leavesToRemoveSet = new Set(leavesToRemove);
-    this.leaves = this.leaves.filter((leaf) => !leavesToRemoveSet.has(leaf.id));
-    this.leaves.push(...leavesToAdd);
-  }
-
-  private async queryNodes(
-    baseRequest: Omit<QueryNodesRequest, "limit" | "offset">,
-    sparkClientAddress?: string,
-    pageSize: number = 100,
-  ): Promise<QueryNodesResponse> {
-    const address = sparkClientAddress ?? this.config.getCoordinatorAddress();
-    const aggregatedNodes: {
-      [key: string]: QueryNodesResponse["nodes"][string];
-    } = {};
-    let offset = 0;
-
-    while (true) {
-      const sparkClient =
-        await this.connectionManager.createSparkClient(address);
-
-      const response = await sparkClient.query_nodes({
-        ...baseRequest,
-        limit: pageSize,
-        offset,
-      });
-
-      /* Merge nodes from this page. If user is sending or receiving payments results can shift
-         accross pages, potentially causing duplicates. Dedupe by node id: */
-      Object.assign(aggregatedNodes, response.nodes ?? {});
-
-      /* If we received fewer nodes than requested, this was the last page. */
-      const received = Object.keys(response.nodes ?? {}).length;
-      if (received < pageSize || baseRequest.source?.$case === "nodeIds") {
-        return {
-          nodes: aggregatedNodes,
-          offset: response.offset,
-        } as QueryNodesResponse;
-      }
-
-      offset += pageSize;
-    }
   }
 
   public async getUserRequests(
@@ -5564,7 +5196,7 @@ export abstract class SparkWallet extends EventEmitter<SparkWalletEvents> {
   }
 
   public async isOptimizationInProgress() {
-    return this.optimizationInProgress;
+    return this.leafManager.isOptimizing();
   }
 
   public async isTokenOptimizationInProgress() {
@@ -5735,7 +5367,7 @@ type SparkWalletFunctionKeys = Extract<
 
 type WrappableSparkWalletMethod = Exclude<
   SparkWalletFunctionKeys,
-  "constructor"
+  "constructor" | "getTokenOutputStats"
 >;
 
 const PUBLIC_SPARK_WALLET_METHODS = [
@@ -5743,6 +5375,7 @@ const PUBLIC_SPARK_WALLET_METHODS = [
   "batchTransferTokens",
   "checkTimelock",
   "claimDeposit",
+  "claimMultiUtxoDeposit",
   "claimStaticDeposit",
   "claimStaticDepositWithMaxFee",
   "cleanupConnections",
@@ -5752,11 +5385,13 @@ const PUBLIC_SPARK_WALLET_METHODS = [
   "queryHTLC",
   "createHTLCSenderSpendTx",
   "createHTLCReceiverSpendTx",
+  "createLightningHodlInvoice",
   "createLightningInvoice",
   "createSatsInvoice",
   "createTokensInvoice",
   "fulfillSparkInvoice",
   "getBalance",
+  "getCachedBalance",
   "getClaimStaticDepositQuote",
   "getCoopExitRequest",
   "getIdentityPublicKey",
@@ -5775,6 +5410,7 @@ const PUBLIC_SPARK_WALLET_METHODS = [
   "getUnusedDepositAddresses",
   "getUserRequests",
   "getUtxosForDepositAddress",
+  "getUtxosForDepositAddresses",
   "getWalletSettings",
   "getWithdrawalFeeQuote",
   "isOptimizationInProgress",
@@ -5784,6 +5420,8 @@ const PUBLIC_SPARK_WALLET_METHODS = [
   "querySparkInvoices",
   "queryStaticDepositAddresses",
   "queryTokenTransactions",
+  "queryTokenTransactionsByTxHashes",
+  "queryTokenTransactionsWithFilters",
   "refundAndBroadcastStaticDeposit",
   "refundStaticDeposit",
   "setPrivacyEnabled",
@@ -5809,10 +5447,26 @@ function isConnectedStreamEvent(
   return event?.$case === "connected";
 }
 
-function isTransferStreamEvent(
+function isReceiverTransferStreamEvent(
   event: SubscribeToEventsResponse["event"],
-): event is { $case: "transfer"; transfer: { transfer: Transfer } } {
-  return Boolean(event?.$case === "transfer" && event.transfer.transfer);
+): event is {
+  $case: "receiverTransfer";
+  receiverTransfer: { transfer: Transfer };
+} {
+  return Boolean(
+    event?.$case === "receiverTransfer" && event.receiverTransfer.transfer,
+  );
+}
+
+function isSenderTransferStreamEvent(
+  event: SubscribeToEventsResponse["event"],
+): event is {
+  $case: "senderTransfer";
+  senderTransfer: { transfer: Transfer };
+} {
+  return Boolean(
+    event?.$case === "senderTransfer" && event.senderTransfer.transfer,
+  );
 }
 
 function isDepositStreamEvent(

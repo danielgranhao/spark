@@ -1,5 +1,159 @@
 # @buildonspark/spark-sdk
 
+## 0.7.0
+
+### Minor Changes
+
+- Fix gRPC connection leak
+- Default network in unilateral exit helper to regtest instead of local when no network is provided
+- Two new public methods for deposit monitoring:
+  - getUtxosForDepositAddresses() — batch query confirmed UTXOs across multiple deposit addresses with pagination
+  - queryStaticDepositAddresses() — fetch all static deposit addresses registered for the wallet
+- Bitcoin transaction construction for node and refund transactions now delegates to the Rust WASM library instead of TypeScript.
+- Implement one call cooperative exit flow
+- Refactor leaf management. Three balances now returned:
+  - available: immediately spendable sats balance
+  - owned: all leaves owned (available + locked in outgoing transfers/swaps)
+  - incoming: pending inbound balance
+
+## 0.6.7
+
+### Patch Changes
+
+- Export readonly types
+
+## 0.6.6
+
+### Patch Changes
+
+- - Single-call transfer claiming — claimTransfer() now completes the entire receive flow in one RPC round-trip, replacing the previous multi-step
+    key-tweak/sign-refunds/finalize sequence (#5193)
+  - sparkInvoice on LightningReceiveRequest — New optional field provides direct access to the Spark invoice embedded in a Lightning receive request, without needing to
+    decode the Lightning invoice manually (#5393)
+  - Batch token consolidation — optimizeTokenOutputs() now consolidates outputs across multiple token identifiers in a single transaction instead of one token per call.
+    New acquireOutputsBatch() method on TokenOutputManager enables atomic multi-token output locking (#5235)
+  - Multi-UTXO deposit proto support — New InputSigningData type and additionalOnChainUtxos/additionalInputs fields for future multi-UTXO deposit flows (#5366)
+
+## 0.6.5
+
+### Patch Changes
+
+- Bug fixes and improvements
+  - Upgrade `@noble/curves` minimum version to `^1.9.7` (resolves missing `secp256k1.Point.fromHex()` export for users on older versions)
+  - Include React Native version and OS details in client environment for improved diagnostics
+  - Move adaptor signature operations to Rust WASM for better performance
+  - Remove user signature requirement from Lightning preimage storage
+  - Fix receiver identity public key for Lightning preimage storage (use provided key with fallback)
+  - Fix token output locks being released prematurely during transfers and consolidation
+  - Add optional `executeBefore` timestamp to token transactions
+
+## 0.6.4
+
+### Patch Changes
+
+- Clear auth tokens created before the client clock is synced to the server
+- Add a read only client for authenticated requests and master seed wallet queries
+- Store Lightning payment preimages in the SE in a single round-trip call
+- Support multi-token transfers in a single transaction
+
+## 0.6.3
+
+### Patch Changes
+
+- Reduce local token output lock expiry from 30s to 20s for faster recovery from failed transactions
+- Add wall-clock fallback for auth token eviction to handle device sleep/backgrounding
+
+## 0.6.2
+
+### Patch Changes
+
+- Proactively re-authenticate with Spark Operators to improve session reliability
+- Split token balance into `owned` and `availableToSend` to distinguish pending outbound transfers
+
+## 0.6.1
+
+### Patch Changes
+
+- Support creating unsigned Spark invoices on behalf of other pubkeys
+- Include Spark invoice in the WalletTransfer type
+
+## 0.6.0
+
+### Minor Changes
+
+- - Migrate to V2 hash variant
+  - Support idempotency key support for lightning payments to prevent duplicate transactions
+  - Fix bit manipulation when creating trees from L1 deposits (no longer sets the 30th bit)
+  - Introduce `createLightningHodlInvoice` for hold invoice support
+
+## 0.5.9
+
+### Patch Changes
+
+- - Embedded Spark Invoices in Lightning: Added includeSparkInvoice parameter to createLightningInvoice() allowing Spark invoices to be embedded in Lightning invoice
+    routing hints for easier payment tracking. Mutually exclusive with includeSparkAddress.
+  - Pending Outbound Token Queries: Added pending_outbound field to queryTokenOutputs responses, allowing clients to see token outputs pending outbound transfers.
+  - SE Withdrawal Signatures for Tokens: Token outputs now include se_finalization_adaptor_sig and se_withdrawal_signature fields to enable offline L1 withdrawal
+    capability for BTKN token holders.
+  - Transfer Signing Hash Collision Fix: Fixed an issue with transfer signing payload hash collisions that could cause signature validation failures.
+  - SO1 Endpoint Update: Updated SO1 to use the Breeze Signing Operator.
+  - Instant Static Deposits: Extended UTXOSwap schema to support instant static deposit flow.
+
+## 0.5.8
+
+### Patch Changes
+
+- **Swap flow updates**
+  - Swaps now use the `request_swap` API with outbound transfer IDs and multi-target amounts, and the SDK initiates swap transfers with adaptor signatures.
+  - Added support for `COUNTER_SWAP_V3` transfers and updated swap processing to use adaptor-added signatures from the swap transfer response.
+- **Deposit tree creation API update**
+  - Uses `get_signing_commitments` + `finalize_deposit_tree_creation` and sends user signatures/commitments directly (no local signature aggregation).
+- **Coop exit signing fix**
+  - Added multi-input Taproot sighash support for connector-based refund transactions and include connector transaction data in coop exit requests.
+- **Token transaction querying**
+  - Split `queryTokenTransactions`
+    - `queryTokenTransactionsByTxHashes` for confirming and querying the specific state of transactions
+    - `queryTokenTransactionsWithFilters` for querying the network with filters. Includes cursor pagination
+  - `queryTokenTransactions` is now deprecated.
+- **Utilities and validation**
+  - Added `hashstructure` tagged hash helper, validated VSS proof lengths, and skip direct refund tx creation for zero-timelock nodes.
+
+## 0.5.7
+
+### Patch Changes
+
+- - Improvements to build types
+
+## 0.5.6
+
+### Patch Changes
+
+- ### Direct Refund Transaction Fix for Zero Nodes
+
+  Fixed an issue where the SDK was creating `directRefundTx` for nodes with `timelock=0` (zero nodes), which caused backend validation errors. The SDK now correctly skips parsing `directNodeTx` for zero nodes, matching the server-side validation logic.
+
+  ### Improved Unilateral Exit Fee Estimation
+
+  Reduced unilateral exit fees by an average of 56% by improving transaction size estimation. The previous logic was overly conservative; this change uses TX-specific fields for size calculation instead of generic estimates.
+
+  ### Token Output Manager
+
+  Added a dedicated `TokenOutputManager` class for fine-grained token output locking and management.
+
+  **Key improvements:**
+  - Per-output locking instead of global mutex, enabling concurrent token operations
+  - Per-token output syncing with targeted sync support
+  - Partial output updates: update outputs for specific tokens without replacing all data
+  - Per-token pending-withdrawal tracking
+  - Automatic lock expiry mechanism (default: 30 seconds, configurable via `tokenOutputLockExpiryMs`)
+
+## 0.5.5
+
+### Patch Changes
+
+- - Fix: ensure direct-from-CPFP refund transactions are signed even when directTx is missing.
+  - Improvement: increase embedded WASM stack size to 3MB (bindings regenerated) to reduce stack overflow failures.
+
 ## 0.5.4
 
 ### Patch Changes

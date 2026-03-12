@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"testing"
 	"time"
@@ -162,9 +163,7 @@ type mutableKnobs struct {
 
 func newMutableKnobs(initial map[string]float64) *mutableKnobs {
 	cp := make(map[string]float64, len(initial))
-	for k, v := range initial {
-		cp[k] = v
-	}
+	maps.Copy(cp, initial)
 	return &mutableKnobs{values: cp}
 }
 
@@ -303,7 +302,8 @@ func TestRateLimiter(t *testing.T) {
 				if m.Name == "rpc.server.ratelimit_utilization" {
 					foundUtil = true
 					// Expect histogram points with utilization for each scope/dimension
-					hs := m.Data.(md.Histogram[float64])
+					require.IsType(t, md.Histogram[float64]{}, m.Data)
+					hs, _ := m.Data.(md.Histogram[float64])
 					// Sum of counts across all histograms should be 6
 					count := 0
 					for _, dp := range hs.DataPoints {
@@ -353,12 +353,14 @@ func TestRateLimiter(t *testing.T) {
 			for _, m := range sm.Metrics {
 				switch m.Name {
 				case "rpc.server.ratelimit_utilization":
-					hs := m.Data.(md.Histogram[float64])
+					require.IsType(t, md.Histogram[float64]{}, m.Data)
+					hs, _ := m.Data.(md.Histogram[float64])
 					for _, dp := range hs.DataPoints {
 						utilCount += int(dp.Count)
 					}
 				case "rpc.server.ratelimit_exceeded_total":
-					cn := m.Data.(md.Sum[int64])
+					require.IsType(t, md.Sum[int64]{}, m.Data)
+					cn, _ := m.Data.(md.Sum[int64])
 					for _, dp := range cn.DataPoints {
 						breachCount += int(dp.Value)
 					}
@@ -382,12 +384,14 @@ func TestRateLimiter(t *testing.T) {
 			for _, m := range sm.Metrics {
 				switch m.Name {
 				case "rpc.server.ratelimit_utilization":
-					hs := m.Data.(md.Histogram[float64])
+					require.IsType(t, md.Histogram[float64]{}, m.Data)
+					hs, _ := m.Data.(md.Histogram[float64])
 					for _, dp := range hs.DataPoints {
 						utilCount += int(dp.Count)
 					}
 				case "rpc.server.ratelimit_exceeded_total":
-					cn := m.Data.(md.Sum[int64])
+					require.IsType(t, md.Sum[int64]{}, m.Data)
+					cn, _ := m.Data.(md.Sum[int64])
 					for _, dp := range cn.DataPoints {
 						breachCount += int(dp.Value)
 					}
@@ -558,9 +562,9 @@ func TestRateLimiter(t *testing.T) {
 		info1 := &grpc.UnaryServerInfo{FullMethod: "/test.Service/Method1"}
 
 		// First 5 requests should succeed
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			resp, err := interceptor(ctx, "request", info1, handler)
-			require.NoError(t, err, "Method1 request %d should succeed", i+1)
+			require.NoErrorf(t, err, "Method1 request %d should succeed", i+1)
 			assert.Equal(t, "ok", resp)
 		}
 
@@ -626,7 +630,7 @@ func TestRateLimiter(t *testing.T) {
 
 		// Method B should now be limited by 3 in new window
 		infoB := &grpc.UnaryServerInfo{FullMethod: "/test.Service/MethodB"}
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			_, err := interceptor(ctx, "request", infoB, handler)
 			require.NoError(t, err)
 		}
@@ -662,7 +666,7 @@ func TestRateLimiter(t *testing.T) {
 		clock.Time = clock.Time.Add(2 * time.Second)
 		knobValues[knobs.KnobRateLimitLimit+"@global#1s"] = 3
 
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			_, err := interceptor(ctx, "request", info, handler)
 			require.NoError(t, err)
 		}
@@ -740,7 +744,7 @@ func TestRateLimiter(t *testing.T) {
 		ctx := metadata.NewIncomingContext(t.Context(), metadata.New(map[string]string{"x-forwarded-for": "1.2.3.4"}))
 
 		// Two requests succeed; third fails due to per-method bucket
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			_, err := interceptor(ctx, "request", info, handler)
 			require.NoError(t, err)
 		}
@@ -805,8 +809,11 @@ func TestRateLimiter(t *testing.T) {
 		}
 		info := &grpc.UnaryServerInfo{FullMethod: "/test.Service/NotLimited"}
 
-		for i := 0; i < 5; i++ {
-			resp, err := interceptor(t.Context(), "request", info, handler)
+		ctx := metadata.NewIncomingContext(t.Context(), metadata.New(map[string]string{
+			"x-forwarded-for": "1.2.3.4",
+		}))
+		for range 5 {
+			resp, err := interceptor(ctx, "request", info, handler)
 			require.NoError(t, err)
 			assert.Equal(t, "ok", resp)
 		}
@@ -900,7 +907,7 @@ func TestRateLimiter(t *testing.T) {
 		assert.Equal(t, "ok", resp)
 	})
 
-	t.Run("x-real-ip ignored", func(t *testing.T) {
+	t.Run("x-real-ip rejected as invalid identifier", func(t *testing.T) {
 		config := &RateLimiterConfig{}
 		mockKnobs := knobs.NewFixedKnobs(map[string]float64{})
 		rateLimiter, err := NewRateLimiter(config, WithKnobs(mockKnobs))
@@ -917,12 +924,10 @@ func TestRateLimiter(t *testing.T) {
 			"x-real-ip": "1.2.3.4",
 		}))
 
-		// Should not rate limit since x-real-ip is ignored
-		for range 5 {
-			resp, err := interceptor(ctx, "request", info, handler)
-			require.NoError(t, err)
-			assert.Equal(t, "ok", resp)
-		}
+		// Should be rejected since x-real-ip is not a valid identifier
+		_, err = interceptor(ctx, "request", info, handler)
+		require.Error(t, err)
+		assert.Equal(t, codes.Internal, status.Code(err))
 	})
 
 	t.Run("custom x-forwarded-for client IP position", func(t *testing.T) {
@@ -1096,7 +1101,7 @@ func TestRateLimiter(t *testing.T) {
 		ctx := metadata.NewIncomingContext(t.Context(), metadata.New(map[string]string{"x-forwarded-for": "1.2.3.4"}))
 
 		// Under both tiers: allow 2 in 1s, 3 in 3s
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			_, err := interceptor(ctx, "request", info, handler)
 			require.NoError(t, err)
 		}
@@ -1137,7 +1142,7 @@ func TestRateLimiter(t *testing.T) {
 		ctxExcluded := metadata.NewIncomingContext(t.Context(), metadata.New(map[string]string{
 			"x-forwarded-for": "1.2.3.4",
 		}))
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			resp, err := interceptor(ctxExcluded, "request", info, handler)
 			require.NoError(t, err)
 			assert.Equal(t, "ok", resp)
@@ -1182,7 +1187,7 @@ func TestRateLimiter(t *testing.T) {
 		ctx = authn.InjectSessionForTests(ctx, identityHex, time.Now().Add(time.Hour).Unix())
 
 		// Should not rate limit due to exclusion
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			resp, err := interceptor(ctx, "request", info, handler)
 			require.NoError(t, err)
 			assert.Equal(t, "ok", resp)
@@ -1299,7 +1304,7 @@ func TestRateLimiter(t *testing.T) {
 		}))
 
 		// IP is excluded, and no pubkey is present, so rate limiting should be bypassed
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			resp, err := interceptor(ctx, "request", info, handler)
 			require.NoError(t, err)
 			assert.Equal(t, "ok", resp)
@@ -1330,7 +1335,7 @@ func TestRateLimiter(t *testing.T) {
 		ctx = authn.InjectSessionForTests(ctx, identityHex, time.Now().Add(time.Hour).Unix())
 
 		// Pubkey is excluded, and no IP is present, so rate limiting should be bypassed
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			resp, err := interceptor(ctx, "request", info, handler)
 			require.NoError(t, err)
 			assert.Equal(t, "ok", resp)
@@ -1364,7 +1369,7 @@ func TestRateLimiter(t *testing.T) {
 		ctx = authn.InjectSessionForTests(ctx, identityHex, time.Now().Add(time.Hour).Unix())
 
 		// Full exclusion should bypass all rate limiting, even if dimension-only exclusion is also set
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			resp, err := interceptor(ctx, "request", info, handler)
 			require.NoError(t, err)
 			assert.Equal(t, "ok", resp)
@@ -1749,7 +1754,7 @@ func TestStreamServerInterceptor(t *testing.T) {
 			"x-forwarded-for": "1.2.3.4",
 		}))
 		streamExcluded := &mockServerStream{ctx: ctxExcluded}
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			err := interceptor(nil, streamExcluded, info, handler)
 			require.NoError(t, err)
 		}
@@ -1790,7 +1795,7 @@ func TestStreamServerInterceptor(t *testing.T) {
 		stream := &mockServerStream{ctx: ctx}
 
 		// Should not rate limit due to exclusion
-		for i := 0; i < 3; i++ {
+		for range 5 {
 			err := interceptor(nil, stream, info, handler)
 			require.NoError(t, err)
 		}
@@ -1835,8 +1840,11 @@ func TestStreamServerInterceptor(t *testing.T) {
 		handler := func(_ any, _ grpc.ServerStream) error { return nil }
 		info := &grpc.StreamServerInfo{FullMethod: "/test.Service/NotLimited"}
 
-		for i := 0; i < 5; i++ {
-			err := interceptor(nil, &mockServerStream{ctx: t.Context()}, info, handler)
+		ctx := metadata.NewIncomingContext(t.Context(), metadata.New(map[string]string{
+			"x-forwarded-for": "1.2.3.4",
+		}))
+		for range 5 {
+			err := interceptor(nil, &mockServerStream{ctx: ctx}, info, handler)
 			require.NoError(t, err)
 		}
 	})
@@ -1861,7 +1869,7 @@ func TestStreamServerInterceptor(t *testing.T) {
 		stream := &mockServerStream{ctx: ctx}
 
 		// Under both tiers: allow 2 in 1s, 3 in 1m
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			err := interceptor(nil, stream, info, handler)
 			require.NoError(t, err)
 		}
@@ -1877,5 +1885,45 @@ func TestStreamServerInterceptor(t *testing.T) {
 		// At this point, total requests within the 1-minute window is 3. The next request should fail.
 		err = interceptor(nil, stream, info, handler)
 		require.ErrorContains(t, err, "rate limit exceeded")
+	})
+}
+
+func TestRateLimiter_RejectsRequestsWithNoIdentifier(t *testing.T) {
+	config := &RateLimiterConfig{}
+	mockKnobs := knobs.NewFixedKnobs(map[string]float64{
+		knobs.KnobRateLimitLimit + "@/test.Service/TestMethod#1s": 10,
+	})
+	rateLimiter, err := NewRateLimiter(config, WithKnobs(mockKnobs))
+	require.NoError(t, err)
+
+	interceptor := rateLimiter.UnaryServerInterceptor()
+	handler := func(_ context.Context, _ any) (any, error) {
+		return "ok", nil
+	}
+	info := &grpc.UnaryServerInfo{FullMethod: "/test.Service/TestMethod"}
+
+	t.Run("rejects request with no metadata", func(t *testing.T) {
+		ctx := t.Context()
+		_, err := interceptor(ctx, "request", info, handler)
+		require.Error(t, err)
+		assert.Equal(t, codes.Internal, status.Code(err))
+		assert.Contains(t, status.Convert(err).Message(), "no client identifier")
+	})
+
+	t.Run("rejects request with empty metadata", func(t *testing.T) {
+		ctx := metadata.NewIncomingContext(t.Context(), metadata.New(map[string]string{}))
+		_, err := interceptor(ctx, "request", info, handler)
+		require.Error(t, err)
+		assert.Equal(t, codes.Internal, status.Code(err))
+		assert.Contains(t, status.Convert(err).Message(), "no client identifier")
+	})
+
+	t.Run("allows request with IP", func(t *testing.T) {
+		ctx := metadata.NewIncomingContext(t.Context(), metadata.New(map[string]string{
+			"x-forwarded-for": "1.2.3.4",
+		}))
+		resp, err := interceptor(ctx, "request", info, handler)
+		require.NoError(t, err)
+		assert.Equal(t, "ok", resp)
 	})
 }

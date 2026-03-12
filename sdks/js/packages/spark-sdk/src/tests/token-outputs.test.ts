@@ -1,9 +1,18 @@
 import { numberToBytesBE, bytesToNumberBE } from "@noble/curves/utils";
 import { SparkValidationError } from "../errors/types.js";
-import { OutputWithPreviousTransactionData } from "../proto/spark_token.js";
+import {
+  OutputWithPreviousTransactionData,
+  TokenOutputStatus,
+} from "../proto/spark_token.js";
 import { WalletConfigService } from "../services/config.js";
 import { ConnectionManager } from "../services/connection/connection.js";
-import { TokenTransactionService } from "../services/token-transactions.js";
+import {
+  MAX_TOKEN_OUTPUTS_TX,
+  TokenTransactionService,
+} from "../services/tokens/token-transactions.js";
+import { TokenOutputManager } from "../services/tokens/output-manager.js";
+import { TokenOutputsMap } from "../spark-wallet/types.js";
+import { Bech32mTokenIdentifier } from "../utils/token-identifier.js";
 
 describe("select token outputs", () => {
   let tokenTransactionService: TokenTransactionService;
@@ -34,13 +43,16 @@ describe("select token outputs", () => {
     tokenAmount: bigint,
     tokenPublicKey: Uint8Array = new Uint8Array(32).fill(1),
     ownerPublicKey: Uint8Array = new Uint8Array(32).fill(2),
+    tokenIdentifier: Uint8Array = new Uint8Array(32).fill(5),
   ): OutputWithPreviousTransactionData => ({
     output: {
       id,
       ownerPublicKey,
       tokenPublicKey,
+      tokenIdentifier,
       tokenAmount: numberToBytesBE(tokenAmount, 16),
       revocationCommitment: new Uint8Array(32).fill(3),
+      status: TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
     },
     previousTransactionHash: new Uint8Array(32).fill(4),
     previousTransactionVout: 0,
@@ -201,6 +213,68 @@ describe("select token outputs", () => {
 
       expect(result).toHaveLength(3);
       // Total: 600n >= 600n
+    });
+
+    it("should throw SparkValidationError when tokenOutputs map is missing a receiver token key", async () => {
+      const tokenIdentifier =
+        "btknrt1qqtpc5vxamq522ch9r89kkt0sgpfd2zac7uzvz4akhsmy2jrsjnsk6xuae" as Bech32mTokenIdentifier;
+
+      await expect(
+        tokenTransactionService.tokenTransfer({
+          tokenOutputs: new Map(),
+          receiverOutputs: [
+            {
+              tokenIdentifier,
+              tokenAmount: 100n,
+              receiverSparkAddress: "spark1invalid",
+            },
+          ],
+          outputSelectionStrategy: "SMALL_FIRST",
+        }),
+      ).rejects.toThrow(SparkValidationError);
+    });
+  });
+
+  describe("per-token output limit validation", () => {
+    const validateOutputCountPerToken = (
+      outputsToUse: OutputWithPreviousTransactionData[],
+    ) =>
+      (tokenTransactionService as any)["validateOutputCountPerToken"](
+        outputsToUse,
+      );
+
+    it("allows multi-token transfers when each token is within the limit", () => {
+      const tokenA = new Uint8Array(32).fill(10);
+      const tokenB = new Uint8Array(32).fill(11);
+      const ownerA = new Uint8Array(32).fill(20);
+      const ownerB = new Uint8Array(32).fill(21);
+
+      const tokenAOutputs = Array.from(
+        { length: MAX_TOKEN_OUTPUTS_TX },
+        (_, i) => createMockTokenOutput(`a-${i}`, 1n, tokenA, ownerA, tokenA),
+      );
+      const tokenBOutputs = Array.from(
+        { length: MAX_TOKEN_OUTPUTS_TX },
+        (_, i) => createMockTokenOutput(`b-${i}`, 1n, tokenB, ownerB, tokenB),
+      );
+
+      expect(() =>
+        validateOutputCountPerToken([...tokenAOutputs, ...tokenBOutputs]),
+      ).not.toThrow();
+    });
+
+    it("rejects transfers that exceed the limit for a single token type", () => {
+      const tokenA = new Uint8Array(32).fill(10);
+      const ownerA = new Uint8Array(32).fill(20);
+
+      const tokenAOutputs = Array.from(
+        { length: MAX_TOKEN_OUTPUTS_TX + 1 },
+        (_, i) => createMockTokenOutput(`a-${i}`, 1n, tokenA, ownerA, tokenA),
+      );
+
+      expect(() => validateOutputCountPerToken(tokenAOutputs)).toThrow(
+        SparkValidationError,
+      );
     });
   });
 
@@ -377,6 +451,410 @@ describe("select token outputs", () => {
         0n,
       );
       expect(total).toBeGreaterThanOrEqual(5000n);
+    });
+  });
+});
+
+describe("TokenOutputManager", () => {
+  const TOKEN_ID_1 =
+    "btknrt1qqtpc5vxamq522ch9r89kkt0sgpfd2zac7uzvz4akhsmy2jrsjnsk6xuae" as Bech32mTokenIdentifier;
+  const TOKEN_ID_2 =
+    "btknrt1qqtpc5vxamq522ch9r99kkt0sgpfd2zac7uzvz4akhsmy2jrsjnsk6xuae" as Bech32mTokenIdentifier;
+
+  const createMockOutput = (
+    id: string,
+    tokenAmount: bigint = 100n,
+  ): OutputWithPreviousTransactionData => ({
+    output: {
+      id,
+      ownerPublicKey: new Uint8Array(32).fill(1),
+      tokenPublicKey: new Uint8Array(32).fill(2),
+      tokenAmount: numberToBytesBE(tokenAmount, 16),
+      revocationCommitment: new Uint8Array(32).fill(3),
+      status: TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+    },
+    previousTransactionHash: new Uint8Array(32).fill(4),
+    previousTransactionVout: 0,
+  });
+
+  describe("basic output operations", () => {
+    it("should start empty", async () => {
+      const manager = new TokenOutputManager();
+      expect(await manager.isEmpty()).toBe(true);
+      expect(await manager.size()).toBe(0);
+    });
+
+    it("should set and get outputs", async () => {
+      const manager = new TokenOutputManager();
+      const outputs = [createMockOutput("out1"), createMockOutput("out2")];
+      const map: TokenOutputsMap = new Map([[TOKEN_ID_1, outputs]]);
+
+      await manager.setOutputs(map);
+
+      expect(await manager.isEmpty()).toBe(false);
+      expect(await manager.size()).toBe(1);
+      expect(await manager.hasTokenIdentifier(TOKEN_ID_1)).toBe(true);
+      expect(await manager.hasTokenIdentifier(TOKEN_ID_2)).toBe(false);
+    });
+
+    it("should get all outputs for a token", async () => {
+      const manager = new TokenOutputManager();
+      const outputs = [createMockOutput("out1"), createMockOutput("out2")];
+      const map: TokenOutputsMap = new Map([[TOKEN_ID_1, outputs]]);
+
+      await manager.setOutputs(map);
+
+      const retrieved = await manager.getAvailableOutputs(TOKEN_ID_1);
+      expect(retrieved).toHaveLength(2);
+      expect(retrieved[0]!.output!.id).toBe("out1");
+      expect(retrieved[1]!.output!.id).toBe("out2");
+    });
+
+    it("should return empty array for unknown token", async () => {
+      const manager = new TokenOutputManager();
+      const retrieved = await manager.getAvailableOutputs(TOKEN_ID_1);
+      expect(retrieved).toHaveLength(0);
+    });
+
+    it("should get all token identifiers", async () => {
+      const manager = new TokenOutputManager();
+      const map: TokenOutputsMap = new Map([
+        [TOKEN_ID_1, [createMockOutput("out1")]],
+        [TOKEN_ID_2, [createMockOutput("out2")]],
+      ]);
+
+      await manager.setOutputs(map);
+
+      const identifiers = await manager.getTokenIdentifiers();
+      expect(identifiers).toHaveLength(2);
+      expect(identifiers).toContain(TOKEN_ID_1);
+      expect(identifiers).toContain(TOKEN_ID_2);
+    });
+
+    it("should get entries snapshot", async () => {
+      const manager = new TokenOutputManager();
+      const map: TokenOutputsMap = new Map([
+        [TOKEN_ID_1, [createMockOutput("out1")]],
+        [TOKEN_ID_2, [createMockOutput("out2")]],
+      ]);
+
+      await manager.setOutputs(map);
+
+      const entries = await manager.entries();
+      expect(entries).toHaveLength(2);
+    });
+  });
+
+  describe("setOutputs syncing behavior", () => {
+    const createMockOutputWithStatus = (
+      id: string,
+      status: TokenOutputStatus,
+      tokenAmount: bigint = 100n,
+    ): OutputWithPreviousTransactionData => ({
+      output: {
+        id,
+        ownerPublicKey: new Uint8Array(32).fill(1),
+        tokenPublicKey: new Uint8Array(32).fill(2),
+        tokenAmount: numberToBytesBE(tokenAmount, 16),
+        revocationCommitment: new Uint8Array(32).fill(3),
+        status,
+      },
+      previousTransactionHash: new Uint8Array(32).fill(4),
+      previousTransactionVout: 0,
+    });
+
+    it("should separate available and pending outbound outputs", async () => {
+      const manager = new TokenOutputManager();
+      const outputs = [
+        createMockOutputWithStatus(
+          "available1",
+          TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+        ),
+        createMockOutputWithStatus(
+          "pending1",
+          TokenOutputStatus.TOKEN_OUTPUT_STATUS_PENDING_OUTBOUND,
+        ),
+        createMockOutputWithStatus(
+          "available2",
+          TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+        ),
+      ];
+      const map: TokenOutputsMap = new Map([[TOKEN_ID_1, outputs]]);
+
+      await manager.setOutputs(map);
+
+      const available = await manager.getAvailableOutputs(TOKEN_ID_1);
+      expect(available).toHaveLength(2);
+      expect(available.map((o) => o.output!.id)).toEqual([
+        "available1",
+        "available2",
+      ]);
+
+      const pending = await manager.getPendingOutboundOutputs(TOKEN_ID_1);
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.output!.id).toBe("pending1");
+    });
+
+    it("should update only specified tokens when tokenIdentifiers provided", async () => {
+      const manager = new TokenOutputManager();
+
+      // Set up initial outputs for two tokens
+      const initialMap: TokenOutputsMap = new Map([
+        [
+          TOKEN_ID_1,
+          [
+            createMockOutputWithStatus(
+              "token1_out1",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+            ),
+          ],
+        ],
+        [
+          TOKEN_ID_2,
+          [
+            createMockOutputWithStatus(
+              "token2_out1",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+            ),
+          ],
+        ],
+      ]);
+      await manager.setOutputs(initialMap);
+
+      // Update only TOKEN_ID_1 with new outputs
+      const updatedMap: TokenOutputsMap = new Map([
+        [
+          TOKEN_ID_1,
+          [
+            createMockOutputWithStatus(
+              "token1_out2",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+            ),
+          ],
+        ],
+      ]);
+      await manager.setOutputs(updatedMap, [TOKEN_ID_1]);
+
+      // TOKEN_ID_1 should have the new output
+      const token1Outputs = await manager.getAvailableOutputs(TOKEN_ID_1);
+      expect(token1Outputs).toHaveLength(1);
+      expect(token1Outputs[0]!.output!.id).toBe("token1_out2");
+
+      // TOKEN_ID_2 should still have its original output (preserved)
+      const token2Outputs = await manager.getAvailableOutputs(TOKEN_ID_2);
+      expect(token2Outputs).toHaveLength(1);
+      expect(token2Outputs[0]!.output!.id).toBe("token2_out1");
+    });
+
+    it("should delete token from map when updated with empty outputs", async () => {
+      const manager = new TokenOutputManager();
+
+      const initialMap: TokenOutputsMap = new Map([
+        [
+          TOKEN_ID_1,
+          [
+            createMockOutputWithStatus(
+              "out1",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+            ),
+          ],
+        ],
+      ]);
+      await manager.setOutputs(initialMap);
+
+      expect(await manager.hasTokenIdentifier(TOKEN_ID_1)).toBe(true);
+
+      // Update with empty outputs for TOKEN_ID_1
+      const emptyMap: TokenOutputsMap = new Map([[TOKEN_ID_1, []]]);
+      await manager.setOutputs(emptyMap, [TOKEN_ID_1]);
+
+      expect(await manager.hasTokenIdentifier(TOKEN_ID_1)).toBe(false);
+    });
+
+    it("should ignore outputs with unspecified status", async () => {
+      const manager = new TokenOutputManager();
+      const outputs = [
+        createMockOutputWithStatus(
+          "available",
+          TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+        ),
+        createMockOutputWithStatus(
+          "unspecified",
+          TokenOutputStatus.TOKEN_OUTPUT_STATUS_UNSPECIFIED,
+        ),
+        createMockOutputWithStatus(
+          "pending",
+          TokenOutputStatus.TOKEN_OUTPUT_STATUS_PENDING_OUTBOUND,
+        ),
+      ];
+      const map: TokenOutputsMap = new Map([[TOKEN_ID_1, outputs]]);
+
+      await manager.setOutputs(map);
+
+      const available = await manager.getAvailableOutputs(TOKEN_ID_1);
+      expect(available).toHaveLength(1);
+      expect(available[0]!.output!.id).toBe("available");
+
+      const pending = await manager.getPendingOutboundOutputs(TOKEN_ID_1);
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.output!.id).toBe("pending");
+    });
+
+    it("should replace all outputs when no tokenIdentifiers provided", async () => {
+      const manager = new TokenOutputManager();
+
+      // Set initial outputs
+      const initialMap: TokenOutputsMap = new Map([
+        [
+          TOKEN_ID_1,
+          [
+            createMockOutputWithStatus(
+              "out1",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+            ),
+          ],
+        ],
+        [
+          TOKEN_ID_2,
+          [
+            createMockOutputWithStatus(
+              "out2",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+            ),
+          ],
+        ],
+      ]);
+      await manager.setOutputs(initialMap);
+
+      // Replace all with only TOKEN_ID_1
+      const newMap: TokenOutputsMap = new Map([
+        [
+          TOKEN_ID_1,
+          [
+            createMockOutputWithStatus(
+              "new_out1",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+            ),
+          ],
+        ],
+      ]);
+      await manager.setOutputs(newMap);
+
+      // TOKEN_ID_1 should have the new output
+      const token1Outputs = await manager.getAvailableOutputs(TOKEN_ID_1);
+      expect(token1Outputs).toHaveLength(1);
+      expect(token1Outputs[0]!.output!.id).toBe("new_out1");
+
+      // TOKEN_ID_2 should be gone
+      expect(await manager.hasTokenIdentifier(TOKEN_ID_2)).toBe(false);
+    });
+
+    it("should handle transition from pending to available", async () => {
+      const manager = new TokenOutputManager();
+
+      // Start with pending output
+      const pendingOutputs = [
+        createMockOutputWithStatus(
+          "out1",
+          TokenOutputStatus.TOKEN_OUTPUT_STATUS_PENDING_OUTBOUND,
+        ),
+      ];
+      await manager.setOutputs(new Map([[TOKEN_ID_1, pendingOutputs]]));
+
+      let pending = await manager.getPendingOutboundOutputs(TOKEN_ID_1);
+      expect(pending).toHaveLength(1);
+      let available = await manager.getAvailableOutputs(TOKEN_ID_1);
+      expect(available).toHaveLength(0);
+
+      // Transaction completes - output becomes available again
+      const availableOutputs = [
+        createMockOutputWithStatus(
+          "out1",
+          TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+        ),
+      ];
+      await manager.setOutputs(new Map([[TOKEN_ID_1, availableOutputs]]));
+
+      pending = await manager.getPendingOutboundOutputs(TOKEN_ID_1);
+      expect(pending).toHaveLength(0);
+      available = await manager.getAvailableOutputs(TOKEN_ID_1);
+      expect(available).toHaveLength(1);
+      expect(available[0]!.output!.id).toBe("out1");
+    });
+
+    it("should handle multiple tokens with mixed statuses", async () => {
+      const manager = new TokenOutputManager();
+
+      const map: TokenOutputsMap = new Map([
+        [
+          TOKEN_ID_1,
+          [
+            createMockOutputWithStatus(
+              "t1_avail",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_AVAILABLE,
+            ),
+            createMockOutputWithStatus(
+              "t1_pending",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_PENDING_OUTBOUND,
+            ),
+          ],
+        ],
+        [
+          TOKEN_ID_2,
+          [
+            createMockOutputWithStatus(
+              "t2_pending1",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_PENDING_OUTBOUND,
+            ),
+            createMockOutputWithStatus(
+              "t2_pending2",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_PENDING_OUTBOUND,
+            ),
+          ],
+        ],
+      ]);
+      await manager.setOutputs(map);
+
+      // TOKEN_ID_1: 1 available, 1 pending
+      expect(await manager.getAvailableOutputs(TOKEN_ID_1)).toHaveLength(1);
+      expect(await manager.getPendingOutboundOutputs(TOKEN_ID_1)).toHaveLength(
+        1,
+      );
+
+      // TOKEN_ID_2: 0 available, 2 pending
+      expect(await manager.getAvailableOutputs(TOKEN_ID_2)).toHaveLength(0);
+      expect(await manager.getPendingOutboundOutputs(TOKEN_ID_2)).toHaveLength(
+        2,
+      );
+
+      // Both tokens should be tracked
+      const identifiers = await manager.getTokenIdentifiers();
+      expect(identifiers).toHaveLength(2);
+      expect(identifiers).toContain(TOKEN_ID_1);
+      expect(identifiers).toContain(TOKEN_ID_2);
+    });
+
+    it("should count pending tokens in size and hasTokenIdentifier", async () => {
+      const manager = new TokenOutputManager();
+
+      // Token with only pending outputs (no available)
+      const map: TokenOutputsMap = new Map([
+        [
+          TOKEN_ID_1,
+          [
+            createMockOutputWithStatus(
+              "pending1",
+              TokenOutputStatus.TOKEN_OUTPUT_STATUS_PENDING_OUTBOUND,
+            ),
+          ],
+        ],
+      ]);
+      await manager.setOutputs(map);
+
+      // Even though there are no available outputs, the token should be tracked
+      expect(await manager.hasTokenIdentifier(TOKEN_ID_1)).toBe(true);
+      expect(await manager.size()).toBe(1);
+      expect(await manager.isEmpty()).toBe(false);
     });
   });
 });

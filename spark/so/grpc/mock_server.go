@@ -105,9 +105,30 @@ func (o *MockServer) TriggerTask(ctx context.Context, req *pbmock.TriggerTaskReq
 	}
 	// Use the operator's root *ent.Client instead of the transactional one because RunOnce expects *ent.Client.
 	dbClient := o.rootClient
-	if err := selected.RunOnce(ctx, o.config, dbClient, knobs.NewFixedKnobs(map[string]float64{})); err != nil {
+	// Use the knobs service from context (injected by gRPC interceptor) to respect test-configured knob values
+	if err := selected.RunOnce(ctx, o.config, dbClient, knobs.GetKnobsService(ctx)); err != nil {
 		return nil, status.Errorf(codes.Internal, "task %s failed: %v", taskName, err)
 	}
 
 	return &emptypb.Empty{}, nil
+}
+
+func (o *MockServer) QueryPreimageShare(ctx context.Context, req *pbmock.QueryPreimageShareRequest) (*pbmock.QueryPreimageShareResponse, error) {
+	db, err := ent.GetDbFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	share, err := db.PreimageShare.Query().Where(preimageshare.PaymentHashEQ(req.PaymentHash)).Only(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "preimage share not found for payment hash")
+		}
+		return nil, err
+	}
+	return &pbmock.QueryPreimageShareResponse{
+		PreimageShare: share.PreimageShare,
+		Threshold:     share.Threshold,
+		InvoiceString: share.InvoiceString,
+	}, nil
 }

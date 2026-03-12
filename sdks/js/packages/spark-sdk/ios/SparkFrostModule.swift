@@ -407,6 +407,270 @@ class SparkFrostModule: NSObject, RCTBridgeModule {
         }
     }
 
+    @objc(splitSecretWithProofs:resolve:reject:)
+    func rn_splitSecretWithProofs(_ params: [String: Any],
+                       resolve: @escaping RCTPromiseResolveBlock,
+                       reject: @escaping RCTPromiseRejectBlock) {
+        do {
+            guard let secretArray = params["secret"] as? [Any],
+                  let secret = arrayToData(secretArray) else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid secret format"])
+            }
+            guard let threshold = params["threshold"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid threshold format"])
+            }
+            guard let numShares = params["numShares"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid numShares format"])
+            }
+
+            let result = try splitSecretWithProofsUniffi(
+                secret: secret,
+                threshold: UInt32(threshold),
+                numShares: UInt32(numShares)
+            )
+
+            let sharesArray: [[String: Any]] = result.map { share in
+                let proofsArray: [[Int]] = share.proofs.map { dataToArray($0) }
+                return [
+                    "threshold": Int(share.threshold),
+                    "index": Int(share.index),
+                    "share": dataToArray(share.share),
+                    "proofs": proofsArray
+                ]
+            }
+
+            resolve(sharesArray)
+        } catch {
+            reject("ERROR", error.localizedDescription, error)
+        }
+    }
+
+    @objc(recoverSecret:resolve:reject:)
+    func rn_recoverSecret(_ params: [String: Any],
+                       resolve: @escaping RCTPromiseResolveBlock,
+                       reject: @escaping RCTPromiseRejectBlock) {
+        do {
+            guard let sharesArray = params["shares"] as? [[String: Any]] else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid shares format"])
+            }
+
+            let shares: [SecretShareResult] = try sharesArray.enumerated().map { (i, shareDict) in
+                guard let threshold = shareDict["threshold"] as? Int else {
+                    throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid threshold at index \(i)"])
+                }
+                guard let index = shareDict["index"] as? Int else {
+                    throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid index at index \(i)"])
+                }
+                guard let shareArr = shareDict["share"] as? [Any],
+                      let shareData = arrayToData(shareArr) else {
+                    throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid share bytes at index \(i)"])
+                }
+                return SecretShareResult(
+                    threshold: UInt32(threshold),
+                    index: UInt32(index),
+                    share: shareData
+                )
+            }
+
+            let result = try recoverSecretUniffi(shares: shares)
+            resolve(dataToArray(result))
+        } catch {
+            reject("ERROR", error.localizedDescription, error)
+        }
+    }
+
+    @objc(validateShare:resolve:reject:)
+    func rn_validateShare(_ params: [String: Any],
+                       resolve: @escaping RCTPromiseResolveBlock,
+                       reject: @escaping RCTPromiseRejectBlock) {
+        do {
+            guard let shareArr = params["share"] as? [Any],
+                  let share = arrayToData(shareArr) else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid share format"])
+            }
+            guard let index = params["index"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid index format"])
+            }
+            guard let threshold = params["threshold"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid threshold format"])
+            }
+            guard let proofsArray = params["proofs"] as? [[Any]] else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid proofs format"])
+            }
+
+            let proofs: [Data] = try proofsArray.enumerated().map { (i, proofArr) in
+                guard let proofData = arrayToData(proofArr) else {
+                    throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid proof at index \(i)"])
+                }
+                return proofData
+            }
+
+            try validateShareUniffi(
+                share: share,
+                index: UInt32(index),
+                threshold: UInt32(threshold),
+                proofs: proofs
+            )
+
+            resolve(nil)
+        } catch {
+            reject("ERROR", error.localizedDescription, error)
+        }
+    }
+
+    @objc(constructNodeTxPair:resolve:reject:)
+    func rn_constructNodeTxPair(_ params: [String: Any],
+                       resolve: @escaping RCTPromiseResolveBlock,
+                       reject: @escaping RCTPromiseRejectBlock) {
+        do {
+            guard let parentTxArray = params["parentTx"] as? [Any],
+                  let parentTx = arrayToData(parentTxArray) else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid parentTx format"])
+            }
+            guard let vout = params["vout"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid vout format"])
+            }
+            guard let address = params["address"] as? String else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid address format"])
+            }
+            guard let sequence = params["sequence"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid sequence format"])
+            }
+            guard let directSequence = params["directSequence"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid directSequence format"])
+            }
+            guard let feeSatsStr = params["feeSats"] as? String,
+                  let feeSats = UInt64(feeSatsStr) else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid feeSats format"])
+            }
+
+            let result = try constructNodeTxPair(
+                parentTx: parentTx,
+                vout: UInt32(vout),
+                address: address,
+                sequence: UInt32(sequence),
+                directSequence: UInt32(directSequence),
+                feeSats: feeSats
+            )
+
+            let resultDict: [String: Any] = [
+                "cpfp": ["tx": dataToArray(result.cpfp.tx)],
+                "direct": ["tx": dataToArray(result.direct.tx)]
+            ]
+            resolve(resultDict)
+        } catch {
+            reject("ERROR", error.localizedDescription, error)
+        }
+    }
+
+    @objc(constructRefundTxTrio:resolve:reject:)
+    func rn_constructRefundTxTrio(_ params: [String: Any],
+                       resolve: @escaping RCTPromiseResolveBlock,
+                       reject: @escaping RCTPromiseRejectBlock) {
+        do {
+            guard let cpfpNodeTxArray = params["cpfpNodeTx"] as? [Any],
+                  let cpfpNodeTx = arrayToData(cpfpNodeTxArray) else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid cpfpNodeTx format"])
+            }
+
+            var directNodeTx: Data? = nil
+            if let directNodeTxArray = params["directNodeTx"] as? [Any] {
+                directNodeTx = arrayToData(directNodeTxArray)
+            }
+
+            guard let vout = params["vout"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid vout format"])
+            }
+            guard let receivingPubkeyArray = params["receivingPubkey"] as? [Any],
+                  let receivingPubkey = arrayToData(receivingPubkeyArray) else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid receivingPubkey format"])
+            }
+            guard let network = params["network"] as? String else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid network format"])
+            }
+            guard let sequence = params["sequence"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid sequence format"])
+            }
+            guard let directSequence = params["directSequence"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid directSequence format"])
+            }
+            guard let feeSatsStr = params["feeSats"] as? String,
+                  let feeSats = UInt64(feeSatsStr) else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid feeSats format"])
+            }
+
+            let result = try constructRefundTxTrio(
+                cpfpNodeTx: cpfpNodeTx,
+                directNodeTx: directNodeTx,
+                vout: UInt32(vout),
+                receivingPubkey: receivingPubkey,
+                network: network,
+                sequence: UInt32(sequence),
+                directSequence: UInt32(directSequence),
+                feeSats: feeSats
+            )
+
+            var resultDict: [String: Any] = [
+                "cpfp_refund": ["tx": dataToArray(result.cpfpRefund.tx)],
+                "direct_from_cpfp_refund": ["tx": dataToArray(result.directFromCpfpRefund.tx)]
+            ]
+
+            if let directRefund = result.directRefund {
+                resultDict["direct_refund"] = ["tx": dataToArray(directRefund.tx)]
+            }
+
+            resolve(resultDict)
+        } catch {
+            reject("ERROR", error.localizedDescription, error)
+        }
+    }
+
+    @objc(computeMultiInputSighash:resolve:reject:)
+    func rn_computeMultiInputSighash(_ params: [String: Any],
+                       resolve: @escaping RCTPromiseResolveBlock,
+                       reject: @escaping RCTPromiseRejectBlock) {
+        do {
+            guard let txArray = params["tx"] as? [Any],
+                  let tx = arrayToData(txArray) else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid tx format"])
+            }
+            guard let inputIndex = params["inputIndex"] as? Int else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid inputIndex format"])
+            }
+            guard let prevOutScriptsArrays = params["prevOutScripts"] as? [[Any]] else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid prevOutScripts format"])
+            }
+            guard let prevOutValuesArray = params["prevOutValues"] as? [Any] else {
+                throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid prevOutValues format"])
+            }
+
+            let prevOutScripts: [Data] = try prevOutScriptsArrays.enumerated().map { (i, arr) in
+                guard let data = arrayToData(arr) else {
+                    throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid prevOutScript at index \(i)"])
+                }
+                return data
+            }
+
+            let prevOutValues: [UInt64] = try prevOutValuesArray.enumerated().map { (i, val) in
+                guard let num = val as? NSNumber else {
+                    throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid prevOutValue at index \(i)"])
+                }
+                return num.uint64Value
+            }
+
+            let result = try computeMultiInputSighashUniffi(
+                tx: tx,
+                inputIndex: UInt32(inputIndex),
+                prevOutScripts: prevOutScripts,
+                prevOutValues: prevOutValues
+            )
+
+            resolve(dataToArray(result))
+        } catch {
+            reject("ERROR", error.localizedDescription, error)
+        }
+    }
+
     func constantsToExport() -> [AnyHashable : Any]! {
         return [:]
     }

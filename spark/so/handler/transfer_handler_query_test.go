@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"math/rand/v2"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/lightsparkdev/spark/so/authn"
 	"github.com/lightsparkdev/spark/so/db"
 	"github.com/lightsparkdev/spark/so/ent"
+	"github.com/lightsparkdev/spark/so/ent/entexample"
 	"github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	"github.com/lightsparkdev/spark/so/knobs"
 	sparktesting "github.com/lightsparkdev/spark/testing"
@@ -34,6 +36,7 @@ func TestQueryTransfers_SSP_WithReceiverFilter(t *testing.T) {
 		Participant: &pb.TransferFilter_ReceiverIdentityPublicKey{
 			ReceiverIdentityPublicKey: receiverIDPubKey.Serialize(),
 		},
+		Network: pb.Network_REGTEST,
 	}
 
 	// Call queryTransfers with isSSP=true, isPending=false
@@ -57,6 +60,7 @@ func TestQueryTransfers_SSP_WithSenderFilter(t *testing.T) {
 		Participant: &pb.TransferFilter_SenderIdentityPublicKey{
 			SenderIdentityPublicKey: senderIDPubKey.Serialize(),
 		},
+		Network: pb.Network_REGTEST,
 	}
 
 	// Call queryTransfers with isSSP=true, isPending=false
@@ -83,6 +87,7 @@ func TestQueryTransfers_NotSSP_RequiresAuthz(t *testing.T) {
 		Participant: &pb.TransferFilter_ReceiverIdentityPublicKey{
 			ReceiverIdentityPublicKey: receiverIDPubKey.Serialize(),
 		},
+		Network: pb.Network_REGTEST,
 	}
 
 	// Call queryTransfers with isPending=false, isSSP=false
@@ -126,6 +131,7 @@ func TestQueryTransfers_NotSSP_RequiresAuthz_Mismatch(t *testing.T) {
 		Participant: &pb.TransferFilter_ReceiverIdentityPublicKey{
 			ReceiverIdentityPublicKey: receiverIDPubKey.Serialize(),
 		},
+		Network: pb.Network_REGTEST,
 	}
 
 	// Call queryTransfers with isPending=false, isSSP=false
@@ -170,6 +176,7 @@ func TestQueryTransfers_NotSSP_NoSession(t *testing.T) {
 		Participant: &pb.TransferFilter_ReceiverIdentityPublicKey{
 			ReceiverIdentityPublicKey: receiverIDPubKey.Serialize(),
 		},
+		Network: pb.Network_REGTEST,
 	}
 
 	// Call queryTransfers with isPending=false, isSSP=false
@@ -426,6 +433,101 @@ func TestQueryTransfers_WithTransferIds_MasterKeyAccess(t *testing.T) {
 	assert.Equal(t, transfer.ID.String(), resp.Transfers[0].Id)
 }
 
+// TestQueryTransfers_WithTransferIds_AccessCheck_MIMO verifies that when the MIMO query-transfers knob is on,
+// queryTransfers uses checkTransferAccessMIMO (sender/receiver from edges) and still filters by viewer access.
+func TestQueryTransfers_WithTransferIds_AccessCheck_MIMO(t *testing.T) {
+	ctx, cfg := createTestContextForTransferQuery(t)
+	dbTx, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	rng := rand.NewChaCha8([32]byte{})
+	viewerIdentityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	senderIdentityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	receiverIdentityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+
+	fixedKnobs := knobs.NewFixedKnobs(map[string]float64{
+		knobs.KnobPrivacyEnabled:                  100,
+		knobs.KnobReadMIMODataModelQueryTransfers: 100,
+	})
+	ctx = knobs.InjectKnobsService(ctx, fixedKnobs)
+
+	_, err = dbTx.WalletSetting.Create().
+		SetOwnerIdentityPublicKey(senderIdentityPubKey).
+		SetPrivateEnabled(true).
+		Save(ctx)
+	require.NoError(t, err)
+	_, err = dbTx.WalletSetting.Create().
+		SetOwnerIdentityPublicKey(receiverIdentityPubKey).
+		SetPrivateEnabled(true).
+		Save(ctx)
+	require.NoError(t, err)
+
+	ctx = authn.InjectSessionForTests(ctx, hex.EncodeToString(viewerIdentityPubKey.Serialize()), 9999999999)
+
+	tree := createTestTreeForClaim(t, ctx, viewerIdentityPubKey, dbTx)
+
+	addTransferWithMIMOEdges := func(sender, receiver keys.Public) *ent.Transfer {
+		transfer, err := dbTx.Transfer.Create().
+			SetType(schematype.TransferTypeTransfer).
+			SetStatus(schematype.TransferStatusSenderInitiated).
+			SetSenderIdentityPubkey(sender).
+			SetReceiverIdentityPubkey(receiver).
+			SetTotalValue(1000).
+			SetExpiryTime(time.Now().Add(24 * time.Hour)).
+			SetNetwork(tree.Network).
+			Save(ctx)
+		require.NoError(t, err)
+		_, err = dbTx.TransferSender.Create().SetTransferID(transfer.ID).SetIdentityPubkey(sender).Save(ctx)
+		require.NoError(t, err)
+		_, err = dbTx.TransferReceiver.Create().
+			SetTransferID(transfer.ID).
+			SetIdentityPubkey(receiver).
+			SetStatus(schematype.TransferReceiverStatusSenderInitiated).
+			Save(ctx)
+		require.NoError(t, err)
+		return transfer
+	}
+
+	transfer1 := addTransferWithMIMOEdges(viewerIdentityPubKey, receiverIdentityPubKey)
+	leaf1 := createTestTreeNodeForTransferQuery(t, ctx, rng, dbTx, tree, receiverIdentityPubKey)
+	prevRefund1 := createOldBitcoinTxBytes(t, receiverIdentityPubKey)
+	interRefund1 := createOldBitcoinTxBytes(t, receiverIdentityPubKey)
+	_, err = dbTx.TransferLeaf.Create().SetTransfer(transfer1).SetLeaf(leaf1).SetPreviousRefundTx(prevRefund1).SetIntermediateRefundTx(interRefund1).Save(ctx)
+	require.NoError(t, err)
+
+	transfer2 := addTransferWithMIMOEdges(senderIdentityPubKey, viewerIdentityPubKey)
+	leaf2 := createTestTreeNodeForTransferQuery(t, ctx, rng, dbTx, tree, viewerIdentityPubKey)
+	prevRefund2 := createOldBitcoinTxBytes(t, viewerIdentityPubKey)
+	interRefund2 := createOldBitcoinTxBytes(t, viewerIdentityPubKey)
+	_, err = dbTx.TransferLeaf.Create().SetTransfer(transfer2).SetLeaf(leaf2).SetPreviousRefundTx(prevRefund2).SetIntermediateRefundTx(interRefund2).Save(ctx)
+	require.NoError(t, err)
+
+	transfer3 := addTransferWithMIMOEdges(senderIdentityPubKey, receiverIdentityPubKey)
+	leaf3 := createTestTreeNodeForTransferQuery(t, ctx, rng, dbTx, tree, receiverIdentityPubKey)
+	prevRefund3 := createOldBitcoinTxBytes(t, receiverIdentityPubKey)
+	interRefund3 := createOldBitcoinTxBytes(t, receiverIdentityPubKey)
+	_, err = dbTx.TransferLeaf.Create().SetTransfer(transfer3).SetLeaf(leaf3).SetPreviousRefundTx(prevRefund3).SetIntermediateRefundTx(interRefund3).Save(ctx)
+	require.NoError(t, err)
+
+	filter := &pb.TransferFilter{
+		TransferIds: []string{transfer1.ID.String(), transfer2.ID.String(), transfer3.ID.String()},
+		Network:     pb.Network_REGTEST,
+	}
+
+	handler := NewTransferHandler(cfg)
+	resp, err := handler.queryTransfers(ctx, filter, false, false)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Len(t, resp.Transfers, 2)
+	received := make(map[string]bool)
+	for _, tr := range resp.Transfers {
+		received[tr.Id] = true
+	}
+	assert.True(t, received[transfer1.ID.String()])
+	assert.True(t, received[transfer2.ID.String()])
+	assert.False(t, received[transfer3.ID.String()])
+}
+
 // createTestTransferWithTime creates a transfer with a specific create time for testing time filters
 func createTestTransferWithTime(t *testing.T, ctx context.Context, dbTx *ent.Client, createTime time.Time, identityPubKey keys.Public, network btcnetwork.Network) *ent.Transfer {
 	transfer, err := dbTx.Transfer.Create().
@@ -526,4 +628,74 @@ func TestQueryTransfers_WithCreatedBeforeFilter(t *testing.T) {
 	assert.True(t, transferIds[middleTransfer.ID.String()], "middleTransfer (-24h) should be included")
 	assert.False(t, transferIds[recentTransfer.ID.String()], "recentTransfer (-1h) should NOT be included")
 	assert.False(t, transferIds[futureTransfer.ID.String()], "futureTransfer (+24h) should NOT be included")
+}
+
+func TestQueryTransfers_FilterSSPCounterSwapAsTransfer(t *testing.T) {
+	ctx, cfg := createTestContextForTransferQuery(t)
+	dbTx, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	fixedKnobs := knobs.NewFixedKnobs(map[string]float64{
+		fmt.Sprintf("%s@%s", knobs.KnobFilterSSPCounterSwapAsTransfer, btcnetwork.Regtest.String()): 100,
+	})
+	ctx = knobs.InjectKnobsService(ctx, fixedKnobs)
+
+	rng := rand.NewChaCha8([32]byte{})
+	sspIdentityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	userIdentityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+
+	network := btcnetwork.Regtest
+
+	randomTransfer := createTestTransferWithTime(t, ctx, dbTx, time.Now(), userIdentityPubKey, network)
+	require.NoError(t, err)
+
+	filter := &pb.TransferFilter{
+		Participant: &pb.TransferFilter_SenderOrReceiverIdentityPublicKey{
+			SenderOrReceiverIdentityPublicKey: userIdentityPubKey.Serialize(),
+		},
+		Network: pb.Network_REGTEST,
+		Types: []pb.TransferType{
+			pb.TransferType_TRANSFER,
+		},
+	}
+
+	handler := NewTransferHandler(cfg)
+	resp, err := handler.queryTransfers(ctx, filter, false, true)
+
+	// Should handle NotFound error when no swap is found
+	require.NoError(t, err)
+	require.Len(t, resp.Transfers, 1)
+	assert.Equal(t, randomTransfer.ID.String(), resp.Transfers[0].Id)
+
+	entexample.NewTransferExample(t, dbTx).
+		SetSenderIdentityPubkey(userIdentityPubKey).
+		SetReceiverIdentityPubkey(sspIdentityPubKey).
+		SetType(schematype.TransferTypeSwap).
+		MustExec(ctx)
+
+	counterSwapTransfer := entexample.NewTransferExample(t, dbTx).
+		SetSenderIdentityPubkey(sspIdentityPubKey).
+		SetReceiverIdentityPubkey(userIdentityPubKey).
+		SetType(schematype.TransferTypeTransfer).
+		MustExec(ctx)
+
+	// Should not return the SSP transfer
+	resp, err = handler.queryTransfers(ctx, filter, false, true)
+
+	require.NoError(t, err)
+	require.Len(t, resp.Transfers, 1)
+	assert.Equal(t, randomTransfer.ID.String(), resp.Transfers[0].Id)
+
+	filter.Types = []pb.TransferType{
+		pb.TransferType_TRANSFER,
+		pb.TransferType_COUNTER_SWAP_V3,
+		pb.TransferType_COUNTER_SWAP,
+	}
+
+	// Since we're requesting counter swaps, should return the SSP transfer
+	resp, err = handler.queryTransfers(ctx, filter, false, true)
+	require.NoError(t, err)
+	require.Len(t, resp.Transfers, 2)
+	assert.Equal(t, counterSwapTransfer.ID.String(), resp.Transfers[0].Id)
+	assert.Equal(t, randomTransfer.ID.String(), resp.Transfers[1].Id)
 }

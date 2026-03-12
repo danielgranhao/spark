@@ -14,7 +14,13 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/entitydkgkey"
 	"github.com/lightsparkdev/spark/so/ent/eventmessage"
 	"github.com/lightsparkdev/spark/so/ent/gossip"
+	"github.com/lightsparkdev/spark/so/ent/idempotencykey"
 	"github.com/lightsparkdev/spark/so/ent/l1tokencreate"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenjusticetransaction"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenoutputwithdrawal"
+	"github.com/lightsparkdev/spark/so/ent/l1withdrawaltransaction"
+	"github.com/lightsparkdev/spark/so/ent/multisigconfig"
+	"github.com/lightsparkdev/spark/so/ent/multisigmember"
 	"github.com/lightsparkdev/spark/so/ent/paymentintent"
 	"github.com/lightsparkdev/spark/so/ent/pendingsendtransfer"
 	"github.com/lightsparkdev/spark/so/ent/predicate"
@@ -33,6 +39,8 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/tokentransactionpeersignature"
 	"github.com/lightsparkdev/spark/so/ent/transfer"
 	"github.com/lightsparkdev/spark/so/ent/transferleaf"
+	"github.com/lightsparkdev/spark/so/ent/transferreceiver"
+	"github.com/lightsparkdev/spark/so/ent/transfersender"
 	"github.com/lightsparkdev/spark/so/ent/tree"
 	"github.com/lightsparkdev/spark/so/ent/treenode"
 	"github.com/lightsparkdev/spark/so/ent/usersignedtransaction"
@@ -259,6 +267,33 @@ func (f TraverseGossip) Traverse(ctx context.Context, q ent.Query) error {
 	return fmt.Errorf("unexpected query type %T. expect *ent.GossipQuery", q)
 }
 
+// The IdempotencyKeyFunc type is an adapter to allow the use of ordinary function as a Querier.
+type IdempotencyKeyFunc func(context.Context, *ent.IdempotencyKeyQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f IdempotencyKeyFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.IdempotencyKeyQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.IdempotencyKeyQuery", q)
+}
+
+// The TraverseIdempotencyKey type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseIdempotencyKey func(context.Context, *ent.IdempotencyKeyQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseIdempotencyKey) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseIdempotencyKey) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.IdempotencyKeyQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.IdempotencyKeyQuery", q)
+}
+
 // The L1TokenCreateFunc type is an adapter to allow the use of ordinary function as a Querier.
 type L1TokenCreateFunc func(context.Context, *ent.L1TokenCreateQuery) (ent.Value, error)
 
@@ -284,6 +319,141 @@ func (f TraverseL1TokenCreate) Traverse(ctx context.Context, q ent.Query) error 
 		return f(ctx, q)
 	}
 	return fmt.Errorf("unexpected query type %T. expect *ent.L1TokenCreateQuery", q)
+}
+
+// The L1TokenJusticeTransactionFunc type is an adapter to allow the use of ordinary function as a Querier.
+type L1TokenJusticeTransactionFunc func(context.Context, *ent.L1TokenJusticeTransactionQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f L1TokenJusticeTransactionFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.L1TokenJusticeTransactionQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.L1TokenJusticeTransactionQuery", q)
+}
+
+// The TraverseL1TokenJusticeTransaction type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseL1TokenJusticeTransaction func(context.Context, *ent.L1TokenJusticeTransactionQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseL1TokenJusticeTransaction) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseL1TokenJusticeTransaction) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.L1TokenJusticeTransactionQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.L1TokenJusticeTransactionQuery", q)
+}
+
+// The L1TokenOutputWithdrawalFunc type is an adapter to allow the use of ordinary function as a Querier.
+type L1TokenOutputWithdrawalFunc func(context.Context, *ent.L1TokenOutputWithdrawalQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f L1TokenOutputWithdrawalFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.L1TokenOutputWithdrawalQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.L1TokenOutputWithdrawalQuery", q)
+}
+
+// The TraverseL1TokenOutputWithdrawal type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseL1TokenOutputWithdrawal func(context.Context, *ent.L1TokenOutputWithdrawalQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseL1TokenOutputWithdrawal) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseL1TokenOutputWithdrawal) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.L1TokenOutputWithdrawalQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.L1TokenOutputWithdrawalQuery", q)
+}
+
+// The L1WithdrawalTransactionFunc type is an adapter to allow the use of ordinary function as a Querier.
+type L1WithdrawalTransactionFunc func(context.Context, *ent.L1WithdrawalTransactionQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f L1WithdrawalTransactionFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.L1WithdrawalTransactionQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.L1WithdrawalTransactionQuery", q)
+}
+
+// The TraverseL1WithdrawalTransaction type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseL1WithdrawalTransaction func(context.Context, *ent.L1WithdrawalTransactionQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseL1WithdrawalTransaction) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseL1WithdrawalTransaction) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.L1WithdrawalTransactionQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.L1WithdrawalTransactionQuery", q)
+}
+
+// The MultisigConfigFunc type is an adapter to allow the use of ordinary function as a Querier.
+type MultisigConfigFunc func(context.Context, *ent.MultisigConfigQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f MultisigConfigFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.MultisigConfigQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.MultisigConfigQuery", q)
+}
+
+// The TraverseMultisigConfig type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseMultisigConfig func(context.Context, *ent.MultisigConfigQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseMultisigConfig) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseMultisigConfig) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.MultisigConfigQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.MultisigConfigQuery", q)
+}
+
+// The MultisigMemberFunc type is an adapter to allow the use of ordinary function as a Querier.
+type MultisigMemberFunc func(context.Context, *ent.MultisigMemberQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f MultisigMemberFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.MultisigMemberQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.MultisigMemberQuery", q)
+}
+
+// The TraverseMultisigMember type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseMultisigMember func(context.Context, *ent.MultisigMemberQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseMultisigMember) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseMultisigMember) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.MultisigMemberQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.MultisigMemberQuery", q)
 }
 
 // The PaymentIntentFunc type is an adapter to allow the use of ordinary function as a Querier.
@@ -745,6 +915,60 @@ func (f TraverseTransferLeaf) Traverse(ctx context.Context, q ent.Query) error {
 	return fmt.Errorf("unexpected query type %T. expect *ent.TransferLeafQuery", q)
 }
 
+// The TransferReceiverFunc type is an adapter to allow the use of ordinary function as a Querier.
+type TransferReceiverFunc func(context.Context, *ent.TransferReceiverQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f TransferReceiverFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.TransferReceiverQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.TransferReceiverQuery", q)
+}
+
+// The TraverseTransferReceiver type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseTransferReceiver func(context.Context, *ent.TransferReceiverQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseTransferReceiver) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseTransferReceiver) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.TransferReceiverQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.TransferReceiverQuery", q)
+}
+
+// The TransferSenderFunc type is an adapter to allow the use of ordinary function as a Querier.
+type TransferSenderFunc func(context.Context, *ent.TransferSenderQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f TransferSenderFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.TransferSenderQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.TransferSenderQuery", q)
+}
+
+// The TraverseTransferSender type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseTransferSender func(context.Context, *ent.TransferSenderQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseTransferSender) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseTransferSender) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.TransferSenderQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.TransferSenderQuery", q)
+}
+
 // The TreeFunc type is an adapter to allow the use of ordinary function as a Querier.
 type TreeFunc func(context.Context, *ent.TreeQuery) (ent.Value, error)
 
@@ -922,8 +1146,20 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.EventMessageQuery, predicate.EventMessage, eventmessage.OrderOption]{typ: ent.TypeEventMessage, tq: q}, nil
 	case *ent.GossipQuery:
 		return &query[*ent.GossipQuery, predicate.Gossip, gossip.OrderOption]{typ: ent.TypeGossip, tq: q}, nil
+	case *ent.IdempotencyKeyQuery:
+		return &query[*ent.IdempotencyKeyQuery, predicate.IdempotencyKey, idempotencykey.OrderOption]{typ: ent.TypeIdempotencyKey, tq: q}, nil
 	case *ent.L1TokenCreateQuery:
 		return &query[*ent.L1TokenCreateQuery, predicate.L1TokenCreate, l1tokencreate.OrderOption]{typ: ent.TypeL1TokenCreate, tq: q}, nil
+	case *ent.L1TokenJusticeTransactionQuery:
+		return &query[*ent.L1TokenJusticeTransactionQuery, predicate.L1TokenJusticeTransaction, l1tokenjusticetransaction.OrderOption]{typ: ent.TypeL1TokenJusticeTransaction, tq: q}, nil
+	case *ent.L1TokenOutputWithdrawalQuery:
+		return &query[*ent.L1TokenOutputWithdrawalQuery, predicate.L1TokenOutputWithdrawal, l1tokenoutputwithdrawal.OrderOption]{typ: ent.TypeL1TokenOutputWithdrawal, tq: q}, nil
+	case *ent.L1WithdrawalTransactionQuery:
+		return &query[*ent.L1WithdrawalTransactionQuery, predicate.L1WithdrawalTransaction, l1withdrawaltransaction.OrderOption]{typ: ent.TypeL1WithdrawalTransaction, tq: q}, nil
+	case *ent.MultisigConfigQuery:
+		return &query[*ent.MultisigConfigQuery, predicate.MultisigConfig, multisigconfig.OrderOption]{typ: ent.TypeMultisigConfig, tq: q}, nil
+	case *ent.MultisigMemberQuery:
+		return &query[*ent.MultisigMemberQuery, predicate.MultisigMember, multisigmember.OrderOption]{typ: ent.TypeMultisigMember, tq: q}, nil
 	case *ent.PaymentIntentQuery:
 		return &query[*ent.PaymentIntentQuery, predicate.PaymentIntent, paymentintent.OrderOption]{typ: ent.TypePaymentIntent, tq: q}, nil
 	case *ent.PendingSendTransferQuery:
@@ -958,6 +1194,10 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.TransferQuery, predicate.Transfer, transfer.OrderOption]{typ: ent.TypeTransfer, tq: q}, nil
 	case *ent.TransferLeafQuery:
 		return &query[*ent.TransferLeafQuery, predicate.TransferLeaf, transferleaf.OrderOption]{typ: ent.TypeTransferLeaf, tq: q}, nil
+	case *ent.TransferReceiverQuery:
+		return &query[*ent.TransferReceiverQuery, predicate.TransferReceiver, transferreceiver.OrderOption]{typ: ent.TypeTransferReceiver, tq: q}, nil
+	case *ent.TransferSenderQuery:
+		return &query[*ent.TransferSenderQuery, predicate.TransferSender, transfersender.OrderOption]{typ: ent.TypeTransferSender, tq: q}, nil
 	case *ent.TreeQuery:
 		return &query[*ent.TreeQuery, predicate.Tree, tree.OrderOption]{typ: ent.TypeTree, tq: q}, nil
 	case *ent.TreeNodeQuery:

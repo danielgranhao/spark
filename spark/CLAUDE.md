@@ -29,6 +29,8 @@ mise format       # or: golangci-lint fmt
 ### Database Migrations
 ```bash
 ./scripts/gen-migration.sh <migration_name>   # After schema changes
+./scripts/check-migration-safety.sh <file>    # Check for locking hazards
+/review-migration                             # Detailed analysis with safe rewrites (ls-claude plugin)
 ```
 
 ### Development Environment
@@ -77,6 +79,8 @@ Key entities in `so/ent/schema/`:
 1. Edit files in `so/ent/schema/`
 2. Run `mise gen-ent`
 3. Run `./scripts/gen-migration.sh <name>`
+4. Run `./scripts/check-migration-safety.sh` on the generated file — auto-generated migrations use unsafe locking patterns for FK additions, indexes, and constraints on existing tables
+5. If issues are flagged, run `/review-migration` for detailed analysis with safe rewrites (requires the [ls-claude](https://github.com/lightsparkdev/ls-claude) plugin)
 
 ### Transaction Management
 Transactions are automatically managed by the gRPC middleware (`so/grpc/database_middleware.go`):
@@ -103,12 +107,19 @@ Transactions are automatically managed by the gRPC middleware (`so/grpc/database
 ## Common Patterns
 
 ### Error Handling
+Use `so/errors` (as `sparkerrors`) to wrap errors with gRPC codes and reasons as close to the source as possible. Only wrap if the error doesn't already have a reason. If no appropriate reason exists in `error_types.go`, propose adding one.
 ```go
-return errors.InvalidArgument("invalid address format")
+sparkerrors.InternalDatabaseReadError(fmt.Errorf("failed to query: %w", err))
+sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("invalid format: %s", val))
+sparkerrors.FailedPreconditionInvalidState(fmt.Errorf("already completed"))
 ```
 
 ### Logging
 ```go
+// Preferred for dynamic runtime values
+logger.Sugar().Infof("just finished %d things for task %s", numberOfThings, taskID)
+
+// Use structured fields only for approved/indexed keys
 logger.Info("transfer completed", zap.String("transfer_id", id))
 ```
 

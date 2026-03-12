@@ -39,10 +39,14 @@ type DepositAddress struct {
 	ConfirmationHeight int64 `json:"confirmation_height,omitempty"`
 	// Transaction ID of the block that confirmed the deposit address.
 	ConfirmationTxid string `json:"confirmation_txid,omitempty"`
+	// Timestamp when the availability of funds was confirmed (null if not yet confirmed)
+	AvailabilityConfirmedAt time.Time `json:"availability_confirmed_at,omitempty"`
 	// Address signatures of the deposit address. It is used prove that all SOs have generated the address.
 	AddressSignatures map[string][]uint8 `json:"address_signatures,omitempty"`
 	// Proof of keyshare possession signature for the deposit address. It is used to prove that the key used by the coordinator to generate the address is known by all SOs.
 	PossessionSignature []byte `json:"possession_signature,omitempty"`
+	// V2 proof of keyshare possession signature for the deposit address. It is used to prove that the key used by the coordinator to generate the address is known by all SOs. This uses the V2 hash variant.
+	PossessionSignatureV2 []byte `json:"possession_signature_v2,omitempty"`
 	// Node ID of the deposit address.
 	NodeID uuid.UUID `json:"node_id,omitempty"`
 	// Whether the deposit address is static.
@@ -116,7 +120,7 @@ func (*DepositAddress) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case depositaddress.FieldAddressSignatures, depositaddress.FieldPossessionSignature:
+		case depositaddress.FieldAddressSignatures, depositaddress.FieldPossessionSignature, depositaddress.FieldPossessionSignatureV2:
 			values[i] = new([]byte)
 		case depositaddress.FieldNetwork:
 			values[i] = new(btcnetwork.Network)
@@ -128,7 +132,7 @@ func (*DepositAddress) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullInt64)
 		case depositaddress.FieldAddress, depositaddress.FieldConfirmationTxid:
 			values[i] = new(sql.NullString)
-		case depositaddress.FieldCreateTime, depositaddress.FieldUpdateTime:
+		case depositaddress.FieldCreateTime, depositaddress.FieldUpdateTime, depositaddress.FieldAvailabilityConfirmedAt:
 			values[i] = new(sql.NullTime)
 		case depositaddress.FieldID, depositaddress.FieldNodeID:
 			values[i] = new(uuid.UUID)
@@ -203,6 +207,12 @@ func (da *DepositAddress) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				da.ConfirmationTxid = value.String
 			}
+		case depositaddress.FieldAvailabilityConfirmedAt:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field availability_confirmed_at", values[i])
+			} else if value.Valid {
+				da.AvailabilityConfirmedAt = value.Time
+			}
 		case depositaddress.FieldAddressSignatures:
 			if value, ok := values[i].(*[]byte); !ok {
 				return fmt.Errorf("unexpected type %T for field address_signatures", values[i])
@@ -216,6 +226,12 @@ func (da *DepositAddress) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field possession_signature", values[i])
 			} else if value != nil {
 				da.PossessionSignature = *value
+			}
+		case depositaddress.FieldPossessionSignatureV2:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field possession_signature_v2", values[i])
+			} else if value != nil {
+				da.PossessionSignatureV2 = *value
 			}
 		case depositaddress.FieldNodeID:
 			if value, ok := values[i].(*uuid.UUID); !ok {
@@ -322,11 +338,17 @@ func (da *DepositAddress) String() string {
 	builder.WriteString("confirmation_txid=")
 	builder.WriteString(da.ConfirmationTxid)
 	builder.WriteString(", ")
+	builder.WriteString("availability_confirmed_at=")
+	builder.WriteString(da.AvailabilityConfirmedAt.Format(time.ANSIC))
+	builder.WriteString(", ")
 	builder.WriteString("address_signatures=")
 	builder.WriteString(fmt.Sprintf("%v", da.AddressSignatures))
 	builder.WriteString(", ")
 	builder.WriteString("possession_signature=")
 	builder.WriteString(fmt.Sprintf("%v", da.PossessionSignature))
+	builder.WriteString(", ")
+	builder.WriteString("possession_signature_v2=")
+	builder.WriteString(fmt.Sprintf("%v", da.PossessionSignatureV2))
 	builder.WriteString(", ")
 	builder.WriteString("node_id=")
 	builder.WriteString(fmt.Sprintf("%v", da.NodeID))

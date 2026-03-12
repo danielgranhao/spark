@@ -24,6 +24,7 @@ ARGS=(
   "--descriptor_set_out=./src/spark_descriptors.pb"
   "--include_imports"
   "--proto_path=../../../../protos"
+  "spark_token_legacy.proto"
   "spark.proto"
   "spark_token.proto"
   "mock.proto"
@@ -38,10 +39,9 @@ protoc "${ARGS[@]}"
 
 echo "[generate-proto] Embedding descriptors..."
 node scripts/embed-descriptors.mjs
+rm -f src/spark_descriptors.pb
 
 echo "[generate-proto] Formatting generated code..."
 yarn format:fix
 
 echo "[generate-proto] Done."
-
-

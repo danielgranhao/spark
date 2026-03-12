@@ -82,6 +82,20 @@ func (usc *UtxoSwapCreate) SetNillableCreditAmountSats(u *uint64) *UtxoSwapCreat
 	return usc
 }
 
+// SetSecondaryCreditAmountSats sets the "secondary_credit_amount_sats" field.
+func (usc *UtxoSwapCreate) SetSecondaryCreditAmountSats(u uint64) *UtxoSwapCreate {
+	usc.mutation.SetSecondaryCreditAmountSats(u)
+	return usc
+}
+
+// SetNillableSecondaryCreditAmountSats sets the "secondary_credit_amount_sats" field if the given value is not nil.
+func (usc *UtxoSwapCreate) SetNillableSecondaryCreditAmountSats(u *uint64) *UtxoSwapCreate {
+	if u != nil {
+		usc.SetSecondaryCreditAmountSats(*u)
+	}
+	return usc
+}
+
 // SetMaxFeeSats sets the "max_fee_sats" field.
 func (usc *UtxoSwapCreate) SetMaxFeeSats(u uint64) *UtxoSwapCreate {
 	usc.mutation.SetMaxFeeSats(u)
@@ -156,9 +170,43 @@ func (usc *UtxoSwapCreate) SetNillableRequestedTransferID(u *uuid.UUID) *UtxoSwa
 	return usc
 }
 
+// SetRequestedSecondaryTransferID sets the "requested_secondary_transfer_id" field.
+func (usc *UtxoSwapCreate) SetRequestedSecondaryTransferID(u uuid.UUID) *UtxoSwapCreate {
+	usc.mutation.SetRequestedSecondaryTransferID(u)
+	return usc
+}
+
+// SetNillableRequestedSecondaryTransferID sets the "requested_secondary_transfer_id" field if the given value is not nil.
+func (usc *UtxoSwapCreate) SetNillableRequestedSecondaryTransferID(u *uuid.UUID) *UtxoSwapCreate {
+	if u != nil {
+		usc.SetRequestedSecondaryTransferID(*u)
+	}
+	return usc
+}
+
 // SetSpendTxSigningResult sets the "spend_tx_signing_result" field.
 func (usc *UtxoSwapCreate) SetSpendTxSigningResult(b []byte) *UtxoSwapCreate {
 	usc.mutation.SetSpendTxSigningResult(b)
+	return usc
+}
+
+// SetExpiryTime sets the "expiry_time" field.
+func (usc *UtxoSwapCreate) SetExpiryTime(t time.Time) *UtxoSwapCreate {
+	usc.mutation.SetExpiryTime(t)
+	return usc
+}
+
+// SetNillableExpiryTime sets the "expiry_time" field if the given value is not nil.
+func (usc *UtxoSwapCreate) SetNillableExpiryTime(t *time.Time) *UtxoSwapCreate {
+	if t != nil {
+		usc.SetExpiryTime(*t)
+	}
+	return usc
+}
+
+// SetUtxoValueSats sets the "utxo_value_sats" field.
+func (usc *UtxoSwapCreate) SetUtxoValueSats(u uint64) *UtxoSwapCreate {
+	usc.mutation.SetUtxoValueSats(u)
 	return usc
 }
 
@@ -179,6 +227,14 @@ func (usc *UtxoSwapCreate) SetNillableID(u *uuid.UUID) *UtxoSwapCreate {
 // SetUtxoID sets the "utxo" edge to the Utxo entity by ID.
 func (usc *UtxoSwapCreate) SetUtxoID(id uuid.UUID) *UtxoSwapCreate {
 	usc.mutation.SetUtxoID(id)
+	return usc
+}
+
+// SetNillableUtxoID sets the "utxo" edge to the Utxo entity by ID if the given value is not nil.
+func (usc *UtxoSwapCreate) SetNillableUtxoID(id *uuid.UUID) *UtxoSwapCreate {
+	if id != nil {
+		usc = usc.SetUtxoID(*id)
+	}
 	return usc
 }
 
@@ -206,6 +262,25 @@ func (usc *UtxoSwapCreate) SetTransfer(t *Transfer) *UtxoSwapCreate {
 	return usc.SetTransferID(t.ID)
 }
 
+// SetSecondaryTransferID sets the "secondary_transfer" edge to the Transfer entity by ID.
+func (usc *UtxoSwapCreate) SetSecondaryTransferID(id uuid.UUID) *UtxoSwapCreate {
+	usc.mutation.SetSecondaryTransferID(id)
+	return usc
+}
+
+// SetNillableSecondaryTransferID sets the "secondary_transfer" edge to the Transfer entity by ID if the given value is not nil.
+func (usc *UtxoSwapCreate) SetNillableSecondaryTransferID(id *uuid.UUID) *UtxoSwapCreate {
+	if id != nil {
+		usc = usc.SetSecondaryTransferID(*id)
+	}
+	return usc
+}
+
+// SetSecondaryTransfer sets the "secondary_transfer" edge to the Transfer entity.
+func (usc *UtxoSwapCreate) SetSecondaryTransfer(t *Transfer) *UtxoSwapCreate {
+	return usc.SetSecondaryTransferID(t.ID)
+}
+
 // Mutation returns the UtxoSwapMutation object of the builder.
 func (usc *UtxoSwapCreate) Mutation() *UtxoSwapMutation {
 	return usc.mutation
@@ -213,7 +288,9 @@ func (usc *UtxoSwapCreate) Mutation() *UtxoSwapMutation {
 
 // Save creates the UtxoSwap in the database.
 func (usc *UtxoSwapCreate) Save(ctx context.Context) (*UtxoSwap, error) {
-	usc.defaults()
+	if err := usc.defaults(); err != nil {
+		return nil, err
+	}
 	return withHooks(ctx, usc.sqlSave, usc.mutation, usc.hooks)
 }
 
@@ -240,19 +317,29 @@ func (usc *UtxoSwapCreate) ExecX(ctx context.Context) {
 }
 
 // defaults sets the default values of the builder before save.
-func (usc *UtxoSwapCreate) defaults() {
+func (usc *UtxoSwapCreate) defaults() error {
 	if _, ok := usc.mutation.CreateTime(); !ok {
+		if utxoswap.DefaultCreateTime == nil {
+			return fmt.Errorf("ent: uninitialized utxoswap.DefaultCreateTime (forgotten import ent/runtime?)")
+		}
 		v := utxoswap.DefaultCreateTime()
 		usc.mutation.SetCreateTime(v)
 	}
 	if _, ok := usc.mutation.UpdateTime(); !ok {
+		if utxoswap.DefaultUpdateTime == nil {
+			return fmt.Errorf("ent: uninitialized utxoswap.DefaultUpdateTime (forgotten import ent/runtime?)")
+		}
 		v := utxoswap.DefaultUpdateTime()
 		usc.mutation.SetUpdateTime(v)
 	}
 	if _, ok := usc.mutation.ID(); !ok {
+		if utxoswap.DefaultID == nil {
+			return fmt.Errorf("ent: uninitialized utxoswap.DefaultID (forgotten import ent/runtime?)")
+		}
 		v := utxoswap.DefaultID()
 		usc.mutation.SetID(v)
 	}
+	return nil
 }
 
 // check runs all checks and user-defined validators on the builder.
@@ -282,8 +369,8 @@ func (usc *UtxoSwapCreate) check() error {
 	if _, ok := usc.mutation.CoordinatorIdentityPublicKey(); !ok {
 		return &ValidationError{Name: "coordinator_identity_public_key", err: errors.New(`ent: missing required field "UtxoSwap.coordinator_identity_public_key"`)}
 	}
-	if len(usc.mutation.UtxoIDs()) == 0 {
-		return &ValidationError{Name: "utxo", err: errors.New(`ent: missing required edge "UtxoSwap.utxo"`)}
+	if _, ok := usc.mutation.UtxoValueSats(); !ok {
+		return &ValidationError{Name: "utxo_value_sats", err: errors.New(`ent: missing required field "UtxoSwap.utxo_value_sats"`)}
 	}
 	return nil
 }
@@ -341,6 +428,10 @@ func (usc *UtxoSwapCreate) createSpec() (*UtxoSwap, *sqlgraph.CreateSpec) {
 		_spec.SetField(utxoswap.FieldCreditAmountSats, field.TypeUint64, value)
 		_node.CreditAmountSats = value
 	}
+	if value, ok := usc.mutation.SecondaryCreditAmountSats(); ok {
+		_spec.SetField(utxoswap.FieldSecondaryCreditAmountSats, field.TypeUint64, value)
+		_node.SecondaryCreditAmountSats = &value
+	}
 	if value, ok := usc.mutation.MaxFeeSats(); ok {
 		_spec.SetField(utxoswap.FieldMaxFeeSats, field.TypeUint64, value)
 		_node.MaxFeeSats = value
@@ -369,9 +460,21 @@ func (usc *UtxoSwapCreate) createSpec() (*UtxoSwap, *sqlgraph.CreateSpec) {
 		_spec.SetField(utxoswap.FieldRequestedTransferID, field.TypeUUID, value)
 		_node.RequestedTransferID = value
 	}
+	if value, ok := usc.mutation.RequestedSecondaryTransferID(); ok {
+		_spec.SetField(utxoswap.FieldRequestedSecondaryTransferID, field.TypeUUID, value)
+		_node.RequestedSecondaryTransferID = value
+	}
 	if value, ok := usc.mutation.SpendTxSigningResult(); ok {
 		_spec.SetField(utxoswap.FieldSpendTxSigningResult, field.TypeBytes, value)
 		_node.SpendTxSigningResult = value
+	}
+	if value, ok := usc.mutation.ExpiryTime(); ok {
+		_spec.SetField(utxoswap.FieldExpiryTime, field.TypeTime, value)
+		_node.ExpiryTime = &value
+	}
+	if value, ok := usc.mutation.UtxoValueSats(); ok {
+		_spec.SetField(utxoswap.FieldUtxoValueSats, field.TypeUint64, value)
+		_node.UtxoValueSats = value
 	}
 	if nodes := usc.mutation.UtxoIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -405,6 +508,23 @@ func (usc *UtxoSwapCreate) createSpec() (*UtxoSwap, *sqlgraph.CreateSpec) {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
 		_node.utxo_swap_transfer = &nodes[0]
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := usc.mutation.SecondaryTransferIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.M2O,
+			Inverse: false,
+			Table:   utxoswap.SecondaryTransferTable,
+			Columns: []string{utxoswap.SecondaryTransferColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(transfer.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_node.utxo_swap_secondary_transfer = &nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	return _node, _spec
@@ -516,6 +636,30 @@ func (u *UtxoSwapUpsert) AddCreditAmountSats(v uint64) *UtxoSwapUpsert {
 // ClearCreditAmountSats clears the value of the "credit_amount_sats" field.
 func (u *UtxoSwapUpsert) ClearCreditAmountSats() *UtxoSwapUpsert {
 	u.SetNull(utxoswap.FieldCreditAmountSats)
+	return u
+}
+
+// SetSecondaryCreditAmountSats sets the "secondary_credit_amount_sats" field.
+func (u *UtxoSwapUpsert) SetSecondaryCreditAmountSats(v uint64) *UtxoSwapUpsert {
+	u.Set(utxoswap.FieldSecondaryCreditAmountSats, v)
+	return u
+}
+
+// UpdateSecondaryCreditAmountSats sets the "secondary_credit_amount_sats" field to the value that was provided on create.
+func (u *UtxoSwapUpsert) UpdateSecondaryCreditAmountSats() *UtxoSwapUpsert {
+	u.SetExcluded(utxoswap.FieldSecondaryCreditAmountSats)
+	return u
+}
+
+// AddSecondaryCreditAmountSats adds v to the "secondary_credit_amount_sats" field.
+func (u *UtxoSwapUpsert) AddSecondaryCreditAmountSats(v uint64) *UtxoSwapUpsert {
+	u.Add(utxoswap.FieldSecondaryCreditAmountSats, v)
+	return u
+}
+
+// ClearSecondaryCreditAmountSats clears the value of the "secondary_credit_amount_sats" field.
+func (u *UtxoSwapUpsert) ClearSecondaryCreditAmountSats() *UtxoSwapUpsert {
+	u.SetNull(utxoswap.FieldSecondaryCreditAmountSats)
 	return u
 }
 
@@ -645,6 +789,24 @@ func (u *UtxoSwapUpsert) ClearRequestedTransferID() *UtxoSwapUpsert {
 	return u
 }
 
+// SetRequestedSecondaryTransferID sets the "requested_secondary_transfer_id" field.
+func (u *UtxoSwapUpsert) SetRequestedSecondaryTransferID(v uuid.UUID) *UtxoSwapUpsert {
+	u.Set(utxoswap.FieldRequestedSecondaryTransferID, v)
+	return u
+}
+
+// UpdateRequestedSecondaryTransferID sets the "requested_secondary_transfer_id" field to the value that was provided on create.
+func (u *UtxoSwapUpsert) UpdateRequestedSecondaryTransferID() *UtxoSwapUpsert {
+	u.SetExcluded(utxoswap.FieldRequestedSecondaryTransferID)
+	return u
+}
+
+// ClearRequestedSecondaryTransferID clears the value of the "requested_secondary_transfer_id" field.
+func (u *UtxoSwapUpsert) ClearRequestedSecondaryTransferID() *UtxoSwapUpsert {
+	u.SetNull(utxoswap.FieldRequestedSecondaryTransferID)
+	return u
+}
+
 // SetSpendTxSigningResult sets the "spend_tx_signing_result" field.
 func (u *UtxoSwapUpsert) SetSpendTxSigningResult(v []byte) *UtxoSwapUpsert {
 	u.Set(utxoswap.FieldSpendTxSigningResult, v)
@@ -660,6 +822,42 @@ func (u *UtxoSwapUpsert) UpdateSpendTxSigningResult() *UtxoSwapUpsert {
 // ClearSpendTxSigningResult clears the value of the "spend_tx_signing_result" field.
 func (u *UtxoSwapUpsert) ClearSpendTxSigningResult() *UtxoSwapUpsert {
 	u.SetNull(utxoswap.FieldSpendTxSigningResult)
+	return u
+}
+
+// SetExpiryTime sets the "expiry_time" field.
+func (u *UtxoSwapUpsert) SetExpiryTime(v time.Time) *UtxoSwapUpsert {
+	u.Set(utxoswap.FieldExpiryTime, v)
+	return u
+}
+
+// UpdateExpiryTime sets the "expiry_time" field to the value that was provided on create.
+func (u *UtxoSwapUpsert) UpdateExpiryTime() *UtxoSwapUpsert {
+	u.SetExcluded(utxoswap.FieldExpiryTime)
+	return u
+}
+
+// ClearExpiryTime clears the value of the "expiry_time" field.
+func (u *UtxoSwapUpsert) ClearExpiryTime() *UtxoSwapUpsert {
+	u.SetNull(utxoswap.FieldExpiryTime)
+	return u
+}
+
+// SetUtxoValueSats sets the "utxo_value_sats" field.
+func (u *UtxoSwapUpsert) SetUtxoValueSats(v uint64) *UtxoSwapUpsert {
+	u.Set(utxoswap.FieldUtxoValueSats, v)
+	return u
+}
+
+// UpdateUtxoValueSats sets the "utxo_value_sats" field to the value that was provided on create.
+func (u *UtxoSwapUpsert) UpdateUtxoValueSats() *UtxoSwapUpsert {
+	u.SetExcluded(utxoswap.FieldUtxoValueSats)
+	return u
+}
+
+// AddUtxoValueSats adds v to the "utxo_value_sats" field.
+func (u *UtxoSwapUpsert) AddUtxoValueSats(v uint64) *UtxoSwapUpsert {
+	u.Add(utxoswap.FieldUtxoValueSats, v)
 	return u
 }
 
@@ -781,6 +979,34 @@ func (u *UtxoSwapUpsertOne) UpdateCreditAmountSats() *UtxoSwapUpsertOne {
 func (u *UtxoSwapUpsertOne) ClearCreditAmountSats() *UtxoSwapUpsertOne {
 	return u.Update(func(s *UtxoSwapUpsert) {
 		s.ClearCreditAmountSats()
+	})
+}
+
+// SetSecondaryCreditAmountSats sets the "secondary_credit_amount_sats" field.
+func (u *UtxoSwapUpsertOne) SetSecondaryCreditAmountSats(v uint64) *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.SetSecondaryCreditAmountSats(v)
+	})
+}
+
+// AddSecondaryCreditAmountSats adds v to the "secondary_credit_amount_sats" field.
+func (u *UtxoSwapUpsertOne) AddSecondaryCreditAmountSats(v uint64) *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.AddSecondaryCreditAmountSats(v)
+	})
+}
+
+// UpdateSecondaryCreditAmountSats sets the "secondary_credit_amount_sats" field to the value that was provided on create.
+func (u *UtxoSwapUpsertOne) UpdateSecondaryCreditAmountSats() *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.UpdateSecondaryCreditAmountSats()
+	})
+}
+
+// ClearSecondaryCreditAmountSats clears the value of the "secondary_credit_amount_sats" field.
+func (u *UtxoSwapUpsertOne) ClearSecondaryCreditAmountSats() *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.ClearSecondaryCreditAmountSats()
 	})
 }
 
@@ -931,6 +1157,27 @@ func (u *UtxoSwapUpsertOne) ClearRequestedTransferID() *UtxoSwapUpsertOne {
 	})
 }
 
+// SetRequestedSecondaryTransferID sets the "requested_secondary_transfer_id" field.
+func (u *UtxoSwapUpsertOne) SetRequestedSecondaryTransferID(v uuid.UUID) *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.SetRequestedSecondaryTransferID(v)
+	})
+}
+
+// UpdateRequestedSecondaryTransferID sets the "requested_secondary_transfer_id" field to the value that was provided on create.
+func (u *UtxoSwapUpsertOne) UpdateRequestedSecondaryTransferID() *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.UpdateRequestedSecondaryTransferID()
+	})
+}
+
+// ClearRequestedSecondaryTransferID clears the value of the "requested_secondary_transfer_id" field.
+func (u *UtxoSwapUpsertOne) ClearRequestedSecondaryTransferID() *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.ClearRequestedSecondaryTransferID()
+	})
+}
+
 // SetSpendTxSigningResult sets the "spend_tx_signing_result" field.
 func (u *UtxoSwapUpsertOne) SetSpendTxSigningResult(v []byte) *UtxoSwapUpsertOne {
 	return u.Update(func(s *UtxoSwapUpsert) {
@@ -949,6 +1196,48 @@ func (u *UtxoSwapUpsertOne) UpdateSpendTxSigningResult() *UtxoSwapUpsertOne {
 func (u *UtxoSwapUpsertOne) ClearSpendTxSigningResult() *UtxoSwapUpsertOne {
 	return u.Update(func(s *UtxoSwapUpsert) {
 		s.ClearSpendTxSigningResult()
+	})
+}
+
+// SetExpiryTime sets the "expiry_time" field.
+func (u *UtxoSwapUpsertOne) SetExpiryTime(v time.Time) *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.SetExpiryTime(v)
+	})
+}
+
+// UpdateExpiryTime sets the "expiry_time" field to the value that was provided on create.
+func (u *UtxoSwapUpsertOne) UpdateExpiryTime() *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.UpdateExpiryTime()
+	})
+}
+
+// ClearExpiryTime clears the value of the "expiry_time" field.
+func (u *UtxoSwapUpsertOne) ClearExpiryTime() *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.ClearExpiryTime()
+	})
+}
+
+// SetUtxoValueSats sets the "utxo_value_sats" field.
+func (u *UtxoSwapUpsertOne) SetUtxoValueSats(v uint64) *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.SetUtxoValueSats(v)
+	})
+}
+
+// AddUtxoValueSats adds v to the "utxo_value_sats" field.
+func (u *UtxoSwapUpsertOne) AddUtxoValueSats(v uint64) *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.AddUtxoValueSats(v)
+	})
+}
+
+// UpdateUtxoValueSats sets the "utxo_value_sats" field to the value that was provided on create.
+func (u *UtxoSwapUpsertOne) UpdateUtxoValueSats() *UtxoSwapUpsertOne {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.UpdateUtxoValueSats()
 	})
 }
 
@@ -1240,6 +1529,34 @@ func (u *UtxoSwapUpsertBulk) ClearCreditAmountSats() *UtxoSwapUpsertBulk {
 	})
 }
 
+// SetSecondaryCreditAmountSats sets the "secondary_credit_amount_sats" field.
+func (u *UtxoSwapUpsertBulk) SetSecondaryCreditAmountSats(v uint64) *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.SetSecondaryCreditAmountSats(v)
+	})
+}
+
+// AddSecondaryCreditAmountSats adds v to the "secondary_credit_amount_sats" field.
+func (u *UtxoSwapUpsertBulk) AddSecondaryCreditAmountSats(v uint64) *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.AddSecondaryCreditAmountSats(v)
+	})
+}
+
+// UpdateSecondaryCreditAmountSats sets the "secondary_credit_amount_sats" field to the value that was provided on create.
+func (u *UtxoSwapUpsertBulk) UpdateSecondaryCreditAmountSats() *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.UpdateSecondaryCreditAmountSats()
+	})
+}
+
+// ClearSecondaryCreditAmountSats clears the value of the "secondary_credit_amount_sats" field.
+func (u *UtxoSwapUpsertBulk) ClearSecondaryCreditAmountSats() *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.ClearSecondaryCreditAmountSats()
+	})
+}
+
 // SetMaxFeeSats sets the "max_fee_sats" field.
 func (u *UtxoSwapUpsertBulk) SetMaxFeeSats(v uint64) *UtxoSwapUpsertBulk {
 	return u.Update(func(s *UtxoSwapUpsert) {
@@ -1387,6 +1704,27 @@ func (u *UtxoSwapUpsertBulk) ClearRequestedTransferID() *UtxoSwapUpsertBulk {
 	})
 }
 
+// SetRequestedSecondaryTransferID sets the "requested_secondary_transfer_id" field.
+func (u *UtxoSwapUpsertBulk) SetRequestedSecondaryTransferID(v uuid.UUID) *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.SetRequestedSecondaryTransferID(v)
+	})
+}
+
+// UpdateRequestedSecondaryTransferID sets the "requested_secondary_transfer_id" field to the value that was provided on create.
+func (u *UtxoSwapUpsertBulk) UpdateRequestedSecondaryTransferID() *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.UpdateRequestedSecondaryTransferID()
+	})
+}
+
+// ClearRequestedSecondaryTransferID clears the value of the "requested_secondary_transfer_id" field.
+func (u *UtxoSwapUpsertBulk) ClearRequestedSecondaryTransferID() *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.ClearRequestedSecondaryTransferID()
+	})
+}
+
 // SetSpendTxSigningResult sets the "spend_tx_signing_result" field.
 func (u *UtxoSwapUpsertBulk) SetSpendTxSigningResult(v []byte) *UtxoSwapUpsertBulk {
 	return u.Update(func(s *UtxoSwapUpsert) {
@@ -1405,6 +1743,48 @@ func (u *UtxoSwapUpsertBulk) UpdateSpendTxSigningResult() *UtxoSwapUpsertBulk {
 func (u *UtxoSwapUpsertBulk) ClearSpendTxSigningResult() *UtxoSwapUpsertBulk {
 	return u.Update(func(s *UtxoSwapUpsert) {
 		s.ClearSpendTxSigningResult()
+	})
+}
+
+// SetExpiryTime sets the "expiry_time" field.
+func (u *UtxoSwapUpsertBulk) SetExpiryTime(v time.Time) *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.SetExpiryTime(v)
+	})
+}
+
+// UpdateExpiryTime sets the "expiry_time" field to the value that was provided on create.
+func (u *UtxoSwapUpsertBulk) UpdateExpiryTime() *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.UpdateExpiryTime()
+	})
+}
+
+// ClearExpiryTime clears the value of the "expiry_time" field.
+func (u *UtxoSwapUpsertBulk) ClearExpiryTime() *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.ClearExpiryTime()
+	})
+}
+
+// SetUtxoValueSats sets the "utxo_value_sats" field.
+func (u *UtxoSwapUpsertBulk) SetUtxoValueSats(v uint64) *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.SetUtxoValueSats(v)
+	})
+}
+
+// AddUtxoValueSats adds v to the "utxo_value_sats" field.
+func (u *UtxoSwapUpsertBulk) AddUtxoValueSats(v uint64) *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.AddUtxoValueSats(v)
+	})
+}
+
+// UpdateUtxoValueSats sets the "utxo_value_sats" field to the value that was provided on create.
+func (u *UtxoSwapUpsertBulk) UpdateUtxoValueSats() *UtxoSwapUpsertBulk {
+	return u.Update(func(s *UtxoSwapUpsert) {
+		s.UpdateUtxoValueSats()
 	})
 }
 

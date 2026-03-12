@@ -42,13 +42,26 @@ func (s *SparkServer) GenerateStaticDepositAddress(ctx context.Context, req *pb.
 	return depositHandler.GenerateStaticDepositAddress(ctx, s.config, req)
 }
 
+// Archives the current default static deposit address and generates a new one.
+func (s *SparkServer) RotateStaticDepositAddress(ctx context.Context, req *pb.RotateStaticDepositAddressRequest) (*pb.RotateStaticDepositAddressResponse, error) {
+	depositHandler := handler.NewDepositHandler(s.config)
+	return depositHandler.RotateStaticDepositAddress(ctx, s.config, req)
+}
+
 // StartDepositTreeCreation verifies the on chain utxo, and then verifies and signs the offchain root and refund transactions.
 func (s *SparkServer) StartDepositTreeCreation(ctx context.Context, req *pb.StartDepositTreeCreationRequest) (*pb.StartDepositTreeCreationResponse, error) {
 	depositHandler := handler.NewDepositHandler(s.config)
 	return depositHandler.StartDepositTreeCreation(ctx, s.config, req)
 }
 
+// FinalizeDepositTreeCreation finalizes the tree creation by aggregating user signature shares with SE shares.
+func (s *SparkServer) FinalizeDepositTreeCreation(ctx context.Context, req *pb.FinalizeDepositTreeCreationRequest) (*pb.FinalizeDepositTreeCreationResponse, error) {
+	depositHandler := handler.NewDepositHandler(s.config)
+	return depositHandler.FinalizeDepositTreeCreation(ctx, s.config, req)
+}
+
 // StartTreeCreation is deprecated.
+//
 // Deprecated: Use StartDepositTreeCreation instead
 func (s *SparkServer) StartTreeCreation(ctx context.Context, req *pb.StartTreeCreationRequest) (*pb.StartTreeCreationResponse, error) {
 	return nil, errors.UnimplementedMethodDisabled(errDeprecated)
@@ -74,6 +87,12 @@ func (s *SparkServer) StartTransfer(ctx context.Context, req *pb.StartTransferRe
 func (s *SparkServer) StartTransferV2(ctx context.Context, req *pb.StartTransferRequest) (*pb.StartTransferResponse, error) {
 	transferHander := handler.NewTransferHandler(s.config)
 	return transferHander.StartTransferV2(ctx, req)
+}
+
+// StartTransferV3 initiates a MIMO transfer from one sender to multiple receivers.
+func (s *SparkServer) StartTransferV3(ctx context.Context, req *pb.StartTransferV3Request) (*pb.StartTransferResponse, error) {
+	transferHandler := handler.NewTransferHandler(s.config)
+	return transferHandler.StartTransferV3(ctx, req)
 }
 
 // FinalizeTransfer completes a transfer from sender.
@@ -109,6 +128,13 @@ func (s *SparkServer) ClaimTransferSignRefundsV2(ctx context.Context, req *pb.Cl
 	return transferHander.ClaimTransferSignRefundsV2(ctx, req)
 }
 
+// ClaimTransfer claims a transfer in a single call, combining key tweak delivery,
+// refund signing, signature aggregation, and finalization.
+func (s *SparkServer) ClaimTransfer(ctx context.Context, req *pb.ClaimTransferRequest) (*pb.ClaimTransferResponse, error) {
+	transferHandler := handler.NewTransferHandler(s.config)
+	return transferHandler.ClaimTransfer(ctx, req)
+}
+
 // ClaimTransferSignRefunds signs new refund transactions as part of the transfer.
 func (s *SparkServer) ClaimTransferSignRefunds(ctx context.Context, req *pb.ClaimTransferSignRefundsRequest) (*pb.ClaimTransferSignRefundsResponse, error) {
 	return nil, errors.UnimplementedMethodDisabled(errDeprecated)
@@ -118,6 +144,12 @@ func (s *SparkServer) ClaimTransferSignRefunds(ctx context.Context, req *pb.Clai
 func (s *SparkServer) StorePreimageShare(ctx context.Context, req *pb.StorePreimageShareRequest) (*emptypb.Empty, error) {
 	lightningHandler := handler.NewLightningHandler(s.config)
 	return emptyResponse, lightningHandler.StorePreimageShare(ctx, req)
+}
+
+// StorePreimageShareV2 stores ECIES-encrypted preimage shares for all SOs via a single coordinator call.
+func (s *SparkServer) StorePreimageShareV2(ctx context.Context, req *pb.StorePreimageShareV2Request) (*emptypb.Empty, error) {
+	lightningHandler := handler.NewLightningHandler(s.config)
+	return emptyResponse, lightningHandler.StorePreimageShareV2(ctx, req)
 }
 
 // GetSigningCommitments gets the signing commitments for the given node ids.
@@ -226,6 +258,11 @@ func (s *SparkServer) ProvidePreimage(ctx context.Context, req *pb.ProvidePreima
 	return lightningHandler.ProvidePreimage(ctx, req)
 }
 
+func (s *SparkServer) QueryPreimage(ctx context.Context, req *pb.QueryPreimageRequest) (*pb.QueryPreimageResponse, error) {
+	lightningHandler := handler.NewLightningHandler(s.config)
+	return lightningHandler.QueryPreimage(ctx, req)
+}
+
 // QueryNodes queries the details of nodes given either the owner identity public key or a list of node ids.
 func (s *SparkServer) QueryNodes(ctx context.Context, req *pb.QueryNodesRequest) (*pb.QueryNodesResponse, error) {
 	treeQueryHandler := handler.NewTreeQueryHandler(s.config)
@@ -286,6 +323,11 @@ func (s *SparkServer) QueryNodesByValue(ctx context.Context, req *pb.QueryNodesB
 func (s *SparkServer) GetUtxosForAddress(ctx context.Context, req *pb.GetUtxosForAddressRequest) (*pb.GetUtxosForAddressResponse, error) {
 	depositHandler := handler.NewDepositHandler(s.config)
 	return depositHandler.GetUtxosForAddress(ctx, req)
+}
+
+func (s *SparkServer) GetUtxosForAddresses(ctx context.Context, req *pb.GetUtxosForAddressesRequest) (*pb.GetUtxosForAddressesResponse, error) {
+	depositHandler := handler.NewDepositHandler(s.config)
+	return depositHandler.GetUtxosForAddresses(ctx, req)
 }
 
 func (s *SparkServer) QuerySparkInvoices(ctx context.Context, req *pb.QuerySparkInvoicesRequest) (*pb.QuerySparkInvoicesResponse, error) {

@@ -12,6 +12,11 @@ import (
 	"github.com/lightsparkdev/spark/common/keys"
 )
 
+const (
+	HTLCSequenceOffset       = 30
+	DirectHTLCSequenceOffset = 15
+)
+
 var NUMSPoint = func() keys.Public {
 	// Taking from bip341, it's the x value public key of the hash of generator point G on secp256k1 curve.
 	numsBytes, _ := hex.DecodeString("0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0")
@@ -85,9 +90,13 @@ func CreateLightningHTLCTaprootAddressWithSequence(network btcnetwork.Network, h
 	// Compute the taproot key
 	taprootKey := txscript.ComputeTaprootOutputKey(numsKey.ToBTCEC(), tapRoot[:])
 
+	params, err := network.Params()
+	if err != nil {
+		return nil, err
+	}
 	taprootAddr, err := btcutil.NewAddressTaproot(
 		schnorr.SerializePubKey(taprootKey),
-		network.Params(),
+		params,
 	)
 	if err != nil {
 		return nil, err

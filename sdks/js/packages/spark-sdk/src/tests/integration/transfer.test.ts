@@ -4,15 +4,14 @@ import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { uuidv7 } from "uuidv7";
 import { SparkError } from "../../errors/index.js";
-import { KeyDerivation, KeyDerivationType } from "../../signer/types.js";
-import { SparkWalletEvent } from "../../spark-wallet/types.js";
 import { InvoiceStatus, TransferStatus } from "../../proto/spark.js";
 import type { LeafKeyTweak } from "../../services/transfer.js";
 import {
   type ConfigOptions,
   getLocalSigningOperators,
-  WalletConfig,
 } from "../../services/wallet-config.js";
+import { KeyDerivation, KeyDerivationType } from "../../signer/types.js";
+import { SparkWalletEvent } from "../../spark-wallet/types.js";
 import { NetworkType } from "../../utils/network.js";
 import { walletTypes } from "../test-utils.js";
 import {
@@ -98,35 +97,13 @@ describe.each(walletTypes)(
         ),
       );
 
-      const claimingNodes: LeafKeyTweak[] = receiverTransfer!.leaves.map(
-        (leaf) => ({
-          leaf: {
-            ...leaf.leaf!,
-            refundTx: leaf.intermediateRefundTx,
-            directRefundTx: leaf.intermediateDirectRefundTx,
-            directFromCpfpRefundTx: leaf.intermediateDirectFromCpfpRefundTx,
-          },
-          keyDerivation: {
-            type: KeyDerivationType.ECIES,
-            path: leaf.secretCipher,
-          },
-          newKeyDerivation: {
-            type: KeyDerivationType.LEAF,
-            path: leaf.leaf!.id,
-          },
-        }),
-      );
-
-      await receiverTransferService.claimTransfer(
-        receiverTransfer!,
-        claimingNodes,
-      );
+      await receiverTransferService.claimTransfer(receiverTransfer!);
 
       const balance = await receiverWallet.getBalance();
       expect(balance.balance).toBe(1000n);
     }, 30000);
 
-    testLocalOnly(`${name} - test transfer with separate`, async () => {
+    it(`${name} - test transfer with separate`, async () => {
       const faucet = BitcoinFaucet.getInstance();
 
       const options: ConfigOptions = {
@@ -258,197 +235,86 @@ describe.each(walletTypes)(
 
       await receiverTransferService.claimTransfer(
         newNewPendingTransfer.transfers[0]!,
-        claimingNodes,
       );
     });
 
-    testLocalOnly(
-      `${name} - test that when the receiver has tweaked the key on some SOs, we can still claim the transfer`,
-      async () => {
-        const faucet = BitcoinFaucet.getInstance();
+    it(`${name} - test that a new wallet instance can claim a pending transfer`, async () => {
+      const faucet = BitcoinFaucet.getInstance();
 
-        const options: ConfigOptions = {
-          network: "LOCAL",
-        };
+      const options: ConfigOptions = {
+        network: "LOCAL",
+      };
 
-        const { wallet: senderWallet } =
-          await SparkWalletTestingIntegration.initialize({
-            options,
-            signer: new Signer(),
-          });
+      const { wallet: senderWallet } =
+        await SparkWalletTestingIntegration.initialize({
+          options,
+          signer: new Signer(),
+        });
 
-        const senderTransferService = senderWallet.getTransferService();
+      const senderTransferService = senderWallet.getTransferService();
 
-        const leafId = uuidv7();
-        const rootNode = await createTree(senderWallet, leafId, faucet, 1000n);
+      const leafId = uuidv7();
+      const rootNode = await createTree(senderWallet, leafId, faucet, 1000n);
 
-        const newLeafDerivationPath: KeyDerivation = {
+      const newLeafDerivationPath: KeyDerivation = {
+        type: KeyDerivationType.LEAF,
+        path: uuidv7(),
+      };
+
+      const mnemonic = generateMnemonic(wordlist);
+      const { wallet: receiverWallet } =
+        await SparkWalletTestingIntegration.initialize({
+          options,
+          mnemonicOrSeed: mnemonic,
+          signer: new Signer(),
+        });
+
+      const receiverPubkey = await receiverWallet.getIdentityPublicKey();
+
+      const transferNode: LeafKeyTweak = {
+        leaf: rootNode,
+        keyDerivation: {
           type: KeyDerivationType.LEAF,
-          path: uuidv7(),
-        };
+          path: leafId,
+        },
+        newKeyDerivation: newLeafDerivationPath,
+      };
 
-        const soToRemove =
-          "0000000000000000000000000000000000000000000000000000000000000005";
-        const localSigningOperators = getLocalSigningOperators();
-        const signingOperators = Object.fromEntries(
-          Object.entries(localSigningOperators).filter(
-            ([key]) => key !== soToRemove,
-          ),
-        );
-        const missingOperatorOptions = {
-          ...WalletConfig.LOCAL,
-          signingOperators,
-        };
-        const mnemonic = generateMnemonic(wordlist);
-        const { wallet: receiverWallet } =
-          await SparkWalletTestingIntegration.initialize({
-            options: missingOperatorOptions,
-            mnemonicOrSeed: mnemonic,
-            signer: new Signer(),
-          });
-
-        const receiverPubkey = await receiverWallet.getIdentityPublicKey();
-
-        const receiverTransferService = receiverWallet.getTransferService();
-
-        const transferNode: LeafKeyTweak = {
-          leaf: rootNode,
-          keyDerivation: {
-            type: KeyDerivationType.LEAF,
-            path: leafId,
-          },
-          newKeyDerivation: newLeafDerivationPath,
-        };
-
-        const senderTransfer =
-          await senderTransferService.sendTransferWithKeyTweaks(
-            [transferNode],
-            hexToBytes(receiverPubkey),
-          );
-
-        const pendingTransfer = await receiverWallet.queryPendingTransfers();
-
-        expect(pendingTransfer.transfers.length).toBe(1);
-
-        const receiverTransfer = pendingTransfer.transfers[0];
-
-        expect(receiverTransfer!.id).toBe(senderTransfer.id);
-
-        const leafPrivKeyMap = await receiverWallet.verifyPendingTransfer(
-          receiverTransfer!,
+      const senderTransfer =
+        await senderTransferService.sendTransferWithKeyTweaks(
+          [transferNode],
+          hexToBytes(receiverPubkey),
         );
 
-        expect(leafPrivKeyMap.size).toBe(1);
+      // Create a new wallet instance from same mnemonic to simulate recovery
+      const { wallet: receiverWalletRecovered } =
+        await SparkWalletTestingIntegration.initialize({
+          options,
+          mnemonicOrSeed: mnemonic,
+          signer: new Signer(),
+        });
+      const receiverTransferServiceRecovered =
+        receiverWalletRecovered.getTransferService();
 
-        const leafPrivKeyMapBytes = leafPrivKeyMap.get(rootNode.id);
-        expect(leafPrivKeyMapBytes).toBeDefined();
-        expect(bytesToHex(leafPrivKeyMapBytes!)).toBe(
-          bytesToHex(
-            await senderWallet
-              .getSigner()
-              .getPublicKeyFromDerivation(newLeafDerivationPath),
-          ),
-        );
+      const pendingTransfer =
+        await receiverWalletRecovered.queryPendingTransfers();
 
-        const claimingNodes: LeafKeyTweak[] = receiverTransfer!.leaves.map(
-          (leaf) => ({
-            leaf: {
-              ...rootNode,
-              refundTx: leaf.intermediateRefundTx,
-              directRefundTx: leaf.intermediateDirectRefundTx,
-              directFromCpfpRefundTx: leaf.intermediateDirectFromCpfpRefundTx,
-            },
-            keyDerivation: {
-              type: KeyDerivationType.ECIES,
-              path: receiverTransfer!.leaves[0]!.secretCipher,
-            },
-            newKeyDerivation: {
-              type: KeyDerivationType.LEAF,
-              path: leaf.leaf!.id,
-            },
-          }),
-        );
+      expect(pendingTransfer.transfers.length).toBe(1);
 
-        // Tweak the key with only 4 out of the 5 operators
-        await receiverTransferService.claimTransferTweakKeys(
-          receiverTransfer!,
-          claimingNodes,
-        );
+      const receiverTransfer = pendingTransfer.transfers[0];
 
-        const receiverOptions = {
-          ...WalletConfig.LOCAL,
-        };
+      expect(receiverTransfer!.id).toBe(senderTransfer.id);
 
-        const { wallet: receiverWalletWithAllOperators } =
-          await SparkWalletTestingIntegration.initialize({
-            options: receiverOptions,
-            mnemonicOrSeed: mnemonic,
-            signer: new Signer(),
-          });
-        const receiverTransferServiceWithAllOperators =
-          receiverWalletWithAllOperators.getTransferService();
+      const leafPrivKeyMap =
+        await receiverWalletRecovered.verifyPendingTransfer(receiverTransfer!);
 
-        const { wallet: receiverWalletWithMissingOperatorAsCoordinator } =
-          await SparkWalletTestingIntegration.initialize({
-            options: {
-              ...WalletConfig.LOCAL,
-              coordinatorIdentifier: soToRemove,
-            },
-            mnemonicOrSeed: mnemonic,
-            signer: new Signer(),
-          });
+      expect(leafPrivKeyMap.size).toBe(1);
 
-        const pendingTransferWithMissingOperatorAsCoordinator =
-          await receiverWalletWithMissingOperatorAsCoordinator.queryPendingTransfers();
+      await receiverTransferServiceRecovered.claimTransfer(receiverTransfer!);
 
-        expect(
-          pendingTransferWithMissingOperatorAsCoordinator.transfers.length,
-        ).toBe(1);
-        expect(
-          pendingTransferWithMissingOperatorAsCoordinator.transfers[0]!.status,
-        ).toBe(TransferStatus.TRANSFER_STATUS_SENDER_KEY_TWEAKED);
-
-        const pendingTransferWithAllOperators =
-          await receiverWalletWithAllOperators.queryPendingTransfers();
-
-        expect(pendingTransferWithAllOperators.transfers.length).toBe(1);
-        expect(pendingTransferWithAllOperators.transfers[0]!.status).toBe(
-          TransferStatus.TRANSFER_STATUS_RECEIVER_KEY_TWEAKED,
-        );
-
-        const receiverTransferWithAllOperators =
-          pendingTransferWithAllOperators.transfers[0];
-
-        expect(receiverTransferWithAllOperators!.id).toBe(senderTransfer.id);
-
-        const leafPrivKeyMapWithAllOperators =
-          await receiverWalletWithAllOperators.verifyPendingTransfer(
-            receiverTransferWithAllOperators!,
-          );
-
-        expect(leafPrivKeyMapWithAllOperators.size).toBe(1);
-
-        const leafPrivKeyMapBytesWithAllOperators =
-          leafPrivKeyMapWithAllOperators.get(rootNode.id);
-        expect(leafPrivKeyMapBytesWithAllOperators).toBeDefined();
-        expect(bytesToHex(leafPrivKeyMapBytesWithAllOperators!)).toBe(
-          bytesToHex(
-            await senderWallet
-              .getSigner()
-              .getPublicKeyFromDerivation(newLeafDerivationPath),
-          ),
-        );
-
-        await receiverWalletWithAllOperators.verifyPendingTransfer(
-          receiverTransfer!,
-        );
-
-        await receiverTransferServiceWithAllOperators.claimTransfer(
-          receiverTransfer!,
-          claimingNodes,
-        );
-      },
-    );
+      const balance = await receiverWalletRecovered.getBalance();
+      expect(balance.balance).toBe(1000n);
+    });
 
     it(`${name} - test incoming transfer rpc stream`, async () => {
       const faucet = BitcoinFaucet.getInstance();
@@ -466,6 +332,8 @@ describe.each(walletTypes)(
       const depositAddress = await senderWallet.getSingleUseDepositAddress();
 
       const signedTx = await faucet.sendToAddress(depositAddress, 1_000n);
+
+      await faucet.mineBlocksAndWaitForMiningToComplete(3);
 
       await senderWallet.claimDeposit(signedTx.id);
 
@@ -704,29 +572,7 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
       ),
     );
 
-    const claimingNodes: LeafKeyTweak[] = receiverTransfer!.leaves.map(
-      (leaf) => ({
-        leaf: {
-          ...leaf.leaf!,
-          refundTx: leaf.intermediateRefundTx,
-          directRefundTx: leaf.intermediateDirectRefundTx,
-          directFromCpfpRefundTx: leaf.intermediateDirectFromCpfpRefundTx,
-        },
-        keyDerivation: {
-          type: KeyDerivationType.ECIES,
-          path: leaf.secretCipher,
-        },
-        newKeyDerivation: {
-          type: KeyDerivationType.LEAF,
-          path: leaf.leaf!.id,
-        },
-      }),
-    );
-
-    await receiverTransferService.claimTransfer(
-      receiverTransfer!,
-      claimingNodes,
-    );
+    await receiverTransferService.claimTransfer(receiverTransfer!);
 
     const balance = await receiverWallet.getBalance();
     expect(balance.balance).toBe(1000n);
@@ -771,25 +617,7 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
       Date.now(),
     );
 
-    const claimingNodes: LeafKeyTweak[] = receiverTransfer!.leaves.map(
-      (leaf) => ({
-        leaf: {
-          ...rootNode,
-          refundTx: leaf.intermediateRefundTx,
-          directRefundTx: leaf.intermediateDirectRefundTx,
-          directFromCpfpRefundTx: leaf.intermediateDirectFromCpfpRefundTx,
-        },
-        keyDerivation: {
-          type: KeyDerivationType.ECIES,
-          path: receiverTransfer!.leaves[0]!.secretCipher,
-        },
-        newKeyDerivation: {
-          type: KeyDerivationType.LEAF,
-          path: leaf.leaf!.id,
-        },
-      }),
-    );
-    await senderTransferService.claimTransfer(receiverTransfer!, claimingNodes);
+    await senderTransferService.claimTransfer(receiverTransfer!);
 
     const balance = await senderWallet.getBalance();
     expect(balance.balance).toBe(1000n);
@@ -811,6 +639,8 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
     }
 
     const signedTx = await faucet.sendToAddress(depositResp, 1_000n);
+
+    await faucet.mineBlocksAndWaitForMiningToComplete(3);
 
     await sdk.claimDeposit(signedTx.id);
 
@@ -847,6 +677,8 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
 
     const signedTx = await faucet.sendToAddress(depositResp, 1_000n);
 
+    await faucet.mineBlocksAndWaitForMiningToComplete(3);
+
     await sdk.claimDeposit(signedTx.id);
 
     const balance = await sdk.getBalance();
@@ -868,17 +700,17 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
     expect(pendingTransfers.transfers.length).toBe(1);
     const transfer = pendingTransfers.transfers[0]!;
 
-    const originalClaimTransferCore = (sdk2 as any).claimTransferCore.bind(
-      sdk2,
-    );
+    const transferService = sdk2.getTransferService();
+    const originalClaimTransferCore =
+      transferService.claimTransferCore.bind(transferService);
     const claimTransferCoreSpy = jest
-      .spyOn(sdk2 as any, "claimTransferCore")
+      .spyOn(transferService, "claimTransferCore")
       .mockRejectedValueOnce(new Error("Network error"))
       .mockImplementation(async (transfer) => {
         return await originalClaimTransferCore(transfer);
       });
 
-    await (sdk2 as any).claimTransfer({ transfer });
+    await transferService.claimTransfer(transfer);
 
     expect(claimTransferCoreSpy).toHaveBeenCalledTimes(2);
     expect((await sdk2.getBalance()).balance).toBe(1000n);
@@ -902,6 +734,8 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
 
     const signedTx = await faucet.sendToAddress(depositResp, 1_000n);
 
+    await faucet.mineBlocksAndWaitForMiningToComplete(3);
+
     await sdk.claimDeposit(signedTx.id);
 
     const balance = await sdk.getBalance();
@@ -923,29 +757,24 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
     expect(pendingTransfers.transfers.length).toBe(1);
     const transfer = pendingTransfers.transfers[0]!;
 
-    await (sdk2 as any).claimTransfer({ transfer });
+    const transferService = sdk2.getTransferService();
+    await transferService.claimTransfer(transfer);
 
-    const claimTransferCoreSpy = jest.spyOn(sdk2 as any, "claimTransferCore");
+    const claimTransferCoreSpy = jest.spyOn(
+      transferService,
+      "claimTransferCore",
+    );
 
-    const claim1 = await (sdk2 as any).claimTransfer({
-      transfer: {
-        ...transfer,
-        status: TransferStatus.TRANSFER_STATUS_SENDER_KEY_TWEAKED,
-      },
-    });
+    const claim1 = await transferService.claimTransfer(transfer);
     expect(claim1.length).toBe(1);
 
-    const claim2 = await (sdk2 as any).claimTransfer({
-      transfer: {
-        ...transfer,
-        status: TransferStatus.TRANSFER_STATUS_RECEIVER_KEY_TWEAKED,
-      },
+    const claim2 = await transferService.claimTransfer({
+      ...transfer,
+      status: TransferStatus.TRANSFER_STATUS_RECEIVER_KEY_TWEAKED,
     });
     expect(claim2.length).toBe(1);
 
-    const claim3 = await (sdk2 as any).claimTransfer({
-      transfer,
-    });
+    const claim3 = await transferService.claimTransfer(transfer);
 
     expect(claim3.length).toBe(1);
 
@@ -975,6 +804,8 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
     }
 
     const signedTx = await faucet.sendToAddress(depositResp, 1_000n);
+
+    await faucet.mineBlocksAndWaitForMiningToComplete(3);
 
     await sdk.claimDeposit(signedTx.id);
 
@@ -1018,9 +849,12 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
 
     await receiverTransferService.claimTransferTweakKeys(transfer, leaves);
 
-    const claimTransferCoreSpy = jest.spyOn(sdk2 as any, "claimTransferCore");
+    const claimTransferCoreSpy = jest.spyOn(
+      receiverTransferService,
+      "claimTransferCore",
+    );
 
-    const res = await (sdk2 as any).claimTransfer({ transfer });
+    const res = await receiverTransferService.claimTransfer(transfer);
     expect(res.length).toBe(1);
 
     expect(claimTransferCoreSpy).toHaveBeenCalledTimes(2);
@@ -1045,7 +879,7 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
 
     const signedTx = await faucet.sendToAddress(depositResp, 1_000n);
 
-    await faucet.mineBlocks(1);
+    await faucet.mineBlocksAndWaitForMiningToComplete(3);
 
     await alice.claimDeposit(signedTx.id);
 
@@ -1073,24 +907,7 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
     expect(pendingTransfers.transfers.length).toBe(1);
     const transfer = pendingTransfers.transfers[0]!;
 
-    const claimingNodes: LeafKeyTweak[] = transfer!.leaves.map((leaf) => ({
-      leaf: {
-        ...leaf.leaf!,
-        refundTx: leaf.intermediateRefundTx,
-        directRefundTx: leaf.intermediateDirectRefundTx,
-        directFromCpfpRefundTx: leaf.intermediateDirectFromCpfpRefundTx,
-      },
-      keyDerivation: {
-        type: KeyDerivationType.ECIES,
-        path: leaf.secretCipher,
-      },
-      newKeyDerivation: {
-        type: KeyDerivationType.LEAF,
-        path: leaf.leaf!.id,
-      },
-    }));
-
-    await bobTransferService.claimTransfer(transfer!, claimingNodes);
+    await bobTransferService.claimTransfer(transfer!);
   });
 
   it(`${name} - test transfer with new spark address`, async () => {
@@ -1112,7 +929,7 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
 
     const signedTx = await faucet.sendToAddress(depositResp, 1_000n);
 
-    await faucet.mineBlocks(1);
+    await faucet.mineBlocksAndWaitForMiningToComplete(3);
 
     await alice.claimDeposit(signedTx.id);
 
@@ -1125,8 +942,7 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
     };
     const { wallet: bob } = await SparkWalletTestingIntegration.initialize({
       options,
-      mnemonicOrSeed:
-        "vacant travel foot castle surprise another dress stem slam lemon open anxiety",
+      mnemonicOrSeed: generateMnemonic(wordlist),
       signer: new Signer(),
     });
 
@@ -1141,24 +957,7 @@ describe.each(walletTypes)("transfer v2", ({ name, Signer, createTree }) => {
     expect(pendingTransfers.transfers.length).toBe(1);
     const transfer = pendingTransfers.transfers[0]!;
 
-    const claimingNodes: LeafKeyTweak[] = transfer!.leaves.map((leaf) => ({
-      leaf: {
-        ...leaf.leaf!,
-        refundTx: leaf.intermediateRefundTx,
-        directRefundTx: leaf.intermediateDirectRefundTx,
-        directFromCpfpRefundTx: leaf.intermediateDirectFromCpfpRefundTx,
-      },
-      keyDerivation: {
-        type: KeyDerivationType.ECIES,
-        path: leaf.secretCipher,
-      },
-      newKeyDerivation: {
-        type: KeyDerivationType.LEAF,
-        path: leaf.leaf!.id,
-      },
-    }));
-
-    await bobTransferService.claimTransfer(transfer!, claimingNodes);
+    await bobTransferService.claimTransfer(transfer!);
   });
 });
 
@@ -1198,6 +997,8 @@ describe.each(walletTypes)(
         depositAddrThree,
         3_000n,
       );
+
+      await faucet.mineBlocksAndWaitForMiningToComplete(3);
 
       await sdk.claimDeposit(oneThousand.id);
       await sdk.claimDeposit(twoThousand.id);
@@ -1263,7 +1064,7 @@ describe.each(walletTypes)(
         await receiverTransferService.claimTransferTweakKeys(transfer, leaves);
         const beforeClaimBalance = await sdk2.getBalance();
 
-        const res = await (sdk2 as any).claimTransfer({ transfer });
+        const res = await receiverTransferService.claimTransfer(transfer);
         expect(res.length).toBe(1);
 
         const newBalance = await sdk2.getBalance();
@@ -1304,6 +1105,8 @@ describe.each(walletTypes)(
       }
 
       const oneThousand = await faucet.sendToAddress(depositAddr, 1_000n);
+
+      await faucet.mineBlocksAndWaitForMiningToComplete(3);
 
       await sdk.claimDeposit(oneThousand.id);
       const balance = await sdk.getBalance();
@@ -1350,6 +1153,8 @@ describe.each(walletTypes)(
       }
 
       const oneThousand = await faucet.sendToAddress(depositAddr, 1_000n);
+
+      await faucet.mineBlocksAndWaitForMiningToComplete(3);
 
       await sdk.claimDeposit(oneThousand.id);
       const balance = await sdk.getBalance();
@@ -1402,6 +1207,8 @@ describe.each(walletTypes)(
 
       const deposit = await faucet.sendToAddress(depositAddr, 1_000n);
       const depositTwo = await faucet.sendToAddress(depositAddrTwo, 1_000n);
+
+      await faucet.mineBlocksAndWaitForMiningToComplete(3);
 
       await sdk.claimDeposit(deposit.id);
       await sdk.claimDeposit(depositTwo.id);

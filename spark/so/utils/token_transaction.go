@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -9,7 +10,7 @@ import (
 	"hash"
 	"math/big"
 	"slices"
-	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common/btcnetwork"
@@ -18,12 +19,13 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/lightsparkdev/spark"
 	"github.com/lightsparkdev/spark/common"
 	sparkpb "github.com/lightsparkdev/spark/proto/spark"
 	tokenpb "github.com/lightsparkdev/spark/proto/spark_token"
+	legacypb "github.com/lightsparkdev/spark/proto/spark_token_legacy"
 	st "github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	sparkerrors "github.com/lightsparkdev/spark/so/errors"
-	"github.com/lightsparkdev/spark/so/knobs"
 	"github.com/lightsparkdev/spark/so/protoconverter"
 )
 
@@ -73,7 +75,6 @@ func HashTokenTransaction(tokenTransaction *tokenpb.TokenTransaction, partialHas
 		return nil, sparkerrors.InternalObjectNull(fmt.Errorf("token transaction cannot be nil"))
 	}
 
-	var hasher func() ([]byte, error)
 	switch tokenTransaction.Version {
 	case 0:
 		{
@@ -81,19 +82,17 @@ func HashTokenTransaction(tokenTransaction *tokenpb.TokenTransaction, partialHas
 			if err != nil {
 				return nil, sparkerrors.InternalTypeConversionError(fmt.Errorf("failed to convert token transaction: %w", err))
 			}
-			hasher = func() ([]byte, error) { return HashTokenTransactionV0(sparkTx, partialHash) }
+			return HashTokenTransactionV0(sparkTx, partialHash)
 		}
 	case 1:
-		hasher = func() ([]byte, error) { return HashTokenTransactionV1(tokenTransaction, partialHash) }
+		return HashTokenTransactionV1(tokenTransaction, partialHash)
 	case 2:
-		hasher = func() ([]byte, error) { return HashTokenTransactionV2(tokenTransaction, partialHash) }
+		return HashTokenTransactionV2(tokenTransaction, partialHash)
 	case 3:
-		hasher = func() ([]byte, error) { return HashTokenTransactionV3(tokenTransaction, partialHash) }
+		return HashTokenTransactionV3(tokenTransaction, partialHash)
 	default:
 		return nil, sparkerrors.InvalidArgumentInvalidVersion(fmt.Errorf("unsupported token transaction version: %d", tokenTransaction.Version))
 	}
-
-	return hasher()
 }
 
 func HashTokenTransactionV3(tokenTransaction *tokenpb.TokenTransaction, partialHash bool) ([]byte, error) {
@@ -107,13 +106,12 @@ func HashTokenTransactionV3(tokenTransaction *tokenpb.TokenTransaction, partialH
 			return nil, sparkerrors.InternalUnhandledError(fmt.Errorf("failed to convert legacy token transaction to partial: %w", err))
 		}
 		return protohash.Hash(converted)
-	} else {
-		converted, err := protoconverter.ConvertV2TxShapeToFinal(tokenTransaction)
-		if err != nil {
-			return nil, sparkerrors.InternalUnhandledError(fmt.Errorf("failed to convert legacy token transaction to final: %w", err))
-		}
-		return protohash.Hash(converted)
 	}
+	converted, err := protoconverter.ConvertV2TxShapeToFinal(tokenTransaction)
+	if err != nil {
+		return nil, sparkerrors.InternalUnhandledError(fmt.Errorf("failed to convert legacy token transaction to final: %w", err))
+	}
+	return protohash.Hash(converted)
 }
 
 func HashTokenTransactionV2(tokenTransaction *tokenpb.TokenTransaction, partialHash bool) ([]byte, error) {
@@ -477,7 +475,7 @@ func hashMintInputV1(h hash.Hash, mintInput *tokenpb.TokenMintInput) ([]byte, er
 	return mintHashes, nil
 }
 
-func HashTokenTransactionV0(tokenTransaction *sparkpb.TokenTransaction, partialHash bool) ([]byte, error) {
+func HashTokenTransactionV0(tokenTransaction *legacypb.TokenTransaction, partialHash bool) ([]byte, error) {
 	if tokenTransaction == nil {
 		return nil, sparkerrors.InternalObjectMissingField(fmt.Errorf("token transaction cannot be nil"))
 	}
@@ -528,7 +526,7 @@ func HashTokenTransactionV0(tokenTransaction *sparkpb.TokenTransaction, partialH
 	return finalHash, nil
 }
 
-func hashTransferInputV0(h hash.Hash, transferSource *sparkpb.TokenTransferInput) ([]byte, error) {
+func hashTransferInputV0(h hash.Hash, transferSource *legacypb.TokenTransferInput) ([]byte, error) {
 	var allHashes []byte
 	if transferSource == nil {
 		return nil, fmt.Errorf("transfer input cannot be nil when hashing transfer transaction")
@@ -558,7 +556,7 @@ func hashTransferInputV0(h hash.Hash, transferSource *sparkpb.TokenTransferInput
 	return allHashes, nil
 }
 
-func hashCreateInputV0(h hash.Hash, createInput *sparkpb.TokenCreateInput, partialHash bool) ([]byte, error) {
+func hashCreateInputV0(h hash.Hash, createInput *legacypb.TokenCreateInput, partialHash bool) ([]byte, error) {
 	if createInput == nil {
 		return nil, sparkerrors.InternalObjectMissingField(fmt.Errorf("create input cannot be nil when hashing create transaction"))
 	}
@@ -634,7 +632,7 @@ func hashCreateInputV0(h hash.Hash, createInput *sparkpb.TokenCreateInput, parti
 	return allHashes, nil
 }
 
-func hashMintInputV0(h hash.Hash, mintInput *sparkpb.TokenMintInput) ([]byte, error) {
+func hashMintInputV0(h hash.Hash, mintInput *legacypb.TokenMintInput) ([]byte, error) {
 	if mintInput == nil {
 		return nil, sparkerrors.InternalObjectMissingField(fmt.Errorf("mint input cannot be nil when hashing mint transaction"))
 	}
@@ -658,7 +656,7 @@ func hashMintInputV0(h hash.Hash, mintInput *sparkpb.TokenMintInput) ([]byte, er
 	return allHashes, nil
 }
 
-func hashTokenOutputs(h hash.Hash, tokenOutputs []*sparkpb.TokenOutput, partialHash bool) ([]byte, error) {
+func hashTokenOutputs(h hash.Hash, tokenOutputs []*legacypb.TokenOutput, partialHash bool) ([]byte, error) {
 	var allHashes []byte
 	for i, output := range tokenOutputs {
 		if output == nil {
@@ -832,6 +830,9 @@ func HashFreezeTokensPayloadV0(payload *tokenpb.FreezeTokensPayload) ([]byte, er
 	if payload == nil {
 		return nil, sparkerrors.InternalObjectMissingField(fmt.Errorf("freeze tokens payload cannot be nil"))
 	}
+	if len(payload.GetOwnerPublicKey()) == 0 {
+		return nil, sparkerrors.InternalObjectMissingField(fmt.Errorf("owner public key cannot be empty"))
+	}
 	h := sha256.New()
 
 	contentHashes, err := hashFreezePayloadContents(h, payload)
@@ -852,9 +853,6 @@ func hashFreezePayloadContents(h hash.Hash, payload *tokenpb.FreezeTokensPayload
 
 	h.Reset()
 	ownerPubKey := payload.GetOwnerPublicKey()
-	if len(ownerPubKey) == 0 {
-		return nil, sparkerrors.InternalObjectMissingField(fmt.Errorf("owner public key cannot be empty"))
-	}
 	h.Write(ownerPubKey)
 	allHashes = append(allHashes, h.Sum(nil)...)
 
@@ -904,7 +902,7 @@ func hashFreezePayloadContents(h hash.Hash, payload *tokenpb.FreezeTokensPayload
 }
 
 // InferTokenTransactionTypeSparkProtos validates that exactly one input type is present and returns it
-func InferTokenTransactionTypeSparkProtos(tokenTransaction *sparkpb.TokenTransaction) (TokenTransactionType, error) {
+func InferTokenTransactionTypeSparkProtos(tokenTransaction *legacypb.TokenTransaction) (TokenTransactionType, error) {
 	hasCreateInput := tokenTransaction.GetCreateInput() != nil
 	hasMintInput := tokenTransaction.GetMintInput() != nil
 	hasTransferInput := tokenTransaction.GetTransferInput() != nil
@@ -940,19 +938,14 @@ type InferrableTokenTransaction interface {
 
 // InferTokenTransactionType validates that exactly one input type is present and returns it
 func InferTokenTransactionType(tokenTransaction InferrableTokenTransaction) (TokenTransactionType, error) {
-	hasCreateInput := tokenTransaction.GetCreateInput() != nil
-	hasMintInput := tokenTransaction.GetMintInput() != nil
-
-	var inputType TokenTransactionType
-	if hasCreateInput {
-		inputType = TokenTransactionTypeCreate
-	} else if hasMintInput {
-		inputType = TokenTransactionTypeMint
-	} else {
-		// If no create or mint, assume its a transfer.
-		inputType = TokenTransactionTypeTransfer
+	if tokenTransaction.GetCreateInput() != nil {
+		return TokenTransactionTypeCreate, nil
 	}
-	return inputType, nil
+	if tokenTransaction.GetMintInput() != nil {
+		return TokenTransactionTypeMint, nil
+	}
+	// If no create or mint, assume its a transfer.
+	return TokenTransactionTypeTransfer, nil
 }
 
 // IsFinalTokenTransaction checks if a token transaction has all SO-filled fields present,
@@ -1107,6 +1100,22 @@ func validateBaseTransferTransaction(
 		return sparkerrors.FailedPreconditionTokenRulesViolation(fmt.Errorf("too many outputs to spend, maximum is %d", MaxInputOrOutputTokenTransactionOutputs))
 	}
 
+	type outputKey struct {
+		txHash string
+		vout   uint32
+	}
+	seenOutputs := make(map[outputKey]struct{})
+	for _, output := range transferInput.GetOutputsToSpend() {
+		key := outputKey{
+			txHash: string(output.GetPrevTokenTransactionHash()),
+			vout:   output.GetPrevTokenTransactionVout(),
+		}
+		if _, ok := seenOutputs[key]; ok {
+			return sparkerrors.FailedPreconditionTokenRulesViolation(fmt.Errorf("duplicate output to spend: prev_hash=%x, vout=%d", output.GetPrevTokenTransactionHash(), output.GetPrevTokenTransactionVout()))
+		}
+		seenOutputs[key] = struct{}{}
+	}
+
 	// Validate there is the correct number of signatures for outputs to spend.
 	if len(inputSignatures) != len(transferInput.GetOutputsToSpend()) {
 		return sparkerrors.FailedPreconditionTokenRulesViolation(fmt.Errorf("number of signatures must match number of outputs to spend"))
@@ -1147,22 +1156,8 @@ func ValidatePartialTokenTransaction(
 		return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("expiry time should not be set by the client"))
 	}
 
-	if tokenTransaction.Version >= 3 {
-		if tokenTransaction.ValidityDurationSeconds == nil {
-			return sparkerrors.InvalidArgumentMissingField(fmt.Errorf("validity duration seconds must be set for v3+ transactions"))
-		}
-		if *tokenTransaction.ValidityDurationSeconds == 0 {
-			return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("validity duration seconds must be greater than 0"))
-		}
-	} else if tokenTransaction.ValidityDurationSeconds != nil {
+	if tokenTransaction.Version < 3 && tokenTransaction.ValidityDurationSeconds != nil {
 		return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("validity duration seconds should not be set by the client for v2 transactions"))
-	}
-
-	if tokenTransaction.Version >= 3 {
-		clientCreatedTimestamp := tokenTransaction.GetClientCreatedTimestamp()
-		if clientCreatedTimestamp == nil || clientCreatedTimestamp.AsTime().IsZero() {
-			return sparkerrors.InvalidArgumentMissingField(fmt.Errorf("client created timestamp must be set for v3+ transactions"))
-		}
 	}
 
 	inputType, err := InferTokenTransactionType(tokenTransaction)
@@ -1176,17 +1171,6 @@ func ValidatePartialTokenTransaction(
 		createInput := tokenTransaction.GetCreateInput()
 		if createInput.GetCreationEntityPublicKey() != nil {
 			return sparkerrors.FailedPreconditionTokenRulesViolation(fmt.Errorf("creation entity public key will be added by the SO - do not set this field when starting transactions"))
-		}
-		if len(createInput.GetExtraMetadata()) > 0 {
-			network, err := btcnetwork.FromProtoNetwork(tokenTransaction.Network)
-			if err != nil {
-				return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("invalid network: %w", err))
-			}
-			if network == btcnetwork.Mainnet &&
-				knobs.GetKnobsService(ctx).GetValue(knobs.KnobAllowExtraMetadataOnMainnet, 0) != 1 {
-				return sparkerrors.UnimplementedMethodDisabled(
-					fmt.Errorf("extra metadata is not allowed on mainnet"))
-			}
 		}
 	case TokenTransactionTypeMint, TokenTransactionTypeTransfer:
 		for i, output := range tokenTransaction.TokenOutputs {
@@ -1294,9 +1278,6 @@ func ValidateFreezeTokensPayload(payload *tokenpb.FreezeTokensPayload, expectedS
 		return sparkerrors.InvalidArgumentMissingField(fmt.Errorf("freeze tokens payload cannot be nil"))
 	}
 
-	if len(payload.GetOwnerPublicKey()) == 0 {
-		return sparkerrors.InvalidArgumentMissingField(fmt.Errorf("owner public key cannot be empty"))
-	}
 	switch payload.Version {
 	case 1:
 		if payload.GetTokenPublicKey() != nil {
@@ -1434,30 +1415,94 @@ func validateBaseTokenTransaction(
 		}
 	}
 
-	// For V3 transactions, validate deterministic ordering of operator keys and invoice attachments.
-	// This allows the autogenerated hash to not worry about ordering while still ensuring that after
-	// marshalling from the DB we have a deterministic way to reconstruct a matching transaction.
 	if tokenTransaction.GetVersion() >= 3 {
-		ops := tokenTransaction.GetSparkOperatorIdentityPublicKeys()
-		for i := 1; i < len(ops); i++ {
-			if bytes.Compare(ops[i-1], ops[i]) >= 0 {
-				return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("spark_operator_identity_public_keys must be strictly bytewise ascending; order violation at index %d", i))
-			}
+		if tokenTransaction.ValidityDurationSeconds == nil {
+			return sparkerrors.InvalidArgumentMissingField(
+				fmt.Errorf("validity duration seconds must be set for v3+ transactions"),
+			)
 		}
 
-		invoices := tokenTransaction.GetInvoiceAttachments()
-		for i := 1; i < len(invoices); i++ {
-			prev := invoices[i-1]
-			cur := invoices[i]
-			if prev == nil || cur == nil {
-				return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("invoice_attachments must not contain nil entries; nil at index %d", i))
-			}
-			if strings.Compare(prev.GetSparkInvoice(), cur.GetSparkInvoice()) >= 0 {
-				return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("invoice_attachments must be strictly bytewise ascending by spark_invoice; order violation at index %d", i))
-			}
+		metadata := tokenpb.TokenTransactionMetadata{
+			SparkOperatorIdentityPublicKeys: tokenTransaction.GetSparkOperatorIdentityPublicKeys(),
+			Network:                         tokenTransaction.GetNetwork(),
+			ClientCreatedTimestamp:          tokenTransaction.GetClientCreatedTimestamp(),
+			ValidityDurationSeconds:         tokenTransaction.GetValidityDurationSeconds(),
+			InvoiceAttachments:              tokenTransaction.GetInvoiceAttachments(),
+		}
+		if err := ValidateV3TransactionMetadata(&metadata); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+// For V3 transactions, validate deterministic ordering of operator keys and invoice attachments.
+// This allows the autogenerated hash to not worry about ordering while still ensuring that after
+// marshalling from the DB we have a deterministic way to reconstruct a matching transaction.
+func ValidateV3TransactionMetadata(metadata *tokenpb.TokenTransactionMetadata) error {
+	if metadata == nil {
+		return sparkerrors.InvalidArgumentMissingField(fmt.Errorf("token transaction metadata cannot be nil"))
+	}
+
+	validityDurationSeconds := metadata.GetValidityDurationSeconds()
+	if validityDurationSeconds == 0 {
+		return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("validity duration seconds must be greater than 0"))
+	}
+
+	if validityDurationSeconds > uint64(spark.TokenMaxValidityDuration.Seconds()) {
+		return sparkerrors.InvalidArgumentOutOfRange(fmt.Errorf(
+			"validity duration seconds too large: %d, maximum value: %d",
+			validityDurationSeconds,
+			uint64(spark.TokenMaxValidityDuration.Seconds()),
+		))
+	}
+
+	ops := metadata.GetSparkOperatorIdentityPublicKeys()
+	for i, op := range ops {
+		if op == nil {
+			return sparkerrors.InvalidArgumentMalformedField(
+				fmt.Errorf("operator_identity_public_keys must not contain nil entries; nil at index %d", i),
+			)
+		}
+		if i > 0 && bytes.Compare(ops[i-1], op) >= 0 {
+			return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("spark_operator_identity_public_keys must be strictly bytewise ascending; order violation at index %d", i))
+		}
+	}
+
+	invoices := metadata.GetInvoiceAttachments()
+	for i, inv := range invoices {
+		if inv == nil {
+			return sparkerrors.InvalidArgumentMalformedField(
+				fmt.Errorf("invoice_attachments must not contain nil entries; nil at index %d", i),
+			)
+		}
+		if inv.GetSparkInvoice() == "" {
+			return sparkerrors.InvalidArgumentMalformedField(
+				fmt.Errorf("invoice_attachments must not contain nil or empty entries; empty at index %d", i),
+			)
+		}
+		if i > 0 && cmp.Compare(invoices[i-1].GetSparkInvoice(), inv.GetSparkInvoice()) >= 0 {
+			return sparkerrors.InvalidArgumentMalformedField(
+				fmt.Errorf("invoice_attachments must be strictly ascending by spark_invoice; order violation at index %d", i),
+			)
+		}
+	}
+
+	clientCreatedTimestamp := metadata.GetClientCreatedTimestamp()
+	if clientCreatedTimestamp == nil || clientCreatedTimestamp.AsTime().IsZero() {
+		return sparkerrors.InvalidArgumentMissingField(fmt.Errorf("client created timestamp must be set for v3+ transactions"))
+	}
+	tt := clientCreatedTimestamp.AsTime()
+	if !tt.Equal(ToMicrosecondPrecision(tt)) {
+		// V3+ clientCreatedTimestamp must be truncated to microsecond precision.
+		// PostgreSQL only stores microsecond precision, so sub-microsecond values cause hash
+		// mismatches when the transaction is reconstructed via MarshalProto.
+		return sparkerrors.InvalidArgumentMalformedField(
+			fmt.Errorf("clientCreatedTimestamp has sub-microsecond precision (nanos=%d); truncate to microseconds",
+				tt.Nanosecond()),
+		)
+	}
 	return nil
 }
 
@@ -1488,6 +1533,10 @@ func ValidateFinalTokenTransaction(
 		return fmt.Errorf("failed to validate shared token transaction structure: %w", err)
 	}
 
+	if tokenTransaction.GetVersion() < 3 && tokenTransaction.GetValidityDurationSeconds() != 0 {
+		return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("validity duration seconds should not be set by the client for v2 transactions"))
+	}
+
 	inputType, err := InferTokenTransactionType(tokenTransaction)
 	if err != nil {
 		return err
@@ -1505,6 +1554,13 @@ func ValidateFinalTokenTransaction(
 			return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("creation entity public key does not match the reserved entity public key"))
 		}
 	case TokenTransactionTypeMint, TokenTransactionTypeTransfer:
+		if len(tokenTransaction.TokenOutputs) != len(config.ExpectedRevocationPublicKeys) {
+			return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf(
+				"number of token outputs (%d) does not match number of expected revocation public keys (%d)",
+				len(tokenTransaction.TokenOutputs),
+				len(config.ExpectedRevocationPublicKeys),
+			))
+		}
 		for i, output := range tokenTransaction.TokenOutputs {
 			revocationCommitment, err := keys.ParsePublicKey(output.GetRevocationCommitment())
 			if err != nil {
@@ -1526,5 +1582,64 @@ func ValidateFinalTokenTransaction(
 	default:
 		return sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("token transaction type unknown"))
 	}
+	return nil
+}
+
+func ToMicrosecondPrecision(t time.Time) time.Time {
+	return t.UTC().Truncate(time.Microsecond)
+}
+
+// ValidateExecuteBefore validates the execute_before timestamp field of a partial token transaction.
+// If execute_before is set, it must:
+// 1. Have microsecond precision (for database compatibility)
+// 2. Be strictly after client_created_timestamp
+// 3. Be within maxWindow of client_created_timestamp
+// 4. Not have already passed (based on current server time)
+func ValidateExecuteBefore(
+	executeBefore *time.Time,
+	clientCreatedTimestamp time.Time,
+	maxWindow time.Duration,
+) error {
+	// execute_before is optional; if not set, skip validation
+	if executeBefore == nil {
+		return nil
+	}
+
+	eb := *executeBefore
+
+	// Check microsecond precision (PostgreSQL only stores microsecond precision)
+	if !eb.Equal(ToMicrosecondPrecision(eb)) {
+		return sparkerrors.InvalidArgumentMalformedField(
+			fmt.Errorf("execute_before has sub-microsecond precision (nanos=%d); truncate to microseconds",
+				eb.Nanosecond()),
+		)
+	}
+
+	// execute_before must be strictly after client_created_timestamp
+	if !eb.After(clientCreatedTimestamp) {
+		return sparkerrors.FailedPreconditionTokenRulesViolation(
+			fmt.Errorf("execute_before (%v) must be after client_created_timestamp (%v)",
+				eb, clientCreatedTimestamp),
+		)
+	}
+
+	// execute_before must be within max window of client_created_timestamp
+	maxAllowed := clientCreatedTimestamp.Add(maxWindow)
+	if eb.After(maxAllowed) {
+		return sparkerrors.FailedPreconditionTokenRulesViolation(
+			fmt.Errorf("execute_before (%v) exceeds max window of %v from client_created_timestamp (%v); max allowed: %v",
+				eb, maxWindow, clientCreatedTimestamp, maxAllowed),
+		)
+	}
+
+	// execute_before must not have already passed
+	now := time.Now()
+	if now.After(eb) {
+		return sparkerrors.FailedPreconditionExpired(
+			fmt.Errorf("execute_before (%v) has already passed; current time: %v",
+				eb, now),
+		)
+	}
+
 	return nil
 }

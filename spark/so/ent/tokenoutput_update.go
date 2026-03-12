@@ -15,6 +15,8 @@ import (
 	"github.com/lightsparkdev/spark/common/btcnetwork"
 	"github.com/lightsparkdev/spark/common/keys"
 	"github.com/lightsparkdev/spark/common/uint128"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenjusticetransaction"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenoutputwithdrawal"
 	"github.com/lightsparkdev/spark/so/ent/predicate"
 	"github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	"github.com/lightsparkdev/spark/so/ent/tokenoutput"
@@ -73,6 +75,30 @@ func (tou *TokenOutputUpdate) SetNillableAmount(u *uint128.Uint128) *TokenOutput
 // ClearAmount clears the value of the "amount" field.
 func (tou *TokenOutputUpdate) ClearAmount() *TokenOutputUpdate {
 	tou.mutation.ClearAmount()
+	return tou
+}
+
+// SetSeFinalizationAdaptorSig sets the "se_finalization_adaptor_sig" field.
+func (tou *TokenOutputUpdate) SetSeFinalizationAdaptorSig(b []byte) *TokenOutputUpdate {
+	tou.mutation.SetSeFinalizationAdaptorSig(b)
+	return tou
+}
+
+// ClearSeFinalizationAdaptorSig clears the value of the "se_finalization_adaptor_sig" field.
+func (tou *TokenOutputUpdate) ClearSeFinalizationAdaptorSig() *TokenOutputUpdate {
+	tou.mutation.ClearSeFinalizationAdaptorSig()
+	return tou
+}
+
+// SetSeWithdrawalSignature sets the "se_withdrawal_signature" field.
+func (tou *TokenOutputUpdate) SetSeWithdrawalSignature(b []byte) *TokenOutputUpdate {
+	tou.mutation.SetSeWithdrawalSignature(b)
+	return tou
+}
+
+// ClearSeWithdrawalSignature clears the value of the "se_withdrawal_signature" field.
+func (tou *TokenOutputUpdate) ClearSeWithdrawalSignature() *TokenOutputUpdate {
+	tou.mutation.ClearSeWithdrawalSignature()
 	return tou
 }
 
@@ -147,18 +173,6 @@ func (tou *TokenOutputUpdate) ClearSpentRevocationSecret() *TokenOutputUpdate {
 	return tou
 }
 
-// SetConfirmedWithdrawBlockHash sets the "confirmed_withdraw_block_hash" field.
-func (tou *TokenOutputUpdate) SetConfirmedWithdrawBlockHash(b []byte) *TokenOutputUpdate {
-	tou.mutation.SetConfirmedWithdrawBlockHash(b)
-	return tou
-}
-
-// ClearConfirmedWithdrawBlockHash clears the value of the "confirmed_withdraw_block_hash" field.
-func (tou *TokenOutputUpdate) ClearConfirmedWithdrawBlockHash() *TokenOutputUpdate {
-	tou.mutation.ClearConfirmedWithdrawBlockHash()
-	return tou
-}
-
 // SetNetwork sets the "network" field.
 func (tou *TokenOutputUpdate) SetNetwork(b btcnetwork.Network) *TokenOutputUpdate {
 	tou.mutation.SetNetwork(b)
@@ -228,6 +242,44 @@ func (tou *TokenOutputUpdate) AddTokenPartialRevocationSecretShares(t ...*TokenP
 	return tou.AddTokenPartialRevocationSecretShareIDs(ids...)
 }
 
+// SetWithdrawalID sets the "withdrawal" edge to the L1TokenOutputWithdrawal entity by ID.
+func (tou *TokenOutputUpdate) SetWithdrawalID(id uuid.UUID) *TokenOutputUpdate {
+	tou.mutation.SetWithdrawalID(id)
+	return tou
+}
+
+// SetNillableWithdrawalID sets the "withdrawal" edge to the L1TokenOutputWithdrawal entity by ID if the given value is not nil.
+func (tou *TokenOutputUpdate) SetNillableWithdrawalID(id *uuid.UUID) *TokenOutputUpdate {
+	if id != nil {
+		tou = tou.SetWithdrawalID(*id)
+	}
+	return tou
+}
+
+// SetWithdrawal sets the "withdrawal" edge to the L1TokenOutputWithdrawal entity.
+func (tou *TokenOutputUpdate) SetWithdrawal(l *L1TokenOutputWithdrawal) *TokenOutputUpdate {
+	return tou.SetWithdrawalID(l.ID)
+}
+
+// SetJusticeTxID sets the "justice_tx" edge to the L1TokenJusticeTransaction entity by ID.
+func (tou *TokenOutputUpdate) SetJusticeTxID(id uuid.UUID) *TokenOutputUpdate {
+	tou.mutation.SetJusticeTxID(id)
+	return tou
+}
+
+// SetNillableJusticeTxID sets the "justice_tx" edge to the L1TokenJusticeTransaction entity by ID if the given value is not nil.
+func (tou *TokenOutputUpdate) SetNillableJusticeTxID(id *uuid.UUID) *TokenOutputUpdate {
+	if id != nil {
+		tou = tou.SetJusticeTxID(*id)
+	}
+	return tou
+}
+
+// SetJusticeTx sets the "justice_tx" edge to the L1TokenJusticeTransaction entity.
+func (tou *TokenOutputUpdate) SetJusticeTx(l *L1TokenJusticeTransaction) *TokenOutputUpdate {
+	return tou.SetJusticeTxID(l.ID)
+}
+
 // Mutation returns the TokenOutputMutation object of the builder.
 func (tou *TokenOutputUpdate) Mutation() *TokenOutputMutation {
 	return tou.mutation
@@ -279,6 +331,18 @@ func (tou *TokenOutputUpdate) RemoveTokenPartialRevocationSecretShares(t ...*Tok
 		ids[i] = t[i].ID
 	}
 	return tou.RemoveTokenPartialRevocationSecretShareIDs(ids...)
+}
+
+// ClearWithdrawal clears the "withdrawal" edge to the L1TokenOutputWithdrawal entity.
+func (tou *TokenOutputUpdate) ClearWithdrawal() *TokenOutputUpdate {
+	tou.mutation.ClearWithdrawal()
+	return tou
+}
+
+// ClearJusticeTx clears the "justice_tx" edge to the L1TokenJusticeTransaction entity.
+func (tou *TokenOutputUpdate) ClearJusticeTx() *TokenOutputUpdate {
+	tou.mutation.ClearJusticeTx()
+	return tou
 }
 
 // Save executes the query and returns the number of nodes affected by the update operation.
@@ -380,6 +444,18 @@ func (tou *TokenOutputUpdate) sqlSave(ctx context.Context) (n int, err error) {
 	if tou.mutation.AmountCleared() {
 		_spec.ClearField(tokenoutput.FieldAmount, field.TypeOther)
 	}
+	if value, ok := tou.mutation.SeFinalizationAdaptorSig(); ok {
+		_spec.SetField(tokenoutput.FieldSeFinalizationAdaptorSig, field.TypeBytes, value)
+	}
+	if tou.mutation.SeFinalizationAdaptorSigCleared() {
+		_spec.ClearField(tokenoutput.FieldSeFinalizationAdaptorSig, field.TypeBytes)
+	}
+	if value, ok := tou.mutation.SeWithdrawalSignature(); ok {
+		_spec.SetField(tokenoutput.FieldSeWithdrawalSignature, field.TypeBytes, value)
+	}
+	if tou.mutation.SeWithdrawalSignatureCleared() {
+		_spec.ClearField(tokenoutput.FieldSeWithdrawalSignature, field.TypeBytes)
+	}
 	if value, ok := tou.mutation.SpentOwnershipSignature(); ok {
 		_spec.SetField(tokenoutput.FieldSpentOwnershipSignature, field.TypeBytes, value)
 	}
@@ -406,12 +482,6 @@ func (tou *TokenOutputUpdate) sqlSave(ctx context.Context) (n int, err error) {
 	}
 	if tou.mutation.SpentRevocationSecretCleared() {
 		_spec.ClearField(tokenoutput.FieldSpentRevocationSecret, field.TypeBytes)
-	}
-	if value, ok := tou.mutation.ConfirmedWithdrawBlockHash(); ok {
-		_spec.SetField(tokenoutput.FieldConfirmedWithdrawBlockHash, field.TypeBytes, value)
-	}
-	if tou.mutation.ConfirmedWithdrawBlockHashCleared() {
-		_spec.ClearField(tokenoutput.FieldConfirmedWithdrawBlockHash, field.TypeBytes)
 	}
 	if value, ok := tou.mutation.Network(); ok {
 		_spec.SetField(tokenoutput.FieldNetwork, field.TypeEnum, value)
@@ -538,6 +608,64 @@ func (tou *TokenOutputUpdate) sqlSave(ctx context.Context) (n int, err error) {
 		}
 		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
+	if tou.mutation.WithdrawalCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   tokenoutput.WithdrawalTable,
+			Columns: []string{tokenoutput.WithdrawalColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(l1tokenoutputwithdrawal.FieldID, field.TypeUUID),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := tou.mutation.WithdrawalIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   tokenoutput.WithdrawalTable,
+			Columns: []string{tokenoutput.WithdrawalColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(l1tokenoutputwithdrawal.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if tou.mutation.JusticeTxCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   tokenoutput.JusticeTxTable,
+			Columns: []string{tokenoutput.JusticeTxColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(l1tokenjusticetransaction.FieldID, field.TypeUUID),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := tou.mutation.JusticeTxIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   tokenoutput.JusticeTxTable,
+			Columns: []string{tokenoutput.JusticeTxColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(l1tokenjusticetransaction.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
 	_spec.AddModifiers(tou.modifiers...)
 	if n, err = sqlgraph.UpdateNodes(ctx, tou.driver, _spec); err != nil {
 		if _, ok := err.(*sqlgraph.NotFoundError); ok {
@@ -597,6 +725,30 @@ func (touo *TokenOutputUpdateOne) SetNillableAmount(u *uint128.Uint128) *TokenOu
 // ClearAmount clears the value of the "amount" field.
 func (touo *TokenOutputUpdateOne) ClearAmount() *TokenOutputUpdateOne {
 	touo.mutation.ClearAmount()
+	return touo
+}
+
+// SetSeFinalizationAdaptorSig sets the "se_finalization_adaptor_sig" field.
+func (touo *TokenOutputUpdateOne) SetSeFinalizationAdaptorSig(b []byte) *TokenOutputUpdateOne {
+	touo.mutation.SetSeFinalizationAdaptorSig(b)
+	return touo
+}
+
+// ClearSeFinalizationAdaptorSig clears the value of the "se_finalization_adaptor_sig" field.
+func (touo *TokenOutputUpdateOne) ClearSeFinalizationAdaptorSig() *TokenOutputUpdateOne {
+	touo.mutation.ClearSeFinalizationAdaptorSig()
+	return touo
+}
+
+// SetSeWithdrawalSignature sets the "se_withdrawal_signature" field.
+func (touo *TokenOutputUpdateOne) SetSeWithdrawalSignature(b []byte) *TokenOutputUpdateOne {
+	touo.mutation.SetSeWithdrawalSignature(b)
+	return touo
+}
+
+// ClearSeWithdrawalSignature clears the value of the "se_withdrawal_signature" field.
+func (touo *TokenOutputUpdateOne) ClearSeWithdrawalSignature() *TokenOutputUpdateOne {
+	touo.mutation.ClearSeWithdrawalSignature()
 	return touo
 }
 
@@ -671,18 +823,6 @@ func (touo *TokenOutputUpdateOne) ClearSpentRevocationSecret() *TokenOutputUpdat
 	return touo
 }
 
-// SetConfirmedWithdrawBlockHash sets the "confirmed_withdraw_block_hash" field.
-func (touo *TokenOutputUpdateOne) SetConfirmedWithdrawBlockHash(b []byte) *TokenOutputUpdateOne {
-	touo.mutation.SetConfirmedWithdrawBlockHash(b)
-	return touo
-}
-
-// ClearConfirmedWithdrawBlockHash clears the value of the "confirmed_withdraw_block_hash" field.
-func (touo *TokenOutputUpdateOne) ClearConfirmedWithdrawBlockHash() *TokenOutputUpdateOne {
-	touo.mutation.ClearConfirmedWithdrawBlockHash()
-	return touo
-}
-
 // SetNetwork sets the "network" field.
 func (touo *TokenOutputUpdateOne) SetNetwork(b btcnetwork.Network) *TokenOutputUpdateOne {
 	touo.mutation.SetNetwork(b)
@@ -752,6 +892,44 @@ func (touo *TokenOutputUpdateOne) AddTokenPartialRevocationSecretShares(t ...*To
 	return touo.AddTokenPartialRevocationSecretShareIDs(ids...)
 }
 
+// SetWithdrawalID sets the "withdrawal" edge to the L1TokenOutputWithdrawal entity by ID.
+func (touo *TokenOutputUpdateOne) SetWithdrawalID(id uuid.UUID) *TokenOutputUpdateOne {
+	touo.mutation.SetWithdrawalID(id)
+	return touo
+}
+
+// SetNillableWithdrawalID sets the "withdrawal" edge to the L1TokenOutputWithdrawal entity by ID if the given value is not nil.
+func (touo *TokenOutputUpdateOne) SetNillableWithdrawalID(id *uuid.UUID) *TokenOutputUpdateOne {
+	if id != nil {
+		touo = touo.SetWithdrawalID(*id)
+	}
+	return touo
+}
+
+// SetWithdrawal sets the "withdrawal" edge to the L1TokenOutputWithdrawal entity.
+func (touo *TokenOutputUpdateOne) SetWithdrawal(l *L1TokenOutputWithdrawal) *TokenOutputUpdateOne {
+	return touo.SetWithdrawalID(l.ID)
+}
+
+// SetJusticeTxID sets the "justice_tx" edge to the L1TokenJusticeTransaction entity by ID.
+func (touo *TokenOutputUpdateOne) SetJusticeTxID(id uuid.UUID) *TokenOutputUpdateOne {
+	touo.mutation.SetJusticeTxID(id)
+	return touo
+}
+
+// SetNillableJusticeTxID sets the "justice_tx" edge to the L1TokenJusticeTransaction entity by ID if the given value is not nil.
+func (touo *TokenOutputUpdateOne) SetNillableJusticeTxID(id *uuid.UUID) *TokenOutputUpdateOne {
+	if id != nil {
+		touo = touo.SetJusticeTxID(*id)
+	}
+	return touo
+}
+
+// SetJusticeTx sets the "justice_tx" edge to the L1TokenJusticeTransaction entity.
+func (touo *TokenOutputUpdateOne) SetJusticeTx(l *L1TokenJusticeTransaction) *TokenOutputUpdateOne {
+	return touo.SetJusticeTxID(l.ID)
+}
+
 // Mutation returns the TokenOutputMutation object of the builder.
 func (touo *TokenOutputUpdateOne) Mutation() *TokenOutputMutation {
 	return touo.mutation
@@ -803,6 +981,18 @@ func (touo *TokenOutputUpdateOne) RemoveTokenPartialRevocationSecretShares(t ...
 		ids[i] = t[i].ID
 	}
 	return touo.RemoveTokenPartialRevocationSecretShareIDs(ids...)
+}
+
+// ClearWithdrawal clears the "withdrawal" edge to the L1TokenOutputWithdrawal entity.
+func (touo *TokenOutputUpdateOne) ClearWithdrawal() *TokenOutputUpdateOne {
+	touo.mutation.ClearWithdrawal()
+	return touo
+}
+
+// ClearJusticeTx clears the "justice_tx" edge to the L1TokenJusticeTransaction entity.
+func (touo *TokenOutputUpdateOne) ClearJusticeTx() *TokenOutputUpdateOne {
+	touo.mutation.ClearJusticeTx()
+	return touo
 }
 
 // Where appends a list predicates to the TokenOutputUpdate builder.
@@ -934,6 +1124,18 @@ func (touo *TokenOutputUpdateOne) sqlSave(ctx context.Context) (_node *TokenOutp
 	if touo.mutation.AmountCleared() {
 		_spec.ClearField(tokenoutput.FieldAmount, field.TypeOther)
 	}
+	if value, ok := touo.mutation.SeFinalizationAdaptorSig(); ok {
+		_spec.SetField(tokenoutput.FieldSeFinalizationAdaptorSig, field.TypeBytes, value)
+	}
+	if touo.mutation.SeFinalizationAdaptorSigCleared() {
+		_spec.ClearField(tokenoutput.FieldSeFinalizationAdaptorSig, field.TypeBytes)
+	}
+	if value, ok := touo.mutation.SeWithdrawalSignature(); ok {
+		_spec.SetField(tokenoutput.FieldSeWithdrawalSignature, field.TypeBytes, value)
+	}
+	if touo.mutation.SeWithdrawalSignatureCleared() {
+		_spec.ClearField(tokenoutput.FieldSeWithdrawalSignature, field.TypeBytes)
+	}
 	if value, ok := touo.mutation.SpentOwnershipSignature(); ok {
 		_spec.SetField(tokenoutput.FieldSpentOwnershipSignature, field.TypeBytes, value)
 	}
@@ -960,12 +1162,6 @@ func (touo *TokenOutputUpdateOne) sqlSave(ctx context.Context) (_node *TokenOutp
 	}
 	if touo.mutation.SpentRevocationSecretCleared() {
 		_spec.ClearField(tokenoutput.FieldSpentRevocationSecret, field.TypeBytes)
-	}
-	if value, ok := touo.mutation.ConfirmedWithdrawBlockHash(); ok {
-		_spec.SetField(tokenoutput.FieldConfirmedWithdrawBlockHash, field.TypeBytes, value)
-	}
-	if touo.mutation.ConfirmedWithdrawBlockHashCleared() {
-		_spec.ClearField(tokenoutput.FieldConfirmedWithdrawBlockHash, field.TypeBytes)
 	}
 	if value, ok := touo.mutation.Network(); ok {
 		_spec.SetField(tokenoutput.FieldNetwork, field.TypeEnum, value)
@@ -1085,6 +1281,64 @@ func (touo *TokenOutputUpdateOne) sqlSave(ctx context.Context) (_node *TokenOutp
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(tokenpartialrevocationsecretshare.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if touo.mutation.WithdrawalCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   tokenoutput.WithdrawalTable,
+			Columns: []string{tokenoutput.WithdrawalColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(l1tokenoutputwithdrawal.FieldID, field.TypeUUID),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := touo.mutation.WithdrawalIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   tokenoutput.WithdrawalTable,
+			Columns: []string{tokenoutput.WithdrawalColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(l1tokenoutputwithdrawal.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if touo.mutation.JusticeTxCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   tokenoutput.JusticeTxTable,
+			Columns: []string{tokenoutput.JusticeTxColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(l1tokenjusticetransaction.FieldID, field.TypeUUID),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := touo.mutation.JusticeTxIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   tokenoutput.JusticeTxTable,
+			Columns: []string{tokenoutput.JusticeTxColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(l1tokenjusticetransaction.FieldID, field.TypeUUID),
 			},
 		}
 		for _, k := range nodes {

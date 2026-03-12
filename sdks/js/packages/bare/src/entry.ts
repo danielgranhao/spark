@@ -6,6 +6,12 @@ import {
   aggregateFrost,
   encryptEcies,
   decryptEcies,
+  splitSecretWithProofs,
+  recoverSecret,
+  validateShare,
+  constructNodeTxPair,
+  constructRefundTxTrio,
+  computeMultiInputSighash,
 } from "@buildonspark/spark-frost-bare-addon";
 import {
   SparkFrostBase,
@@ -44,7 +50,7 @@ class SparkFrostBare extends SparkFrostBase {
       nonce,
       selfCommitment,
       statechainCommitmentsArr,
-      adaptorPubKey || null,
+      adaptorPubKey || new Uint8Array(0),
     );
     return result;
   }
@@ -78,7 +84,7 @@ class SparkFrostBare extends SparkFrostBase {
       statechainPublicKeysArr,
       selfPublicKey,
       verifyingKey,
-      adaptorPubKey || null,
+      adaptorPubKey || new Uint8Array(0),
     );
     return result;
   }
@@ -91,6 +97,100 @@ class SparkFrostBare extends SparkFrostBase {
   }
   decryptEcies(encryptedMsg, privateKey) {
     return decryptEcies(encryptedMsg, privateKey);
+  }
+
+  splitSecretWithProofs(
+    secret: Uint8Array,
+    threshold: number,
+    numShares: number,
+  ) {
+    const result = splitSecretWithProofs(secret, threshold, numShares);
+    return Promise.resolve(
+      (
+        result as {
+          threshold: number;
+          index: number;
+          share: Uint8Array;
+          proofs: Uint8Array[];
+        }[]
+      ).map((s) => ({
+        threshold: s.threshold,
+        index: s.index,
+        share: new Uint8Array(s.share),
+        proofs: s.proofs.map((p: Uint8Array) => new Uint8Array(p)),
+      })),
+    );
+  }
+
+  recoverSecret(
+    shares: { threshold: number; index: number; share: Uint8Array }[],
+  ) {
+    const result = recoverSecret(shares);
+    return Promise.resolve(result);
+  }
+
+  validateShare(
+    share: Uint8Array,
+    index: number,
+    threshold: number,
+    proofs: Uint8Array[],
+  ) {
+    validateShare(share, index, threshold, proofs);
+    return Promise.resolve();
+  }
+
+  constructNodeTxPair(
+    parentTx: Uint8Array,
+    vout: number,
+    address: string,
+    sequence: number,
+    directSequence: number,
+    feeSats: bigint,
+  ) {
+    return constructNodeTxPair(
+      new Uint8Array(parentTx),
+      vout,
+      address,
+      sequence,
+      directSequence,
+      feeSats,
+    );
+  }
+
+  constructRefundTxTrio(
+    cpfpNodeTx: Uint8Array,
+    directNodeTx: Uint8Array | null,
+    vout: number,
+    receivingPubkey: Uint8Array,
+    network: string,
+    sequence: number,
+    directSequence: number,
+    feeSats: bigint,
+  ) {
+    return constructRefundTxTrio(
+      new Uint8Array(cpfpNodeTx),
+      directNodeTx ? new Uint8Array(directNodeTx) : new Uint8Array(0),
+      vout,
+      new Uint8Array(receivingPubkey),
+      network,
+      sequence,
+      directSequence,
+      feeSats,
+    );
+  }
+
+  computeMultiInputSighash(
+    tx: Uint8Array,
+    inputIndex: number,
+    prevOutScripts: Uint8Array[],
+    prevOutValues: number[],
+  ) {
+    return computeMultiInputSighash(
+      new Uint8Array(tx),
+      inputIndex,
+      prevOutScripts.map((s) => new Uint8Array(s)),
+      prevOutValues,
+    );
   }
 }
 

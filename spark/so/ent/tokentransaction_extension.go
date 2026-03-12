@@ -41,6 +41,13 @@ func GetTokenTransactionMapFromList(transactions []*TokenTransaction) (map[strin
 	return tokenTransactionMap, nil
 }
 
+type createTransactionEntitiesMode int
+
+const (
+	createTransactionEntitiesModeStarted createTransactionEntitiesMode = iota
+	createTransactionEntitiesModeSigned
+)
+
 func CreateStartedTransactionEntities(
 	ctx context.Context,
 	tokenTransaction *tokenpb.TokenTransaction,
@@ -48,6 +55,52 @@ func CreateStartedTransactionEntities(
 	orderedOutputToCreateRevocationKeyshareIDs []string,
 	orderedOutputToSpendEnts []*TokenOutput,
 	coordinatorPublicKey keys.Public,
+) (*TokenTransaction, error) {
+	return createTransactionEntities(
+		ctx,
+		tokenTransaction,
+		signaturesWithIndex,
+		orderedOutputToCreateRevocationKeyshareIDs,
+		orderedOutputToSpendEnts,
+		coordinatorPublicKey,
+		createTransactionEntitiesModeStarted,
+		nil,
+	)
+}
+
+// CreateSignedTransactionEntities creates the token transaction and output entities directly in SIGNED state.
+//
+// This is used by the V3 Phase 2 internal broadcast flow to avoid persisting intermediate STARTED state.
+func CreateSignedTransactionEntities(
+	ctx context.Context,
+	tokenTransaction *tokenpb.TokenTransaction,
+	signaturesWithIndex []*tokenpb.SignatureWithIndex,
+	orderedOutputToCreateRevocationKeyshareIDs []string,
+	orderedOutputToSpendEnts []*TokenOutput,
+	coordinatorPublicKey keys.Public,
+	operatorSignature []byte,
+) (*TokenTransaction, error) {
+	return createTransactionEntities(
+		ctx,
+		tokenTransaction,
+		signaturesWithIndex,
+		orderedOutputToCreateRevocationKeyshareIDs,
+		orderedOutputToSpendEnts,
+		coordinatorPublicKey,
+		createTransactionEntitiesModeSigned,
+		operatorSignature,
+	)
+}
+
+func createTransactionEntities(
+	ctx context.Context,
+	tokenTransaction *tokenpb.TokenTransaction,
+	signaturesWithIndex []*tokenpb.SignatureWithIndex,
+	orderedOutputToCreateRevocationKeyshareIDs []string,
+	orderedOutputToSpendEnts []*TokenOutput,
+	coordinatorPublicKey keys.Public,
+	mode createTransactionEntitiesMode,
+	operatorSignature []byte,
 ) (*TokenTransaction, error) {
 	// Ordered fields are ordered according to the order of the input in the token transaction proto.
 	db, err := GetDbFromContext(ctx)
@@ -73,6 +126,18 @@ func CreateStartedTransactionEntities(
 	tokenTransactionType, err := utils.InferTokenTransactionType(tokenTransaction)
 	if err != nil {
 		return nil, sparkerrors.InternalTypeConversionError(fmt.Errorf("failed to infer token transaction type: %w", err))
+	}
+
+	txStatus := st.TokenTransactionStatusStarted
+	inputStatus := st.TokenOutputStatusSpentStarted
+	outputStatus := st.TokenOutputStatusCreatedStarted
+	if mode == createTransactionEntitiesModeSigned {
+		if len(operatorSignature) == 0 {
+			return nil, sparkerrors.InternalObjectMissingField(fmt.Errorf("operator signature is required"))
+		}
+		txStatus = st.TokenTransactionStatusSigned
+		inputStatus = st.TokenOutputStatusSpentSigned
+		outputStatus = st.TokenOutputStatusCreatedSigned
 	}
 
 	switch tokenTransactionType {
@@ -114,10 +179,13 @@ func CreateStartedTransactionEntities(
 		txBuilder := db.TokenTransaction.Create().
 			SetPartialTokenTransactionHash(partialTokenTransactionHash).
 			SetFinalizedTokenTransactionHash(finalTokenTransactionHash).
-			SetStatus(st.TokenTransactionStatusStarted).
+			SetStatus(txStatus).
 			SetCoordinatorPublicKey(coordinatorPublicKey).
 			SetVersion(st.TokenTransactionVersion(tokenTransaction.Version)).
 			SetCreateID(tokenCreateEnt.ID)
+		if mode == createTransactionEntitiesModeSigned {
+			txBuilder = txBuilder.SetOperatorSignature(operatorSignature)
+		}
 		txBuilder, err = setTokenTransactionTimingFields(txBuilder, tokenTransaction)
 		if err != nil {
 			return nil, err
@@ -144,10 +212,13 @@ func CreateStartedTransactionEntities(
 		txMintBuilder := db.TokenTransaction.Create().
 			SetPartialTokenTransactionHash(partialTokenTransactionHash).
 			SetFinalizedTokenTransactionHash(finalTokenTransactionHash).
-			SetStatus(st.TokenTransactionStatusStarted).
+			SetStatus(txStatus).
 			SetCoordinatorPublicKey(coordinatorPublicKey).
 			SetVersion(st.TokenTransactionVersion(tokenTransaction.Version)).
 			SetMintID(tokenMintEnt.ID)
+		if mode == createTransactionEntitiesModeSigned {
+			txMintBuilder = txMintBuilder.SetOperatorSignature(operatorSignature)
+		}
 		txMintBuilder, err = setTokenTransactionTimingFields(txMintBuilder, tokenTransaction)
 		if err != nil {
 			return nil, err
@@ -167,9 +238,12 @@ func CreateStartedTransactionEntities(
 		txTransferBuilder := db.TokenTransaction.Create().
 			SetPartialTokenTransactionHash(partialTokenTransactionHash).
 			SetFinalizedTokenTransactionHash(finalTokenTransactionHash).
-			SetStatus(st.TokenTransactionStatusStarted).
+			SetStatus(txStatus).
 			SetCoordinatorPublicKey(coordinatorPublicKey).
 			SetVersion(st.TokenTransactionVersion(tokenTransaction.Version))
+		if mode == createTransactionEntitiesModeSigned {
+			txTransferBuilder = txTransferBuilder.SetOperatorSignature(operatorSignature)
+		}
 		txTransferBuilder, err = setTokenTransactionTimingFields(txTransferBuilder, tokenTransaction)
 		if err != nil {
 			return nil, err
@@ -178,14 +252,19 @@ func CreateStartedTransactionEntities(
 		if err != nil {
 			return nil, sparkerrors.InternalDatabaseWriteError(fmt.Errorf("failed to create transfer token transaction: %w", err))
 		}
-		for outputIndex, outputToSpendEnt := range orderedOutputToSpendEnts {
-			_, err = db.TokenOutput.UpdateOne(outputToSpendEnt).
-				SetStatus(st.TokenOutputStatusSpentStarted).
+		outputsToSpend := tokenTransaction.GetTransferInput().GetOutputsToSpend()
+		for _, outputToSpendEnt := range orderedOutputToSpendEnts {
+			sig, inputIndex, sigErr := fetchSignatureForOutputToSpend(signaturesWithIndex, outputsToSpend, outputToSpendEnt)
+			if sigErr != nil {
+				return nil, sparkerrors.FailedPreconditionTokenRulesViolation(sigErr)
+			}
+			update := db.TokenOutput.UpdateOne(outputToSpendEnt).
+				SetStatus(inputStatus).
 				SetOutputSpentTokenTransactionID(tokenTransactionEnt.ID).
-				AddOutputSpentStartedTokenTransactions(tokenTransactionEnt).
-				SetSpentOwnershipSignature(signaturesWithIndex[outputIndex].Signature).
-				SetSpentTransactionInputVout(int32(outputIndex)).
-				Save(ctx)
+				SetSpentOwnershipSignature(sig).
+				SetSpentTransactionInputVout(int32(inputIndex)).
+				AddOutputSpentStartedTokenTransactions(tokenTransactionEnt)
+			_, err = update.Save(ctx)
 			if err != nil {
 				return nil, sparkerrors.InternalDatabaseWriteError(fmt.Errorf("failed to update output to spend: %w", err))
 			}
@@ -294,9 +373,13 @@ func CreateStartedTransactionEntities(
 		if err != nil {
 			return nil, err
 		}
-		outputUUID, err := uuid.Parse(output.GetId())
-		if err != nil {
-			return nil, err
+		var outputUUID *uuid.UUID
+		if output.Id != nil {
+			parsed, err := uuid.Parse(output.GetId())
+			if err != nil {
+				return nil, err
+			}
+			outputUUID = &parsed
 		}
 
 		// Look up the TokenCreate entity for this specific output
@@ -338,12 +421,13 @@ func CreateStartedTransactionEntities(
 			return nil, sparkerrors.InvalidArgumentMalformedField(fmt.Errorf("token amount must be 16 bytes: %w", err))
 		}
 
+		// ID not explicitly set for V3+ transactions. Ent will auto-generate a UUID v7 via BaseMixin's Default(NewID).
 		outputEnts = append(
 			outputEnts,
 			db.TokenOutput.
 				Create().
-				SetID(outputUUID).
-				SetStatus(st.TokenOutputStatusCreatedStarted).
+				SetNillableID(outputUUID).
+				SetStatus(outputStatus).
 				SetOwnerPublicKey(ownerPubKey).
 				SetWithdrawBondSats(output.GetWithdrawBondSats()).
 				SetWithdrawRelativeBlockLocktime(output.GetWithdrawRelativeBlockLocktime()).
@@ -366,6 +450,43 @@ func CreateStartedTransactionEntities(
 		return nil, sparkerrors.InternalDatabaseWriteError(fmt.Errorf("failed to create token outputs: %w", err))
 	}
 	return tokenTransactionEnt, nil
+}
+
+// fetchSignatureForOutputToSpend returns the ownership signature and the transaction input index
+// for the given token output. It locates the output's position in the proto's outputsToSpend list
+// by matching (PrevTokenTransactionHash, PrevTokenTransactionVout) against the entity's stored
+// (CreatedTransactionFinalizedHash, CreatedTransactionOutputVout), then uses that position to
+// look up the correct signature. This makes signature selection independent of the ordering of
+// orderedOutputToSpendEnts.
+func fetchSignatureForOutputToSpend(
+	signaturesWithIndex []*tokenpb.SignatureWithIndex,
+	outputsToSpend []*tokenpb.TokenOutputToSpend,
+	outputToSpendEnt *TokenOutput,
+) (sig []byte, inputIndex uint32, err error) {
+	for i, o := range outputsToSpend {
+		if bytes.Equal(o.PrevTokenTransactionHash, outputToSpendEnt.CreatedTransactionFinalizedHash) &&
+			o.PrevTokenTransactionVout == uint32(outputToSpendEnt.CreatedTransactionOutputVout) {
+			sig, err = fetchSignatureForInput(signaturesWithIndex, uint32(i))
+			return sig, uint32(i), err
+		}
+	}
+	return nil, 0, fmt.Errorf("no output-to-spend entry found for output %s (hash=%x, vout=%d)",
+		outputToSpendEnt.ID,
+		outputToSpendEnt.CreatedTransactionFinalizedHash,
+		outputToSpendEnt.CreatedTransactionOutputVout,
+	)
+}
+
+// fetchSignatureForInput returns the ownership signature whose InputIndex matches
+// inputIndex. It returns an error if no matching entry is found, which prevents
+// out-of-order or missing signatures from being silently persisted against the wrong input.
+func fetchSignatureForInput(signaturesWithIndex []*tokenpb.SignatureWithIndex, inputIndex uint32) ([]byte, error) {
+	for _, s := range signaturesWithIndex {
+		if s.InputIndex == inputIndex {
+			return s.Signature, nil
+		}
+	}
+	return nil, fmt.Errorf("no signature found for input index %d", inputIndex)
 }
 
 func prepareSparkInvoiceCreates(ctx context.Context, tokenTransaction *tokenpb.TokenTransaction, tokenTransactionEnt *TokenTransaction) (map[uuid.UUID]struct{}, []*SparkInvoiceCreate, error) {
@@ -424,23 +545,25 @@ func UpdateSignedTransaction(
 	newInputStatus := st.TokenOutputStatusSpentSigned
 	newOutputLeafStatus := st.TokenOutputStatusCreatedSigned
 	if txType == utils.TokenTransactionTypeMint {
-		// If this is a mint, update status straight to finalized because a follow up Finalize() call
-		// is not necessary for mint.
+		// Mints called through UpdateSignedTransaction are finalized at signing time
+		// (no separate finalize step needed).
 		newInputStatus = st.TokenOutputStatusSpentFinalized
 		newOutputLeafStatus = st.TokenOutputStatusCreatedFinalized
-		if tokenTransactionEnt.Version < 3 {
-			if len(operatorSpecificOwnershipSignatures) != 1 {
-				return sparkerrors.InvalidArgumentOutOfRange(fmt.Errorf(
-					"expected 1 ownership signature for mint, got %d",
-					len(operatorSpecificOwnershipSignatures),
-				))
-			}
-			_, err := db.TokenMint.UpdateOne(tokenTransactionEnt.Edges.Mint).
-				SetOperatorSpecificIssuerSignature(operatorSpecificOwnershipSignatures[0]).
-				Save(ctx)
-			if err != nil {
-				return sparkerrors.InternalDatabaseWriteError(fmt.Errorf("failed to update mint with signature: %w", err))
-			}
+	}
+
+	// Handle version < 3 mint-specific signature storage
+	if txType == utils.TokenTransactionTypeMint && tokenTransactionEnt.Version < 3 {
+		if len(operatorSpecificOwnershipSignatures) != 1 {
+			return sparkerrors.InvalidArgumentOutOfRange(fmt.Errorf(
+				"expected 1 ownership signature for mint, got %d",
+				len(operatorSpecificOwnershipSignatures),
+			))
+		}
+		_, err := db.TokenMint.UpdateOne(tokenTransactionEnt.Edges.Mint).
+			SetOperatorSpecificIssuerSignature(operatorSpecificOwnershipSignatures[0]).
+			Save(ctx)
+		if err != nil {
+			return sparkerrors.InternalDatabaseWriteError(fmt.Errorf("failed to update mint with signature: %w", err))
 		}
 	}
 
@@ -565,7 +688,7 @@ type RecoveredRevocationSecret struct {
 	RevocationSecret keys.Private
 }
 
-func FinalizeCoordinatedTokenTransactionWithRevocationKeys(
+func FinalizeTransferTransactionWithRevocationKeys(
 	ctx context.Context,
 	tokenTransactionEnt *TokenTransaction,
 	revocationSecrets []*RecoveredRevocationSecret,
@@ -617,25 +740,11 @@ func FinalizeCoordinatedTokenTransactionWithRevocationKeys(
 		}
 	}
 
-	// Update outputs.
-	outputIDs := make([]uuid.UUID, len(tokenTransactionEnt.Edges.CreatedOutput))
-	for i, output := range tokenTransactionEnt.Edges.CreatedOutput {
-		outputIDs[i] = output.ID
+	if err := finalizeCreatedOutputs(ctx, db, tokenTransactionEnt.Edges.CreatedOutput, txHash); err != nil {
+		return err
 	}
-	_, err = db.TokenOutput.Update().
-		Where(tokenoutput.IDIn(outputIDs...)).
-		SetStatus(st.TokenOutputStatusCreatedFinalized).
-		Save(ctx)
-	if err != nil {
-		return sparkerrors.InternalDatabaseWriteError(fmt.Errorf("failed to bulk update output status to finalized for txHash %x: %w", txHash, err))
-	}
-
-	// Update the token transaction status to Finalized.
-	_, err = db.TokenTransaction.UpdateOne(tokenTransactionEnt).
-		SetStatus(st.TokenTransactionStatusFinalized).
-		Save(ctx)
-	if err != nil {
-		return sparkerrors.InternalDatabaseWriteError(fmt.Errorf("failed to update token transaction with finalized status for txHash %x: %w", txHash, err))
+	if err := finalizeTransactionStatus(ctx, db, tokenTransactionEnt); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return sparkerrors.InternalDatabaseTransactionLifecycleError(fmt.Errorf("failed to commit and replace transaction after finalizing token transaction: %w", err))
@@ -654,11 +763,15 @@ func FetchPartialTokenTransactionData(ctx context.Context, partialTokenTransacti
 		Where(tokentransaction.PartialTokenTransactionHash(partialTokenTransactionHash)).
 		WithCreatedOutput().
 		WithSpentOutput(func(q *TokenOutputQuery) {
-			// Needed to enable marshalling of the token transaction proto.
-			q.WithOutputCreatedTokenTransaction()
+			// Needed to enable computation of the progress of a transaction commit.
+			q.WithRevocationKeyshare().
+				WithTokenPartialRevocationSecretShares().
+				// Needed to enable marshalling of the token transaction proto.
+				WithOutputCreatedTokenTransaction()
 		}).
 		WithMint().
 		WithCreate().
+		WithPeerSignatures().
 		Only(ctx)
 	if err != nil {
 		if IsNotFound(err) {
@@ -808,6 +921,19 @@ func FetchTokenTransactionDataByHashForRead(ctx context.Context, tokenTransactio
 	return tokenTransaction, nil
 }
 
+// FetchExistingTokenTransaction fetches a token transaction by hash for read.
+// Returns a NotFoundMissingEntity error if the transaction does not exist.
+func FetchExistingTokenTransaction(ctx context.Context, tokenTransactionHash []byte) (*TokenTransaction, error) {
+	tx, err := FetchTokenTransactionDataByHashForRead(ctx, tokenTransactionHash)
+	if err != nil {
+		if IsNotFound(err) {
+			return nil, sparkerrors.NotFoundMissingEntity(fmt.Errorf("token transaction not found for hash %x: %w", tokenTransactionHash, err))
+		}
+		return nil, sparkerrors.InternalDatabaseReadError(fmt.Errorf("failed to fetch token transaction for read by hash: %w", err))
+	}
+	return tx, nil
+}
+
 // MarshalProto converts a TokenTransaction to a token protobuf TokenTransaction.
 // This assumes the transaction already has all its relationships loaded.
 func (t *TokenTransaction) MarshalProto(ctx context.Context, config *so.Config) (*tokenpb.TokenTransaction, error) {
@@ -827,7 +953,7 @@ func (t *TokenTransaction) MarshalProto(ctx context.Context, config *so.Config) 
 	// V3 deterministic ordering: sort operator keys and invoices
 	if uint32(t.Version) == 3 {
 		// Sort operator keys bytewise ascending
-		slices.SortFunc(operatorPublicKeys, func(a, b []byte) int { return bytes.Compare(a, b) })
+		slices.SortFunc(operatorPublicKeys, bytes.Compare)
 
 		// Sort invoices lexicographically by the invoice attachment string
 		slices.SortFunc(invoiceAttachments, func(a, b *tokenpb.InvoiceAttachment) int {
@@ -1038,4 +1164,55 @@ func (t *TokenTransaction) ValidateNotExpired() error {
 		return sparkerrors.InvalidArgumentOutOfRange(fmt.Errorf("unsupported token transaction version: %d", t.Version))
 	}
 	return nil
+}
+
+// finalizeCreatedOutputs updates created outputs to CREATED_FINALIZED status.
+func finalizeCreatedOutputs(ctx context.Context, db *Client, outputs []*TokenOutput, txHash []byte) error {
+	if len(outputs) == 0 {
+		return nil
+	}
+	outputIDs := make([]uuid.UUID, len(outputs))
+	for i, output := range outputs {
+		outputIDs[i] = output.ID
+	}
+	_, err := db.TokenOutput.Update().
+		Where(tokenoutput.IDIn(outputIDs...)).
+		SetStatus(st.TokenOutputStatusCreatedFinalized).
+		Save(ctx)
+	if err != nil {
+		return sparkerrors.InternalDatabaseWriteError(
+			fmt.Errorf("failed to finalize outputs for txHash %x: %w", txHash, err))
+	}
+	return nil
+}
+
+// finalizeTransactionStatus updates the transaction status to FINALIZED.
+func finalizeTransactionStatus(ctx context.Context, db *Client, tokenTx *TokenTransaction) error {
+	_, err := db.TokenTransaction.UpdateOne(tokenTx).
+		SetStatus(st.TokenTransactionStatusFinalized).
+		Save(ctx)
+	if err != nil {
+		return sparkerrors.InternalDatabaseWriteError(
+			fmt.Errorf("failed to finalize transaction %x: %w", tokenTx.FinalizedTokenTransactionHash, err))
+	}
+	return nil
+}
+
+// FinalizeMintOrCreateTransaction finalizes a MINT or CREATE transaction without revocation secrets.
+// This is used by non-coordinator SOs to finalize after receiving peer signatures from the coordinator.
+// For MINTs, it also updates output status from CREATED_SIGNED to CREATED_FINALIZED.
+// NOTE: Callers must validate transaction status before calling this function.
+func FinalizeMintOrCreateTransaction(
+	ctx context.Context,
+	tokenTxEnt *TokenTransaction,
+) error {
+	tx, err := GetTxFromContext(ctx)
+	if err != nil {
+		return sparkerrors.InternalDatabaseTransactionLifecycleError(fmt.Errorf("failed to get tx from context: %w", err))
+	}
+	db := tx.Client()
+	if err := finalizeCreatedOutputs(ctx, db, tokenTxEnt.Edges.CreatedOutput, tokenTxEnt.FinalizedTokenTransactionHash); err != nil {
+		return err
+	}
+	return finalizeTransactionStatus(ctx, db, tokenTxEnt)
 }

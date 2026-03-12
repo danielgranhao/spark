@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common/btcnetwork"
@@ -13,7 +12,6 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/predicate"
 	st "github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	"github.com/lightsparkdev/spark/so/ent/tokenoutput"
-	"github.com/lightsparkdev/spark/so/ent/tokentransaction"
 )
 
 // FetchAndLockTokenInputs fetches token outputs by their (tx_hash, vout) identifiers and locks them for update.
@@ -42,6 +40,7 @@ func FetchAndLockTokenInputs(ctx context.Context, outputsToSpend []*tokenpb.Toke
 		WithOutputSpentTokenTransaction(func(q *TokenTransactionQuery) {
 			q.ForUpdate()
 		}).
+		WithWithdrawal().
 		ForUpdate().
 		All(ctx)
 	if err != nil {
@@ -83,11 +82,10 @@ func FetchAndLockTokenInputs(ctx context.Context, outputsToSpend []*tokenpb.Toke
 
 // GetOwnedTokenOutputsParams holds the parameters for GetOwnedTokenOutputs
 type GetOwnedTokenOutputsParams struct {
-	OwnerPublicKeys            []keys.Public
-	IssuerPublicKeys           []keys.Public
-	TokenIdentifiers           [][]byte
-	IncludeExpiredTransactions bool
-	Network                    btcnetwork.Network
+	OwnerPublicKeys  []keys.Public
+	IssuerPublicKeys []keys.Public
+	TokenIdentifiers [][]byte
+	Network          btcnetwork.Network
 	// Pagination parameters.
 	// For forward pagination: If AfterID is provided, results will include items with ID greater than AfterID.
 	// For backward pagination: If BeforeID is provided, results will include items with ID less than BeforeID.
@@ -109,44 +107,22 @@ func GetOwnedTokenOutputs(ctx context.Context, params GetOwnedTokenOutputsParams
 		return nil, err
 	}
 
-	var statusPredicate predicate.TokenOutput
-
 	ownedStatusPredicate := tokenoutput.StatusIn(
 		st.TokenOutputStatusCreatedFinalized,
 		st.TokenOutputStatusSpentStarted,
+		st.TokenOutputStatusSpentSigned,
 	)
-
-	if params.IncludeExpiredTransactions {
-		// Additionally include outputs whose spending transaction has been signed but has
-		// expired. (SPENT_SIGNED + expired TX)
-		statusPredicate = tokenoutput.Or(
-			ownedStatusPredicate,
-			tokenoutput.And(
-				tokenoutput.StatusEQ(st.TokenOutputStatusSpentSigned),
-				tokenoutput.HasOutputSpentTokenTransactionWith(
-					tokentransaction.And(
-						tokentransaction.ExpiryTimeLT(time.Now()),
-						tokentransaction.StatusIn(st.TokenTransactionStatusStarted, st.TokenTransactionStatusSigned),
-					),
-				),
-			),
-		)
-	} else {
-		statusPredicate = ownedStatusPredicate
-	}
 
 	query := db.TokenOutput.
 		Query().
 		Where(
-			// Order matters here to leverage the index.
 			tokenoutput.OwnerPublicKeyIn(params.OwnerPublicKeys...),
-			// A output is 'owned' as long as it has been fully created and a spending transaction
-			// has not yet been signed by this SO (if a transaction with it has been started
-			// and not yet signed it is still considered owned).
-			statusPredicate,
-			tokenoutput.ConfirmedWithdrawBlockHashIsNil(),
+			ownedStatusPredicate,
+			tokenoutput.Not(tokenoutput.HasWithdrawal()),
 		).
-		Where(tokenoutput.NetworkEQ(params.Network))
+		Where(tokenoutput.NetworkEQ(params.Network)).
+		WithOutputSpentTokenTransaction()
+
 	if len(params.IssuerPublicKeys) > 0 {
 		query = query.Where(tokenoutput.TokenPublicKeyIn(params.IssuerPublicKeys...))
 	}
@@ -173,25 +149,37 @@ func GetOwnedTokenOutputs(ctx context.Context, params GetOwnedTokenOutputsParams
 	return outputs, nil
 }
 
-func GetOwnedTokenOutputStats(ctx context.Context, ownerPublicKeys []keys.Public, tokenIdentifier []byte, network btcnetwork.Network) (uuid.UUIDs, *big.Int, error) {
+// OwnedTokenOutputResult contains the results from GetOwnedTokenOutputRefs.
+type OwnedTokenOutputResult struct {
+	OutputRefs  []*tokenpb.TokenOutputRef
+	TotalAmount *big.Int
+}
+
+// GetOwnedTokenOutputRefs returns token output references (outpoints) and total amount for owned outputs.
+// Outpoints (transaction hash + vout) are deterministic and consistent across all SOs.
+func GetOwnedTokenOutputRefs(ctx context.Context, ownerPublicKeys []keys.Public, tokenIdentifier []byte, network btcnetwork.Network) (*OwnedTokenOutputResult, error) {
 	outputs, err := GetOwnedTokenOutputs(ctx, GetOwnedTokenOutputsParams{
-		OwnerPublicKeys:            ownerPublicKeys,
-		TokenIdentifiers:           [][]byte{tokenIdentifier},
-		IncludeExpiredTransactions: false,
-		Network:                    network,
+		OwnerPublicKeys:  ownerPublicKeys,
+		TokenIdentifiers: [][]byte{tokenIdentifier},
+		Network:          network,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to query owned output stats: %w", err)
+		return nil, fmt.Errorf("failed to query owned output refs: %w", err)
 	}
 
-	// Collect output IDs and token amounts
-	outputIDs := make([]uuid.UUID, len(outputs))
+	outputRefs := make([]*tokenpb.TokenOutputRef, len(outputs))
 	totalAmount := new(big.Int)
 	for i, output := range outputs {
-		outputIDs[i] = output.ID
+		outputRefs[i] = &tokenpb.TokenOutputRef{
+			TransactionHash: output.CreatedTransactionFinalizedHash,
+			Vout:            uint32(output.CreatedTransactionOutputVout),
+		}
 		amount := new(big.Int).SetBytes(output.TokenAmount)
 		totalAmount.Add(totalAmount, amount)
 	}
 
-	return outputIDs, totalAmount, nil
+	return &OwnedTokenOutputResult{
+		OutputRefs:  outputRefs,
+		TotalAmount: totalAmount,
+	}, nil
 }

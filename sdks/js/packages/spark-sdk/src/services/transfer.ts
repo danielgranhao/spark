@@ -1,15 +1,25 @@
 import { secp256k1 } from "@noble/curves/secp256k1";
-import { equalBytes, hexToBytes, numberToBytesBE } from "@noble/curves/utils";
+import { equalBytes, hexToBytes } from "@noble/curves/utils";
 import { sha256 } from "@noble/hashes/sha2";
 import { Transaction } from "@scure/btc-signer";
 import { TransactionOutput } from "@scure/btc-signer/psbt";
+import { ClientError, Status } from "nice-grpc-common";
 import { uuidv7 } from "uuidv7";
-import { SparkRequestError, SparkValidationError } from "../errors/index.js";
+import {
+  SparkError,
+  SparkRequestError,
+  SparkValidationError,
+} from "../errors/index.js";
 import { SignatureIntent } from "../proto/common.js";
+import { Timestamp } from "../proto/google/protobuf/timestamp.js";
 import {
   ClaimLeafKeyTweak,
+  ClaimLeafKeyTweaks,
+  type ClaimTransferResponse,
   ClaimTransferSignRefundsResponse,
   CounterLeafSwapResponse,
+  HashVariant,
+  InitiateSwapPrimaryTransferResponse,
   LeafRefundTxSigningJob,
   LeafRefundTxSigningResult,
   NodeSignatures,
@@ -27,7 +37,6 @@ import {
   TransferType,
   TreeNode,
 } from "../proto/spark.js";
-import { Timestamp } from "../proto/google/protobuf/timestamp.js";
 import {
   KeyDerivation,
   KeyDerivationType,
@@ -35,8 +44,14 @@ import {
 } from "../signer/types.js";
 import { getSparkFrost } from "../spark-bindings/spark-bindings.js";
 import { SparkAddressFormat } from "../utils/address.js";
-import { getSigHashFromTx, getTxFromRawTxBytes } from "../utils/bitcoin.js";
+import {
+  getSigHashFromMultiInputTx,
+  getSigHashFromTx,
+  getTxFromRawTxBytes,
+} from "../utils/bitcoin.js";
+import { optionsWithIdempotencyKey } from "../utils/idempotency.js";
 import { NetworkToProto } from "../utils/network.js";
+import { RetryContext, withRetry } from "../utils/retry.js";
 import { VerifiableSecretShare } from "../utils/secret-sharing.js";
 import {
   createCurrentTimelockRefundTxs,
@@ -47,10 +62,35 @@ import {
   createZeroTimelockNodeTx,
   getCurrentTimelock,
 } from "../utils/transaction.js";
-import { getTransferPackageSigningPayload } from "../utils/transfer_package.js";
+import {
+  getClaimPackageSigningPayload,
+  getTransferPackageSigningPayload,
+} from "../utils/transfer_package.js";
 import { WalletConfigService } from "./config.js";
 import { ConnectionManager } from "./connection/connection.js";
-import { SigningService } from "./signing.js";
+import {
+  SigningService,
+  UserSignedTxSigningJobWithSelfCommitment,
+} from "./signing.js";
+
+export type TransferQueryOptions = {
+  limit: number;
+  offset: number;
+  createdAfter?: Date;
+  createdBefore?: Date;
+};
+
+type TransferPackageCommitmentsOverride = {
+  leavesToSend: UserSignedTxSigningJobWithSelfCommitment[];
+  directLeavesToSend: UserSignedTxSigningJobWithSelfCommitment[];
+  directFromCpfpLeavesToSend: UserSignedTxSigningJobWithSelfCommitment[];
+};
+
+export type TransferPackageWithSelfCommitments = Omit<
+  TransferPackage,
+  keyof TransferPackageCommitmentsOverride
+> &
+  TransferPackageCommitmentsOverride;
 
 export type LeafKeyTweak = {
   leaf: TreeNode;
@@ -78,6 +118,7 @@ export type LeafRefundSigningData = {
   directFromCpfpRefundTx?: Transaction;
   directFromCpfpRefundSigningNonceCommitment: SigningCommitmentWithOptionalNonce;
   vout: number;
+  connectorPrevOutput?: TransactionOutput;
 };
 
 export type SigningJobType =
@@ -262,12 +303,118 @@ export class BaseTransferService {
     return response.transfer;
   }
 
+  async sendSwapTransfer(
+    leaves: LeafKeyTweak[],
+    receiverIdentityPubkey: Uint8Array,
+  ): Promise<{
+    swapTransfer: InitiateSwapPrimaryTransferResponse;
+    adaptorPubkey: Uint8Array;
+    adaptorAddedSignatureMap: Map<string, Uint8Array>;
+  }> {
+    const transferID = uuidv7();
+
+    const keyTweakInputMap = await this.prepareSendTransferKeyTweaks(
+      transferID,
+      receiverIdentityPubkey,
+      leaves,
+      new Map<string, Uint8Array>(),
+      new Map<string, Uint8Array>(),
+      new Map<string, Uint8Array>(),
+    );
+
+    const adaptorPrivKey = secp256k1.utils.randomSecretKey();
+    const adaptorPubkey = secp256k1.getPublicKey(adaptorPrivKey);
+    const transferPackage = await this.prepareTransferPackage(
+      transferID,
+      keyTweakInputMap,
+      leaves,
+      receiverIdentityPubkey,
+      adaptorPubkey,
+    );
+
+    const sparkClient = await this.connectionManager.createSparkClient(
+      this.config.getCoordinatorAddress(),
+    );
+
+    transferPackage.directFromCpfpLeavesToSend = [];
+    transferPackage.directLeavesToSend = [];
+    try {
+      const response = await sparkClient.initiate_swap_primary_transfer({
+        transfer: {
+          transferId: transferID,
+          ownerIdentityPublicKey:
+            await this.config.signer.getIdentityPublicKey(),
+          receiverIdentityPublicKey: receiverIdentityPubkey,
+          transferPackage,
+        },
+        adaptorPublicKeys: {
+          adaptorPublicKey: adaptorPubkey,
+        },
+      });
+
+      if (!response.transfer) {
+        throw new SparkValidationError("No transfer response from operator");
+      }
+
+      const adaptorAddedSignatureMap: Map<string, Uint8Array> = new Map();
+      for (const signingResult of response.signingResults) {
+        const leaf = transferPackage.leavesToSend.find(
+          (leaf) => leaf.leafId === signingResult.leafId,
+        );
+        const leaf_1 = leaves.find(
+          (leaf) => leaf.leaf.id === signingResult.leafId,
+        );
+        if (!leaf || !leaf_1) {
+          throw new SparkValidationError("Leaf not found", {
+            field: "leafId",
+            value: signingResult.leafId,
+          });
+        }
+
+        const message = getSigHashFromTx(
+          getTxFromRawTxBytes(leaf.rawTx),
+          0,
+          getTxFromRawTxBytes(leaf_1.leaf.nodeTx).getOutput(0),
+        );
+        const adaptorAddedSignature = await this.config.signer.aggregateFrost({
+          message: message,
+          publicKey: leaf.signingPublicKey,
+          verifyingKey: signingResult.verifyingKey,
+          selfCommitment: leaf.selfCommitment,
+          statechainCommitments:
+            signingResult.refundTxSigningResult?.signingNonceCommitments,
+          statechainSignatures:
+            signingResult.refundTxSigningResult?.signatureShares,
+          statechainPublicKeys: signingResult.refundTxSigningResult?.publicKeys,
+          selfSignature: leaf.userSignature,
+          adaptorPubKey: adaptorPubkey,
+        });
+        adaptorAddedSignatureMap.set(
+          signingResult.leafId,
+          adaptorAddedSignature,
+        );
+      }
+
+      return {
+        swapTransfer: response,
+        adaptorPubkey,
+        adaptorAddedSignatureMap,
+      };
+    } catch (error) {
+      throw new SparkRequestError("Failed to initiate swap primary transfer", {
+        method: "POST",
+        error: error as Error,
+      });
+    }
+  }
+
   private async prepareTransferPackage(
     transferID: string,
     keyTweakInputMap: Map<string, SendLeafKeyTweak[]>,
     leaves: LeafKeyTweak[],
     receiverIdentityPubkey: Uint8Array,
-  ): Promise<TransferPackage> {
+    adaptorPubKey?: Uint8Array,
+  ): Promise<TransferPackageWithSelfCommitments> {
     const sparkClient = await this.connectionManager.createSparkClient(
       this.config.getCoordinatorAddress(),
     );
@@ -294,7 +441,11 @@ export class BaseTransferService {
         leaves.length,
         2 * leaves.length,
       ),
-      signingCommitments.signingCommitments.slice(2 * leaves.length),
+      signingCommitments.signingCommitments.slice(
+        2 * leaves.length,
+        3 * leaves.length,
+      ),
+      adaptorPubKey,
     );
 
     const sparkFrost = getSparkFrost();
@@ -321,12 +472,13 @@ export class BaseTransferService {
       }),
     );
     const encryptedKeyTweaks = Object.fromEntries(encryptedKeyTweaksEntries);
-    const transferPackage: TransferPackage = {
+    const transferPackage: TransferPackageWithSelfCommitments = {
       leavesToSend: cpfpLeafSigningJobs,
       keyTweakPackage: encryptedKeyTweaks,
       userSignature: new Uint8Array(),
       directLeavesToSend: directLeafSigningJobs,
       directFromCpfpLeavesToSend: directFromCpfpLeafSigningJobs,
+      hashVariant: HashVariant.HASH_VARIANT_V2,
     };
 
     const transferPackageSigningPayload = getTransferPackageSigningPayload(
@@ -374,7 +526,10 @@ export class BaseTransferService {
         leaves.length,
         2 * leaves.length,
       ),
-      signingCommitments.signingCommitments.slice(2 * leaves.length),
+      signingCommitments.signingCommitments.slice(
+        2 * leaves.length,
+        3 * leaves.length,
+      ),
       paymentHash,
     );
 
@@ -403,13 +558,14 @@ export class BaseTransferService {
     );
     const encryptedKeyTweaks = Object.fromEntries(encryptedKeyTweaksEntries);
 
-    const transferPackage: TransferPackage = {
+    const transferPackage = TransferPackage.create({
       leavesToSend: cpfpLeafSigningJobs,
       keyTweakPackage: encryptedKeyTweaks,
       userSignature: new Uint8Array(),
       directLeavesToSend: directLeafSigningJobs,
       directFromCpfpLeavesToSend: directFromCpfpLeafSigningJobs,
-    };
+      hashVariant: HashVariant.HASH_VARIANT_V2,
+    });
 
     const transferPackageSigningPayload = getTransferPackageSigningPayload(
       transferID,
@@ -449,11 +605,16 @@ export class BaseTransferService {
       }
 
       // Sign CPFP refund transaction
-      const cpfpRefundTxSighash = getSigHashFromTx(
-        leafData.refundTx,
-        0,
-        txOutput,
-      );
+      // Use multi-input sighash for coop exit (2-input transactions with connector)
+      let cpfpRefundTxSighash: Uint8Array;
+      if (leafData.refundTx.inputsLength > 1 && leafData.connectorPrevOutput) {
+        cpfpRefundTxSighash = getSigHashFromMultiInputTx(leafData.refundTx, 0, [
+          txOutput,
+          leafData.connectorPrevOutput,
+        ]);
+      } else {
+        cpfpRefundTxSighash = getSigHashFromTx(leafData.refundTx, 0, txOutput);
+      }
       const publicKey = await this.config.signer.getPublicKeyFromDerivation(
         leafData.keyDerivation,
       );
@@ -486,11 +647,24 @@ export class BaseTransferService {
       if (leafData.directTx && leafData.directRefundTx) {
         const directTxOutput = leafData.directTx.getOutput(0);
 
-        const directRefundTxSighash = getSigHashFromTx(
-          leafData.directRefundTx,
-          0,
-          directTxOutput,
-        );
+        // Use multi-input sighash for coop exit (2-input transactions with connector)
+        let directRefundTxSighash: Uint8Array;
+        if (
+          leafData.directRefundTx.inputsLength > 1 &&
+          leafData.connectorPrevOutput
+        ) {
+          directRefundTxSighash = getSigHashFromMultiInputTx(
+            leafData.directRefundTx,
+            0,
+            [directTxOutput, leafData.connectorPrevOutput],
+          );
+        } else {
+          directRefundTxSighash = getSigHashFromTx(
+            leafData.directRefundTx,
+            0,
+            directTxOutput,
+          );
+        }
 
         const directUserSignature = await this.config.signer.signFrost({
           message: directRefundTxSighash,
@@ -522,11 +696,24 @@ export class BaseTransferService {
       // Sign direct-from-CPFP refund transaction (spends CPFP tx output).
       let directFromCpfpRefundAggregate: Uint8Array | undefined;
       if (leafData.directFromCpfpRefundTx) {
-        const directFromCpfpRefundTxSighash = getSigHashFromTx(
-          leafData.directFromCpfpRefundTx,
-          0,
-          txOutput,
-        );
+        // Use multi-input sighash for coop exit (2-input transactions with connector)
+        let directFromCpfpRefundTxSighash: Uint8Array;
+        if (
+          leafData.directFromCpfpRefundTx.inputsLength > 1 &&
+          leafData.connectorPrevOutput
+        ) {
+          directFromCpfpRefundTxSighash = getSigHashFromMultiInputTx(
+            leafData.directFromCpfpRefundTx,
+            0,
+            [txOutput, leafData.connectorPrevOutput],
+          );
+        } else {
+          directFromCpfpRefundTxSighash = getSigHashFromTx(
+            leafData.directFromCpfpRefundTx,
+            0,
+            txOutput,
+          );
+        }
 
         const directFromCpfpUserSignature = await this.config.signer.signFrost({
           message: directFromCpfpRefundTxSighash,
@@ -572,7 +759,7 @@ export class BaseTransferService {
     return nodeSignatures;
   }
 
-  private async prepareSendTransferKeyTweaks(
+  protected async prepareSendTransferKeyTweaks(
     transferID: string,
     receiverIdentityPubkey: Uint8Array,
     leaves: LeafKeyTweak[],
@@ -640,10 +827,7 @@ export class BaseTransferService {
         throw new Error(`Share not found for operator ${operator.id}`);
       }
 
-      const pubkeyTweak = secp256k1.getPublicKey(
-        numberToBytesBE(share.share, 32),
-        true,
-      );
+      const pubkeyTweak = secp256k1.getPublicKey(share.share, true);
       pubkeySharesTweak.set(identifier, pubkeyTweak);
     }
 
@@ -670,7 +854,7 @@ export class BaseTransferService {
       leafTweaksMap.set(identifier, {
         leafId: leaf.leaf.id,
         secretShareTweak: {
-          secretShare: numberToBytesBE(share.share, 32),
+          secretShare: share.share,
           proofs: share.proofs,
         },
         pubkeySharesTweak: Object.fromEntries(pubkeySharesTweak),
@@ -687,7 +871,7 @@ export class BaseTransferService {
   }
 
   protected findShare(shares: VerifiableSecretShare[], operatorID: number) {
-    const targetShareIndex = BigInt(operatorID + 1);
+    const targetShareIndex = operatorID + 1;
     for (const s of shares) {
       if (s.index === targetShareIndex) {
         return s;
@@ -720,12 +904,61 @@ export class TransferService extends BaseTransferService {
     super(config, connectionManager, signingService);
   }
 
-  async claimTransfer(transfer: Transfer, leaves: LeafKeyTweak[]) {
-    if (transfer.status === TransferStatus.TRANSFER_STATUS_SENDER_KEY_TWEAKED) {
-      await this.claimTransferTweakKeys(transfer, leaves);
+  async claimTransferCore(transfer: Transfer): Promise<TreeNode[]> {
+    const leafPubKeyMap = await this.verifyPendingTransfer(transfer);
+
+    let leaves: LeafKeyTweak[] = [];
+
+    for (const leaf of transfer.leaves) {
+      if (leaf.leaf) {
+        const leafPubKey = leafPubKeyMap.get(leaf.leaf.id);
+        if (leafPubKey) {
+          leaves.push({
+            leaf: {
+              ...leaf.leaf,
+              refundTx: leaf.intermediateRefundTx,
+              directRefundTx: leaf.intermediateDirectRefundTx,
+              directFromCpfpRefundTx: leaf.intermediateDirectFromCpfpRefundTx,
+            },
+            keyDerivation: {
+              type: KeyDerivationType.ECIES,
+              path: leaf.secretCipher,
+            },
+            newKeyDerivation: {
+              type: KeyDerivationType.LEAF,
+              path: leaf.leaf.id,
+            },
+          });
+        }
+      }
     }
-    const signatures = await this.claimTransferSignRefunds(transfer, leaves);
-    return await this.finalizeNodeSignatures(signatures);
+
+    const claimPackage = await this.prepareClaimPackage(transfer.id, leaves);
+    const sparkClient = await this.connectionManager.createSparkClient(
+      this.config.getCoordinatorAddress(),
+    );
+    let response: ClaimTransferResponse;
+    try {
+      response = await sparkClient.claim_transfer({
+        transferId: transfer.id,
+        ownerIdentityPublicKey: await this.config.signer.getIdentityPublicKey(),
+        claimPackage,
+      });
+    } catch (error: any) {
+      throw new SparkRequestError("Failed to claim transfer", {
+        method: "POST",
+        error,
+      });
+    }
+    if (!response.transfer) {
+      throw new SparkValidationError(
+        "No transfer response from claim_transfer",
+      );
+    }
+    const nodes = response.transfer.leaves.flatMap((leaf) =>
+      leaf.leaf ? [leaf.leaf] : [],
+    );
+    return nodes;
   }
 
   // When transferIds is not provided, all pending transfers for the receiver will be returned.
@@ -752,6 +985,63 @@ export class TransferService extends BaseTransferService {
     return pendingTransfersResp;
   }
 
+  async queryPrimarySwapTransfers(
+    options: TransferQueryOptions,
+  ): Promise<QueryTransfersResponse> {
+    return await this.queryAllTransfers({
+      ...options,
+      senderOnly: true,
+      types: [TransferType.PRIMARY_SWAP_V3, TransferType.SWAP],
+      statuses: [
+        TransferStatus.TRANSFER_STATUS_SENDER_INITIATED,
+        TransferStatus.TRANSFER_STATUS_SENDER_INITIATED_COORDINATOR,
+        TransferStatus.TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK,
+        TransferStatus.TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING,
+      ],
+    });
+  }
+
+  async queryCounterSwapTransfers(
+    options: TransferQueryOptions,
+  ): Promise<QueryTransfersResponse> {
+    return await this.queryAllTransfers({
+      ...options,
+      types: [TransferType.COUNTER_SWAP_V3, TransferType.COUNTER_SWAP],
+      statuses: [
+        TransferStatus.TRANSFER_STATUS_SENDER_INITIATED,
+        TransferStatus.TRANSFER_STATUS_SENDER_INITIATED_COORDINATOR,
+        TransferStatus.TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK,
+        TransferStatus.TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING,
+        TransferStatus.TRANSFER_STATUS_SENDER_KEY_TWEAKED,
+        TransferStatus.TRANSFER_STATUS_RECEIVER_KEY_TWEAK_LOCKED,
+        TransferStatus.TRANSFER_STATUS_RECEIVER_KEY_TWEAK_APPLIED,
+        TransferStatus.TRANSFER_STATUS_RECEIVER_KEY_TWEAKED,
+        TransferStatus.TRANSFER_STATUS_RECEIVER_REFUND_SIGNED,
+      ],
+    });
+  }
+
+  async queryPendingOutgoingTransfers(
+    options: TransferQueryOptions,
+  ): Promise<QueryTransfersResponse> {
+    return await this.queryAllTransfers({
+      ...options,
+      senderOnly: true,
+      types: [
+        TransferType.COOPERATIVE_EXIT,
+        TransferType.UTXO_SWAP,
+        TransferType.PREIMAGE_SWAP,
+        TransferType.TRANSFER,
+      ],
+      statuses: [
+        TransferStatus.TRANSFER_STATUS_SENDER_INITIATED,
+        TransferStatus.TRANSFER_STATUS_SENDER_INITIATED_COORDINATOR,
+        TransferStatus.TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK,
+        TransferStatus.TRANSFER_STATUS_SENDER_KEY_TWEAK_PENDING,
+      ],
+    });
+  }
+
   /**
    * Queries all transfers for the authenticated user with optional time filtering.
    *
@@ -761,12 +1051,19 @@ export class TransferService extends BaseTransferService {
    * @param createdBefore - Optional: Return transfers created strictly before this time (exclusive). Mutually exclusive with createdAfter.
    * @returns Promise containing the query response with transfers
    */
-  async queryAllTransfers(
-    limit: number,
-    offset: number,
-    createdAfter?: Date,
-    createdBefore?: Date,
-  ): Promise<QueryTransfersResponse> {
+  async queryAllTransfers({
+    limit,
+    offset,
+    createdAfter,
+    createdBefore,
+    types,
+    statuses,
+    senderOnly,
+  }: TransferQueryOptions & {
+    types: TransferType[];
+    statuses?: TransferStatus[];
+    senderOnly?: boolean;
+  }): Promise<QueryTransfersResponse> {
     // Validate that only one time filter is provided (mutually exclusive)
     if (createdAfter && createdBefore) {
       throw new Error(
@@ -778,21 +1075,23 @@ export class TransferService extends BaseTransferService {
       this.config.getCoordinatorAddress(),
     );
 
+    const identityPublicKey = await this.config.signer.getIdentityPublicKey();
+
     // Build filter object
     const filter: any = {
-      participant: {
-        $case: "senderOrReceiverIdentityPublicKey",
-        senderOrReceiverIdentityPublicKey:
-          await this.config.signer.getIdentityPublicKey(),
-      },
+      participant: senderOnly
+        ? {
+            $case: "senderIdentityPublicKey",
+            senderIdentityPublicKey: identityPublicKey,
+          }
+        : {
+            $case: "senderOrReceiverIdentityPublicKey",
+            senderOrReceiverIdentityPublicKey: identityPublicKey,
+          },
       limit,
       offset,
-      types: [
-        TransferType.TRANSFER,
-        TransferType.PREIMAGE_SWAP,
-        TransferType.COOPERATIVE_EXIT,
-        TransferType.UTXO_SWAP,
-      ],
+      types,
+      ...(statuses !== undefined ? { statuses } : {}),
       network: NetworkToProto[this.config.getNetwork()],
     };
 
@@ -899,40 +1198,6 @@ export class TransferService extends BaseTransferService {
       leaves,
       receiverIdentityPubkey,
       expiryTime,
-      false,
-    );
-
-    return {
-      transfer,
-      signatureMap,
-      directSignatureMap,
-      directFromCpfpSignatureMap,
-      leafDataMap,
-    };
-  }
-
-  async startSwapSignRefund(
-    leaves: LeafKeyTweak[],
-    receiverIdentityPubkey: Uint8Array,
-    expiryTime: Date,
-  ): Promise<{
-    transfer: Transfer;
-    signatureMap: Map<string, Uint8Array>;
-    directSignatureMap: Map<string, Uint8Array>;
-    directFromCpfpSignatureMap: Map<string, Uint8Array>;
-    leafDataMap: Map<string, LeafRefundSigningData>;
-  }> {
-    const {
-      transfer,
-      signatureMap,
-      directSignatureMap,
-      directFromCpfpSignatureMap,
-      leafDataMap,
-    } = await this.sendTransferSignRefundInternal(
-      leaves,
-      receiverIdentityPubkey,
-      expiryTime,
-      true,
     );
 
     return {
@@ -948,7 +1213,6 @@ export class TransferService extends BaseTransferService {
     leaves: LeafKeyTweak[],
     receiverIdentityPubkey: Uint8Array,
     expiryTime: Date,
-    forSwap: boolean,
   ): Promise<{
     transfer: Transfer;
     signatureMap: Map<string, Uint8Array>;
@@ -1012,25 +1276,13 @@ export class TransferService extends BaseTransferService {
 
     let response: CounterLeafSwapResponse;
     try {
-      if (forSwap) {
-        response = await sparkClient.start_leaf_swap_v2({
-          transferId,
-          leavesToSend: signingJobs,
-          ownerIdentityPublicKey:
-            await this.config.signer.getIdentityPublicKey(),
-          receiverIdentityPublicKey: receiverIdentityPubkey,
-          expiryTime: expiryTime,
-        });
-      } else {
-        response = await sparkClient.start_transfer_v2({
-          transferId,
-          leavesToSend: signingJobs,
-          ownerIdentityPublicKey:
-            await this.config.signer.getIdentityPublicKey(),
-          receiverIdentityPublicKey: receiverIdentityPubkey,
-          expiryTime: expiryTime,
-        });
-      }
+      response = await sparkClient.start_transfer_v2({
+        transferId,
+        leavesToSend: signingJobs,
+        ownerIdentityPublicKey: await this.config.signer.getIdentityPublicKey(),
+        receiverIdentityPublicKey: receiverIdentityPubkey,
+        expiryTime: expiryTime,
+      });
     } catch (error) {
       throw new Error(`Error starting send transfer: ${error}`);
     }
@@ -1092,7 +1344,7 @@ export class TransferService extends BaseTransferService {
         const currRefundTx = getTxFromRawTxBytes(leaf.leaf.refundTx);
 
         const currentSequence = currRefundTx.getInput(0).sequence;
-        if (!currentSequence) {
+        if (currentSequence == null) {
           throw new SparkValidationError("Invalid refund transaction", {
             field: "sequence",
             value: currRefundTx.getInput(0),
@@ -1109,9 +1361,9 @@ export class TransferService extends BaseTransferService {
         };
 
         const { cpfpRefundTx, directRefundTx, directFromCpfpRefundTx } =
-          isForClaim
+          await (isForClaim
             ? createCurrentTimelockRefundTxs(refundTxsParams)
-            : createDecrementedTimelockRefundTxs(refundTxsParams);
+            : createDecrementedTimelockRefundTxs(refundTxsParams));
 
         const isZeroNode = !getCurrentTimelock(nodeTx.getInput(0).sequence);
 
@@ -1217,6 +1469,111 @@ export class TransferService extends BaseTransferService {
     }
   }
 
+  private async prepareClaimPackage(
+    transferId: string,
+    leaves: LeafKeyTweak[],
+  ) {
+    // 1. Prepare key tweaks per SO
+    const leavesTweaksMap = await this.prepareClaimLeavesKeyTweaks(leaves);
+
+    // 2. ECIES-encrypt key tweaks per SO
+    const sparkFrost = getSparkFrost();
+    const encryptedKeyTweaksEntries = await Promise.all(
+      Array.from(leavesTweaksMap.entries()).map(async ([key, value]) => {
+        const protoToEncrypt: ClaimLeafKeyTweaks = {
+          leavesToReceive: value,
+        };
+        const protoToEncryptBinary =
+          ClaimLeafKeyTweaks.encode(protoToEncrypt).finish();
+
+        const operator = this.config.getSigningOperators()[key];
+        if (!operator) {
+          throw new SparkValidationError("Operator not found");
+        }
+        const encryptedProto = await sparkFrost.encryptEcies(
+          protoToEncryptBinary,
+          hexToBytes(operator.identityPublicKey),
+        );
+        return [key, Uint8Array.from(encryptedProto)] as const;
+      }),
+    );
+    const keyTweakPackage: Record<string, Uint8Array> = Object.fromEntries(
+      encryptedKeyTweaksEntries,
+    );
+
+    // 3. Get signing commitments (use nodeIdCount since receiver doesn't own leaves yet)
+    const sparkClient = await this.connectionManager.createSparkClient(
+      this.config.getCoordinatorAddress(),
+    );
+    const signingCommitments = await sparkClient.get_signing_commitments({
+      nodeIdCount: leaves.length,
+      count: 3,
+    });
+    const expectedCommitments = 3 * leaves.length;
+    if (signingCommitments.signingCommitments.length !== expectedCommitments) {
+      throw new SparkValidationError(
+        `Expected ${expectedCommitments} signing commitments, got ${signingCommitments.signingCommitments.length}`,
+      );
+    }
+
+    // 4. Build claim leaves with receiver's key derivation for FROST signing
+    const claimLeaves: LeafKeyTweak[] = leaves.map((leaf) => ({
+      leaf: leaf.leaf,
+      keyDerivation: leaf.newKeyDerivation,
+      newKeyDerivation: leaf.newKeyDerivation,
+    }));
+
+    // 5. Compute per-leaf receiving pubkeys from newKeyDerivation
+    const receivingPubkeys = new Map<string, Uint8Array>();
+    await Promise.all(
+      leaves.map(async (leaf) => {
+        const pubkey = await this.config.signer.getPublicKeyFromDerivation(
+          leaf.newKeyDerivation,
+        );
+        receivingPubkeys.set(leaf.leaf.id, pubkey);
+      }),
+    );
+
+    // 6. Sign refunds using current timelock (not decremented)
+    const {
+      cpfpLeafSigningJobs,
+      directLeafSigningJobs,
+      directFromCpfpLeafSigningJobs,
+    } = await this.signingService.signRefundsForClaim(
+      claimLeaves,
+      receivingPubkeys,
+      signingCommitments.signingCommitments.slice(0, leaves.length),
+      signingCommitments.signingCommitments.slice(
+        leaves.length,
+        2 * leaves.length,
+      ),
+      signingCommitments.signingCommitments.slice(
+        2 * leaves.length,
+        3 * leaves.length,
+      ),
+    );
+
+    // 7. Assemble and sign ClaimPackage
+    const claimPackage = {
+      leavesToClaim: cpfpLeafSigningJobs,
+      keyTweakPackage,
+      userSignature: new Uint8Array(),
+      directLeavesToClaim: directLeafSigningJobs,
+      directFromCpfpLeavesToClaim: directFromCpfpLeafSigningJobs,
+      hashVariant: HashVariant.HASH_VARIANT_V2,
+    };
+
+    const signingPayload = getClaimPackageSigningPayload(
+      transferId,
+      keyTweakPackage,
+    );
+    const signature =
+      await this.config.signer.signMessageWithIdentityKey(signingPayload);
+    claimPackage.userSignature = new Uint8Array(signature);
+
+    return claimPackage;
+  }
+
   private async prepareClaimLeavesKeyTweaks(
     leaves: LeafKeyTweak[],
   ): Promise<Map<string, ClaimLeafKeyTweak[]>> {
@@ -1262,9 +1619,7 @@ export class TransferService extends BaseTransferService {
       if (!share) {
         throw new Error(`Share not found for operator ${operator.id}`);
       }
-      const pubkeyTweak = secp256k1.getPublicKey(
-        numberToBytesBE(share.share, 32),
-      );
+      const pubkeyTweak = secp256k1.getPublicKey(share.share);
       pubkeySharesTweak.set(identifier, pubkeyTweak);
     }
 
@@ -1278,7 +1633,7 @@ export class TransferService extends BaseTransferService {
       leafTweaksMap.set(identifier, {
         leafId: leaf.leaf.id,
         secretShareTweak: {
-          secretShare: numberToBytesBE(share.share, 32),
+          secretShare: share.share,
           proofs: share.proofs,
         },
         pubkeySharesTweak: Object.fromEntries(pubkeySharesTweak),
@@ -1427,13 +1782,16 @@ export class TransferService extends BaseTransferService {
         userSignedTxSigningJobs.get("directFromCpfp"),
     };
 
-    const response = await sparkClient.renew_leaf({
-      leafId: node.id,
-      signingJobs: {
-        $case: "renewRefundTimelockSigningJob",
-        renewRefundTimelockSigningJob,
+    const response = await sparkClient.renew_leaf(
+      {
+        leafId: node.id,
+        signingJobs: {
+          $case: "renewRefundTimelockSigningJob",
+          renewRefundTimelockSigningJob,
+        },
       },
-    });
+      optionsWithIdempotencyKey(getTxFromRawTxBytes(node.refundTx).id),
+    );
 
     if (
       response.renewResult?.$case !== "renewRefundTimelockResult" ||
@@ -1475,23 +1833,26 @@ export class TransferService extends BaseTransferService {
     const userSignedTxSigningJobs =
       await this.signingService.signSigningJobs(mappedSigningJobs);
 
-    const response = await sparkClient.renew_leaf({
-      leafId: node.id,
-      signingJobs: {
-        $case: "renewNodeTimelockSigningJob",
-        renewNodeTimelockSigningJob: {
-          splitNodeTxSigningJob: userSignedTxSigningJobs.get("split"),
-          splitNodeDirectTxSigningJob:
-            userSignedTxSigningJobs.get("directSplit"),
-          nodeTxSigningJob: userSignedTxSigningJobs.get("node"),
-          directNodeTxSigningJob: userSignedTxSigningJobs.get("directNode"),
-          refundTxSigningJob: userSignedTxSigningJobs.get("cpfp"),
-          directRefundTxSigningJob: userSignedTxSigningJobs.get("direct"),
-          directFromCpfpRefundTxSigningJob:
-            userSignedTxSigningJobs.get("directFromCpfp"),
+    const response = await sparkClient.renew_leaf(
+      {
+        leafId: node.id,
+        signingJobs: {
+          $case: "renewNodeTimelockSigningJob",
+          renewNodeTimelockSigningJob: {
+            splitNodeTxSigningJob: userSignedTxSigningJobs.get("split"),
+            splitNodeDirectTxSigningJob:
+              userSignedTxSigningJobs.get("directSplit"),
+            nodeTxSigningJob: userSignedTxSigningJobs.get("node"),
+            directNodeTxSigningJob: userSignedTxSigningJobs.get("directNode"),
+            refundTxSigningJob: userSignedTxSigningJobs.get("cpfp"),
+            directRefundTxSigningJob: userSignedTxSigningJobs.get("direct"),
+            directFromCpfpRefundTxSigningJob:
+              userSignedTxSigningJobs.get("directFromCpfp"),
+          },
         },
       },
-    });
+      optionsWithIdempotencyKey(getTxFromRawTxBytes(node.refundTx).id),
+    );
 
     if (
       response.renewResult?.$case !== "renewNodeTimelockResult" ||
@@ -1537,7 +1898,11 @@ export class TransferService extends BaseTransferService {
     const refundTx = getTxFromRawTxBytes(node.refundTx);
 
     const { nodeTx: newNodeTx, directNodeTx: newDirectNodeTx } =
-      createDecrementedTimelockNodeTx(parentTx, nodeTx);
+      await createDecrementedTimelockNodeTx(
+        parentTx,
+        nodeTx,
+        this.config.getNetwork(),
+      );
 
     signingJobs.push({
       signingPublicKey,
@@ -1593,7 +1958,7 @@ export class TransferService extends BaseTransferService {
       cpfpRefundTx: newRefundTx,
       directRefundTx: newDirectRefundTx,
       directFromCpfpRefundTx: newDirectFromCpfpRefundTx,
-    } = createInitialTimelockRefundTxs({
+    } = await createInitialTimelockRefundTxs({
       nodeTx: newNodeTx,
       directNodeTx: newDirectNodeTx,
       receivingPubkey: signingPublicKey,
@@ -1667,7 +2032,7 @@ export class TransferService extends BaseTransferService {
       await this.config.signer.getPublicKeyFromDerivation(keyDerivation);
 
     const { nodeTx: splitNodeTx, directNodeTx: splitNodeDirectTx } =
-      createZeroTimelockNodeTx(parentTx);
+      await createZeroTimelockNodeTx(parentTx, this.config.getNetwork());
 
     signingJobs.push({
       signingPublicKey,
@@ -1708,7 +2073,7 @@ export class TransferService extends BaseTransferService {
     };
 
     const { nodeTx: newNodeTx, directNodeTx: newDirectNodeTx } =
-      createInitialTimelockNodeTx(splitNodeTx);
+      await createInitialTimelockNodeTx(splitNodeTx, this.config.getNetwork());
 
     signingJobs.push({
       signingPublicKey,
@@ -1748,7 +2113,7 @@ export class TransferService extends BaseTransferService {
       cpfpRefundTx: newRefundTx,
       directRefundTx: newDirectRefundTx,
       directFromCpfpRefundTx: newDirectFromCpfpRefundTx,
-    } = createInitialTimelockRefundTxs({
+    } = await createInitialTimelockRefundTxs({
       nodeTx: newNodeTx,
       directNodeTx: newDirectNodeTx,
       receivingPubkey: signingPublicKey,
@@ -1837,13 +2202,16 @@ export class TransferService extends BaseTransferService {
         userSignedTxSigningJobs.get("directFromCpfp"),
     };
 
-    const response = await sparkClient.renew_leaf({
-      leafId: node.id,
-      signingJobs: {
-        $case: "renewNodeZeroTimelockSigningJob",
-        renewNodeZeroTimelockSigningJob: renewZeroTimelockNodeSigningJob,
+    const response = await sparkClient.renew_leaf(
+      {
+        leafId: node.id,
+        signingJobs: {
+          $case: "renewNodeZeroTimelockSigningJob",
+          renewNodeZeroTimelockSigningJob: renewZeroTimelockNodeSigningJob,
+        },
       },
-    });
+      optionsWithIdempotencyKey(getTxFromRawTxBytes(node.refundTx).id),
+    );
 
     if (
       response.renewResult?.$case !== "renewNodeZeroTimelockResult" ||
@@ -1873,7 +2241,7 @@ export class TransferService extends BaseTransferService {
     const nodeTx = getTxFromRawTxBytes(node.nodeTx);
 
     const { nodeTx: newNodeTx, directNodeTx: newDirectNodeTx } =
-      createZeroTimelockNodeTx(nodeTx);
+      await createZeroTimelockNodeTx(nodeTx, this.config.getNetwork());
 
     signingJobs.push({
       signingPublicKey,
@@ -1901,7 +2269,7 @@ export class TransferService extends BaseTransferService {
 
     // direct refund spending direct node tx
     const { cpfpRefundTx, directFromCpfpRefundTx } =
-      createInitialTimelockRefundTxs({
+      await createInitialTimelockRefundTxs({
         nodeTx: newNodeTx,
         directNodeTx: newDirectNodeTx,
         receivingPubkey: signingPublicKey,
@@ -1937,5 +2305,74 @@ export class TransferService extends BaseTransferService {
     });
 
     return signingJobs;
+  }
+
+  async claimTransfer(transfer: Transfer): Promise<TreeNode[]> {
+    const onError = async (
+      context: RetryContext<TreeNode[], Transfer>,
+    ): Promise<TreeNode[] | undefined> => {
+      const error = context.error;
+      if (
+        error instanceof SparkRequestError &&
+        error.originalError instanceof ClientError &&
+        error.originalError.code === Status.ALREADY_EXISTS
+      ) {
+        const transferToUse = context.data || transfer;
+        const updatedTransfer = await this.queryTransfer(transferToUse.id);
+
+        if (
+          !updatedTransfer ||
+          updatedTransfer.status !== TransferStatus.TRANSFER_STATUS_COMPLETED
+        ) {
+          return undefined;
+        }
+
+        const leaves = updatedTransfer.leaves.flatMap((leaf) =>
+          leaf.leaf ? [leaf.leaf] : [],
+        );
+
+        return leaves;
+      }
+      return;
+    };
+
+    const fetchData = async (context: RetryContext<TreeNode[], Transfer>) => {
+      const transferToUse = context.data || transfer;
+      const updatedTransfer = await this.queryPendingTransfers([
+        transferToUse.id,
+      ]);
+      if (!updatedTransfer.transfers[0]) {
+        return undefined;
+      }
+      return updatedTransfer.transfers[0];
+    };
+
+    try {
+      const result = await withRetry(
+        async (updatedTransfer?: Transfer) => {
+          const transferToUse = updatedTransfer ?? transfer;
+          return await this.claimTransferCore(transferToUse);
+        },
+        {
+          callbacks: {
+            onError,
+            fetchData,
+          },
+        },
+      );
+
+      if (result.length === 0) {
+        return [];
+      }
+
+      return result;
+    } catch (error) {
+      console.warn(
+        `Failed to claim transfer after all retries. Please try reinitializing your wallet in a few minutes. Transfer ID: ${transfer.id}`,
+        error,
+      );
+
+      throw new SparkError("Failed to claim transfer", { error });
+    }
   }
 }

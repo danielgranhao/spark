@@ -71,3 +71,14 @@ func (s *SparkTokenInternalServer) ExchangeRevocationSecretsShares(
 	ctx, _ = logging.WithRequestAttrs(ctx, sotokens.GetProtoTokenTransactionZapAttrs(ctx, req.FinalTokenTransaction)...)
 	return internalTokenTransactionHandler.ExchangeRevocationSecretsShares(ctx, req)
 }
+
+func (s *SparkTokenInternalServer) SignTokenTransaction(ctx context.Context, req *tokeninternalpb.SignTokenTransactionRequest) (*tokeninternalpb.SignTokenTransactionResponse, error) {
+	signTokenTxHandler := tokens.NewSignTokenTransactionHandler(s.soConfig)
+	ctx, _ = logging.WithRequestAttrs(ctx, sotokens.GetProtoTokenTransactionZapAttrs(ctx, req.FinalTokenTransaction)...)
+	return signTokenTxHandler.SignTokenTransaction(ctx, req)
+}
+
+func (s *SparkTokenInternalServer) InternalFreezeTokens(ctx context.Context, req *tokeninternalpb.InternalFreezeTokensRequest) (*tokeninternalpb.InternalFreezeTokensResponse, error) {
+	internalFreezeHandler := tokens.NewInternalFreezeTokenHandler(s.soConfig)
+	return internalFreezeHandler.InternalFreezeTokens(ctx, req)
+}

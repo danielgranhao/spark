@@ -24,8 +24,9 @@ export {
 } from "./signer/types.js";
 
 export { type IKeyPackage, type DummyTx } from "./spark-bindings/types.js";
+export * from "./spark-readonly-client/types.js";
 export * from "./spark-wallet/types.js";
 
 export { type WalletConfigService } from "./services/config.js";
-export { TokenTransactionService } from "./services/token-transactions.js";
+export { TokenTransactionService } from "./services/tokens/token-transactions.js";
 export { WalletConfig, type ConfigOptions } from "./services/wallet-config.js";

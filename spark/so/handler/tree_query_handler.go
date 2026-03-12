@@ -159,15 +159,12 @@ func (h *TreeQueryHandler) QueryBalance(ctx context.Context, req *pb.QueryBalanc
 		return nil, fmt.Errorf("failed to get or create current tx for request: %w", err)
 	}
 
-	var network btcnetwork.Network
 	if req.GetNetwork() == pb.Network_UNSPECIFIED {
-		network = btcnetwork.Mainnet
-	} else {
-		var err error
-		network, err = btcnetwork.FromProtoNetwork(req.GetNetwork())
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert proto network to schema network: %w", err)
-		}
+		return nil, errors.InvalidArgumentMissingField(fmt.Errorf("network must be specified"))
+	}
+	network, err := btcnetwork.FromProtoNetwork(req.GetNetwork())
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert proto network to schema network: %w", err)
 	}
 
 	identityPubKey, err := keys.ParsePublicKey(req.GetIdentityPublicKey())
@@ -257,6 +254,13 @@ func (h *TreeQueryHandler) QueryUnusedDepositAddresses(ctx context.Context, req 
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse identity public key: %w", err)
 	}
+	if req.GetNetwork() == pb.Network_UNSPECIFIED {
+		return nil, errors.InvalidArgumentMissingField(fmt.Errorf("network must be specified"))
+	}
+	network, err := btcnetwork.FromProtoNetwork(req.GetNetwork())
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert proto network to common network: %w", err)
+	}
 	query := db.DepositAddress.Query().
 		Where(depositaddress.OwnerIdentityPubkey(idPubKey)).
 		// Exclude static deposit addresses, because they always can be used,
@@ -286,17 +290,6 @@ func (h *TreeQueryHandler) QueryUnusedDepositAddresses(ctx context.Context, req 
 	depositAddresses, err := query.All(ctx)
 	if err != nil {
 		return nil, err
-	}
-
-	var network btcnetwork.Network
-	if req.GetNetwork() == pb.Network_UNSPECIFIED {
-		network = btcnetwork.Mainnet
-	} else {
-		var err error
-		network, err = btcnetwork.FromProtoNetwork(req.GetNetwork())
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert proto network to common network: %w", err)
-		}
 	}
 
 	var unusedDepositAddresses []*pb.DepositAddressQueryResult
@@ -346,6 +339,13 @@ func (h *TreeQueryHandler) QueryStaticDepositAddresses(ctx context.Context, req 
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse identity public key: %w", err)
 	}
+	if req.GetNetwork() == pb.Network_UNSPECIFIED {
+		return nil, errors.InvalidArgumentMissingField(fmt.Errorf("network must be specified"))
+	}
+	network, err := btcnetwork.FromProtoNetwork(req.GetNetwork())
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert proto network to common network: %w", err)
+	}
 	query := db.DepositAddress.Query().
 		Where(depositaddress.OwnerIdentityPubkey(idPubKey)).
 		Where(depositaddress.IsStatic(true)).
@@ -361,21 +361,10 @@ func (h *TreeQueryHandler) QueryStaticDepositAddresses(ctx context.Context, req 
 		return nil, err
 	}
 
-	var network btcnetwork.Network
-	if req.GetNetwork() == pb.Network_UNSPECIFIED {
-		network = btcnetwork.Mainnet
-	} else {
-		var err error
-		network, err = btcnetwork.FromProtoNetwork(req.GetNetwork())
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert proto network to common network: %w", err)
-		}
-	}
-
 	var staticDepositAddresses []*pb.DepositAddressQueryResult
 	for _, depositAddress := range depositAddresses {
 		if utils.IsBitcoinAddressForNetwork(depositAddress.Address, network) {
-			queryResult, err := h.depositAddressToQueryResult(ctx, depositAddress)
+			queryResult, err := h.depositAddressToQueryResult(ctx, depositAddress, req.GetHashVariant())
 			if err != nil {
 				return nil, err
 			}
@@ -389,7 +378,7 @@ func (h *TreeQueryHandler) QueryStaticDepositAddresses(ctx context.Context, req 
 	return &pb.QueryStaticDepositAddressesResponse{DepositAddresses: staticDepositAddresses}, nil
 }
 
-func (h *TreeQueryHandler) depositAddressToQueryResult(ctx context.Context, depositAddress *ent.DepositAddress) (*pb.DepositAddressQueryResult, error) {
+func (h *TreeQueryHandler) depositAddressToQueryResult(ctx context.Context, depositAddress *ent.DepositAddress, hashVariant pb.HashVariant) (*pb.DepositAddressQueryResult, error) {
 	nodeIDStr := depositAddress.NodeID.String()
 	// Get local keyshare for the deposit address.
 	keyshare, err := depositAddress.Edges.SigningKeyshareOrErr()
@@ -401,7 +390,7 @@ func (h *TreeQueryHandler) depositAddressToQueryResult(ctx context.Context, depo
 	// Return the proofs of possession if they are cached.
 	// Caching is done in the GenerateStaticDepositAddressResponse handler on the coordinator.
 	// If there are no proofs of possession, the user is advised to generate them by calling the GenerateStaticDepositAddressProofs RPC.
-	addressSignatures, proofOfPossessionSignature, err := generateStaticDepositAddressProofs(ctx, h.config, keyshare, depositAddress)
+	addressSignatures, proofOfPossessionSignature, err := generateStaticDepositAddressProofs(ctx, h.config, keyshare, depositAddress, hashVariant)
 	if err != nil {
 		return nil, err
 	}

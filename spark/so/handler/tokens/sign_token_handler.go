@@ -24,15 +24,12 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/tokentransaction"
 	sparkerrors "github.com/lightsparkdev/spark/so/errors"
 	"github.com/lightsparkdev/spark/so/helper"
+	"github.com/lightsparkdev/spark/so/knobs"
 	"github.com/lightsparkdev/spark/so/tokens"
 	"github.com/lightsparkdev/spark/so/utils"
 )
 
 const queryTokenOutputsWithPartialRevocationSecretSharesBatchSize = 50
-
-var finalizedCommitTransactionResponse = &tokenpb.CommitTransactionResponse{
-	CommitStatus: tokenpb.CommitStatus_COMMIT_FINALIZED,
-}
 
 type operatorSignaturesMap map[string][]byte
 
@@ -146,7 +143,7 @@ func (h *SignTokenHandler) CommitTransaction(ctx context.Context, req *tokenpb.C
 		signatures[operatorID] = sig.SparkOperatorSignature
 	}
 	internalSignTokenHandler := NewInternalSignTokenHandler(h.config)
-	if err := internalSignTokenHandler.validateSignaturesPackageAndPersistPeerSignatures(ctx, signatures, lockedTokenTransaction); err != nil {
+	if err := internalSignTokenHandler.validateAndPersistPeerSignatures(ctx, signatures, lockedTokenTransaction); err != nil {
 		return nil, err
 	}
 
@@ -157,17 +154,19 @@ func (h *SignTokenHandler) CommitTransaction(ctx context.Context, req *tokenpb.C
 		if err != nil {
 			return nil, sparkerrors.InternalDatabaseReadError(fmt.Errorf("token create edge not eager loaded or not found: %w", err))
 		}
-		finalizedCommitTransactionResponse.TokenIdentifier = tokenCreate.TokenIdentifier
-		return finalizedCommitTransactionResponse, nil
+		return &tokenpb.CommitTransactionResponse{
+			CommitStatus:    tokenpb.CommitStatus_COMMIT_FINALIZED,
+			TokenIdentifier: tokenCreate.TokenIdentifier,
+		}, nil
 	case utils.TokenTransactionTypeMint:
 		// We validated the signatures package above, so we know that it is finalized.
-		return finalizedCommitTransactionResponse, nil
+		return &tokenpb.CommitTransactionResponse{
+			CommitStatus: tokenpb.CommitStatus_COMMIT_FINALIZED,
+		}, nil
 	case utils.TokenTransactionTypeTransfer:
 		// Include the coordinator's own signature when exchanging shares so peers validate against all operators
 		allOperatorSignatures := make(map[string]*tokeninternalpb.SignTokenTransactionFromCoordinationResponse, len(internalSignatures)+1)
-		for k, v := range internalSignatures {
-			allOperatorSignatures[k] = v
-		}
+		maps.Copy(allOperatorSignatures, internalSignatures)
 		allOperatorSignatures[h.config.Identifier] = localResp
 		if response, err := h.ExchangeRevocationSecretsAndFinalizeIfPossible(ctx, req.FinalTokenTransaction, allOperatorSignatures, req.FinalTokenTransactionHash); err != nil {
 			return nil, err
@@ -200,7 +199,7 @@ func (h *SignTokenHandler) ExchangeRevocationSecretsAndFinalizeIfPossible(ctx co
 	if err != nil {
 		return nil, tokens.FormatErrorWithTransactionProto("failed to build input operator share map", tokenTransactionProto, err)
 	}
-	logger.Sugar().Infof("Length of inputOperatorShareMap built from first exchange response: %d", len(inputOperatorShareMap))
+	logger.Sugar().Infof("Length of inputOperatorShareMap built from first exchange response: ByUUID=%d, ByHashVout=%d", len(inputOperatorShareMap.ByUUID), len(inputOperatorShareMap.ByHashVout))
 	// Persist the secret shares from all operators.
 	internalHandler := NewInternalSignTokenHandler(h.config)
 	finalized, err := internalHandler.persistPartialRevocationSecretShares(ctx, inputOperatorShareMap, tokenTransactionHash)
@@ -214,7 +213,9 @@ func (h *SignTokenHandler) ExchangeRevocationSecretsAndFinalizeIfPossible(ctx co
 		if err != nil {
 			return nil, tokens.FormatErrorWithTransactionProto("failed to exchange revocation secret shares after finalization", tokenTransactionProto, err)
 		}
-		return finalizedCommitTransactionResponse, nil
+		return &tokenpb.CommitTransactionResponse{
+			CommitStatus: tokenpb.CommitStatus_COMMIT_FINALIZED,
+		}, nil
 
 	} else {
 		// Refetch the token transaction (for-read) to pick up newly committed partial revocation secret shares
@@ -223,7 +224,7 @@ func (h *SignTokenHandler) ExchangeRevocationSecretsAndFinalizeIfPossible(ctx co
 			return nil, tokens.FormatErrorWithTransactionProto("failed to fetch token transaction after finalization", tokenTransactionProto, err)
 		}
 
-		commitProgress, err := h.getRevealCommitProgress(ctx, refetchedTokenTransaction)
+		commitProgress, err := BuildRevealCommitProgress(refetchedTokenTransaction, h.config)
 		if err != nil {
 			return nil, tokens.FormatErrorWithTransactionProto("failed to get reveal commit progress", tokenTransactionProto, err)
 		}
@@ -273,6 +274,7 @@ func (h *SignTokenHandler) TryFinalizeRevealedTokenTransaction(ctx context.Conte
 	if err != nil {
 		return sparkerrors.InternalDatabaseTransactionLifecycleError(fmt.Errorf("failed to marshal parent transaction: %w", err))
 	}
+
 	logger.Sugar().Infof("Exchanging revocation secrets and finalizing if possible for token transaction %s with txHash: %x", tokenTransaction.ID, tokenTransaction.FinalizedTokenTransactionHash)
 
 	_, err = h.ExchangeRevocationSecretsAndFinalizeIfPossible(ctx, tokenPb, signaturesPackage, tokenTransaction.FinalizedTokenTransactionHash)
@@ -295,22 +297,26 @@ func (h *SignTokenHandler) checkShouldReturnEarlyWithoutProcessing(
 		// If this SO has all signatures for a create or mint, the transaction is final and fully committed.
 		// Otherwise continue because this SO is in STARTED or SIGNED and needs more signatures.
 		if tokenTransaction.Status == st.TokenTransactionStatusSigned {
-			commitProgress, err := h.getSignedCommitProgress(tokenTransaction)
+			commitProgress, err := BuildSignedCommitProgress(tokenTransaction, h.config)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get create/mint signed commit progress: %w", err)
 			}
 			if len(commitProgress.UncommittedOperatorPublicKeys) == 0 {
-				return finalizedCommitTransactionResponse, nil
+				return &tokenpb.CommitTransactionResponse{
+					CommitStatus: tokenpb.CommitStatus_COMMIT_FINALIZED,
+				}, nil
 			}
 		}
 	case utils.TokenTransactionTypeTransfer:
 		if tokenTransaction.Status == st.TokenTransactionStatusFinalized {
-			return finalizedCommitTransactionResponse, nil
+			return &tokenpb.CommitTransactionResponse{
+				CommitStatus: tokenpb.CommitStatus_COMMIT_FINALIZED,
+			}, nil
 		}
 		if tokenTransaction.Status == st.TokenTransactionStatusRevealed {
 			// If this SO is in revealed, the user is no longer responsible for any further actions.
 			// If an SO is stuck in revealed, an internal cronjob is responsible for finalizing the transaction.
-			commitProgress, err := h.getRevealCommitProgress(ctx, tokenTransaction)
+			commitProgress, err := BuildRevealCommitProgress(tokenTransaction, h.config)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get transfer reveal commit progress: %w", err)
 			}
@@ -456,14 +462,7 @@ func (h *SignTokenHandler) prepareRevocationSecretSharesForExchange(ctx context.
 		vout := int32(outputToSpend.GetPrevTokenTransactionVout())
 		// Deduplicate vouts per hash to keep predicates minimal
 		existing := voutsByPrevHash[key]
-		seen := false
-		for _, existingVout := range existing {
-			if existingVout == vout {
-				seen = true
-				break
-			}
-		}
-		if !seen {
+		if !slices.Contains(existing, vout) {
 			voutsByPrevHash[key] = append(existing, vout)
 		}
 	}
@@ -497,11 +496,8 @@ func (h *SignTokenHandler) prepareRevocationSecretSharesForExchange(ctx context.
 
 		// Find matching outputs by vout
 		for _, createdOutput := range transaction.Edges.CreatedOutput {
-			for _, vout := range vouts {
-				if createdOutput.CreatedTransactionOutputVout == vout {
-					outputIDs = append(outputIDs, createdOutput.ID)
-					break
-				}
+			if slices.Contains(vouts, createdOutput.CreatedTransactionOutputVout) {
+				outputIDs = append(outputIDs, createdOutput.ID)
 			}
 		}
 	}
@@ -529,22 +525,41 @@ func (h *SignTokenHandler) prepareRevocationSecretSharesForExchange(ctx context.
 		}
 	}
 
+	knobsService := knobs.GetKnobsService(ctx)
+	phase2Enabled := knobsService != nil && knobsService.RolloutRandom(knobs.KnobTokenTransactionV3Phase2Enabled, 0)
+
 	for _, outputWithKeyShare := range outputsWithKeyShares {
 		if keyshare := outputWithKeyShare.Edges.RevocationKeyshare; keyshare != nil {
 			if operatorShares, exists := sharesToReturnMap[h.config.IdentityPublicKey()]; exists {
-				operatorShares.Shares = append(operatorShares.Shares, &tokeninternalpb.RevocationSecretShare{
-					InputTtxoId: outputWithKeyShare.ID.String(),
+				share := &tokeninternalpb.RevocationSecretShare{
 					SecretShare: keyshare.SecretShare.Serialize(),
-				})
+				}
+				if phase2Enabled {
+					share.InputTtxoRef = &tokenpb.TokenOutputToSpend{
+						PrevTokenTransactionHash: outputWithKeyShare.CreatedTransactionFinalizedHash,
+						PrevTokenTransactionVout: uint32(outputWithKeyShare.CreatedTransactionOutputVout),
+					}
+				} else {
+					share.InputTtxoId = outputWithKeyShare.ID.String()
+				}
+				operatorShares.Shares = append(operatorShares.Shares, share)
 			}
 		}
 		if outputWithKeyShare.Edges.TokenPartialRevocationSecretShares != nil {
 			for _, partialShare := range outputWithKeyShare.Edges.TokenPartialRevocationSecretShares {
 				if operatorShares, exists := sharesToReturnMap[partialShare.OperatorIdentityPublicKey]; exists {
-					operatorShares.Shares = append(operatorShares.Shares, &tokeninternalpb.RevocationSecretShare{
-						InputTtxoId: outputWithKeyShare.ID.String(),
+					share := &tokeninternalpb.RevocationSecretShare{
 						SecretShare: partialShare.SecretShare.Serialize(),
-					})
+					}
+					if phase2Enabled {
+						share.InputTtxoRef = &tokenpb.TokenOutputToSpend{
+							PrevTokenTransactionHash: outputWithKeyShare.CreatedTransactionFinalizedHash,
+							PrevTokenTransactionVout: uint32(outputWithKeyShare.CreatedTransactionOutputVout),
+						}
+					} else {
+						share.InputTtxoId = outputWithKeyShare.ID.String()
+					}
+					operatorShares.Shares = append(operatorShares.Shares, share)
 				}
 			}
 		}
@@ -612,100 +627,4 @@ func verifyOperatorSignature(sigBytes []byte, operator *so.SigningOperator, fina
 		return sparkerrors.FailedPreconditionBadSignature(fmt.Errorf("failed to verify operator signature for operator %s: %w", operator.Identifier, err))
 	}
 	return nil
-}
-
-func (h *SignTokenHandler) getSignedCommitProgress(tt *ent.TokenTransaction) (*tokenpb.CommitProgress, error) {
-	peerSigs := tt.Edges.PeerSignatures
-	if peerSigs == nil {
-		return nil, sparkerrors.InternalDatabaseMissingEdge(fmt.Errorf("no peer signatures"))
-	}
-
-	seen := map[keys.Public]struct{}{}
-	for _, ps := range peerSigs {
-		seen[ps.OperatorIdentityPublicKey] = struct{}{}
-	}
-
-	self := h.config.IdentityPublicKey()
-	seen[self] = struct{}{}
-
-	var committed, uncommitted [][]byte
-	for _, operator := range h.config.SigningOperatorMap {
-		operatorPublicKey := operator.IdentityPublicKey
-		if _, ok := seen[operatorPublicKey]; ok {
-			committed = append(committed, operatorPublicKey.Serialize())
-		} else {
-			uncommitted = append(uncommitted, operatorPublicKey.Serialize())
-		}
-	}
-
-	return &tokenpb.CommitProgress{
-		CommittedOperatorPublicKeys:   committed,
-		UncommittedOperatorPublicKeys: uncommitted,
-	}, nil
-}
-
-// getRevealCommitProgress determines which operators have provided their secret shares to this SO for the transaction.
-func (h *SignTokenHandler) getRevealCommitProgress(ctx context.Context, tokenTransaction *ent.TokenTransaction) (*tokenpb.CommitProgress, error) {
-	// Get all known operator public keys
-	allOperatorPubKeys := make([]keys.Public, 0, len(h.config.SigningOperatorMap))
-	for _, operator := range h.config.SigningOperatorMap {
-		allOperatorPubKeys = append(allOperatorPubKeys, operator.IdentityPublicKey)
-	}
-
-	// Determine which operators have provided their secret shares for each output
-	operatorSharesPerOutput := make(map[int]map[keys.Public]struct{}) // output_index -> operator_key -> has_share
-	coordinatorKey := h.config.IdentityPublicKey()
-
-	outputsToCheck := tokenTransaction.Edges.SpentOutput
-	if len(outputsToCheck) == 0 {
-		return nil, sparkerrors.InternalDatabaseMissingEdge(fmt.Errorf("no spent outputs found for transfer token transaction %x", tokenTransaction.FinalizedTokenTransactionHash))
-	}
-
-	for i := range outputsToCheck {
-		operatorSharesPerOutput[i] = make(map[keys.Public]struct{})
-	}
-
-	for i, output := range outputsToCheck {
-		logger := logging.GetLoggerFromContext(ctx)
-		logger.Sugar().Infof("Checking output %d for revocation keyshare (has keyshare: %t)", i, output.Edges.RevocationKeyshare != nil)
-
-		if output.Edges.RevocationKeyshare != nil {
-			logger.Sugar().Infof("Found revocation keyshare, marking coordinator %s as revealed for output %d", coordinatorKey.ToHex(), i)
-			operatorSharesPerOutput[i][coordinatorKey] = struct{}{}
-		}
-		if output.Edges.TokenPartialRevocationSecretShares != nil {
-			for _, partialShare := range output.Edges.TokenPartialRevocationSecretShares {
-				operatorSharesPerOutput[i][partialShare.OperatorIdentityPublicKey] = struct{}{}
-			}
-		}
-	}
-
-	operatorsWithAllShares := make(map[keys.Public]struct{})
-	for _, operatorKey := range allOperatorPubKeys {
-		hasAllShares := true
-		for i := range outputsToCheck {
-			if _, exists := operatorSharesPerOutput[i][operatorKey]; !exists {
-				hasAllShares = false
-				break
-			}
-		}
-		if hasAllShares {
-			operatorsWithAllShares[operatorKey] = struct{}{}
-		}
-	}
-
-	var committedOperatorPublicKeys [][]byte
-	var uncommittedOperatorPublicKeys [][]byte
-	for _, operatorKey := range allOperatorPubKeys {
-		if _, hasAllShares := operatorsWithAllShares[operatorKey]; hasAllShares {
-			committedOperatorPublicKeys = append(committedOperatorPublicKeys, operatorKey.Serialize())
-		} else {
-			uncommittedOperatorPublicKeys = append(uncommittedOperatorPublicKeys, operatorKey.Serialize())
-		}
-	}
-
-	return &tokenpb.CommitProgress{
-		CommittedOperatorPublicKeys:   committedOperatorPublicKeys,
-		UncommittedOperatorPublicKeys: uncommittedOperatorPublicKeys,
-	}, nil
 }

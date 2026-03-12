@@ -1,5 +1,121 @@
 # @buildonspark/bare
 
+## 0.0.49
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.7.0
+
+## 0.0.48
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.7
+
+## 0.0.47
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-frost-bare-addon@0.0.9
+
+## 0.0.46
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-frost-bare-addon@0.0.8
+
+## 0.0.45
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.6
+
+## 0.0.44
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @buildonspark/spark-frost-bare-addon@0.0.7
+  - @buildonspark/spark-sdk@0.6.5
+
+## 0.0.43
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.4
+
+## 0.0.42
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.3
+
+## 0.0.41
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.2
+
+## 0.0.40
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.1
+
+## 0.0.39
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.0
+
+## 0.0.38
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.9
+
+## 0.0.37
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.8
+
+## 0.0.36
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.7
+
+## 0.0.35
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @buildonspark/spark-frost-bare-addon@0.0.6
+  - @buildonspark/spark-sdk@0.5.6
+
+## 0.0.34
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.5
+
 ## 0.0.33
 
 ### Patch Changes

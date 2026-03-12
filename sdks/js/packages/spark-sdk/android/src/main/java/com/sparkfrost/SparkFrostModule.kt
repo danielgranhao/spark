@@ -300,6 +300,96 @@ class SparkFrostModule(reactContext: ReactApplicationContext) : ReactContextBase
     }
 
     @ReactMethod
+    fun splitSecretWithProofs(params: ReadableMap, promise: Promise) {
+        try {
+            val secret = params.getArray("secret")?.toByteArray()
+                ?: throw Exception("Invalid secret format")
+            val threshold = params.getInt("threshold").toUInt()
+            val numShares = params.getInt("numShares").toUInt()
+
+            val result = uniffi.spark_frost.splitSecretWithProofsUniffi(
+                secret = secret,
+                threshold = threshold,
+                numShares = numShares
+            )
+
+            val sharesArray = Arguments.createArray()
+            for (share in result) {
+                val shareMap = Arguments.createMap().apply {
+                    putInt("threshold", share.threshold.toInt())
+                    putInt("index", share.index.toInt())
+                    putArray("share", share.share.toWritableArray())
+                    val proofsArray = Arguments.createArray()
+                    for (proof in share.proofs) {
+                        proofsArray.pushArray(proof.toWritableArray())
+                    }
+                    putArray("proofs", proofsArray)
+                }
+                sharesArray.pushMap(shareMap)
+            }
+
+            promise.resolve(sharesArray)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e)
+        }
+    }
+
+    @ReactMethod
+    fun recoverSecret(params: ReadableMap, promise: Promise) {
+        try {
+            val sharesArray = params.getArray("shares")
+                ?: throw Exception("Invalid shares format")
+
+            val shares = mutableListOf<uniffi.spark_frost.SecretShareResult>()
+            for (i in 0 until sharesArray.size()) {
+                val shareMap = sharesArray.getMap(i)
+                    ?: throw Exception("Invalid share at index $i")
+                shares.add(uniffi.spark_frost.SecretShareResult(
+                    threshold = shareMap.getInt("threshold").toUInt(),
+                    index = shareMap.getInt("index").toUInt(),
+                    share = shareMap.getArray("share")?.toByteArray()
+                        ?: throw Exception("Invalid share bytes at index $i")
+                ))
+            }
+
+            val result = uniffi.spark_frost.recoverSecretUniffi(shares = shares)
+            promise.resolve(result.toWritableArray())
+        } catch (e: Exception) {
+            promise.reject("ERROR", e)
+        }
+    }
+
+    @ReactMethod
+    fun validateShare(params: ReadableMap, promise: Promise) {
+        try {
+            val share = params.getArray("share")?.toByteArray()
+                ?: throw Exception("Invalid share format")
+            val index = params.getInt("index").toUInt()
+            val threshold = params.getInt("threshold").toUInt()
+
+            val proofsArray = params.getArray("proofs")
+                ?: throw Exception("Invalid proofs format")
+            val proofs = mutableListOf<ByteArray>()
+            for (i in 0 until proofsArray.size()) {
+                val proof = proofsArray.getArray(i)?.toByteArray()
+                    ?: throw Exception("Invalid proof at index $i")
+                proofs.add(proof)
+            }
+
+            uniffi.spark_frost.validateShareUniffi(
+                share = share,
+                index = index,
+                threshold = threshold,
+                proofs = proofs
+            )
+
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e)
+        }
+    }
+
+    @ReactMethod
     fun verifySignature(params: ReadableMap, promise: Promise) {
         try {
             val signature = params.getArray("signature")?.toByteArray()
@@ -318,6 +408,137 @@ class SparkFrostModule(reactContext: ReactApplicationContext) : ReactContextBase
             )
 
             promise.resolve(result)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e)
+        }
+    }
+
+    @ReactMethod
+    fun constructNodeTxPair(params: ReadableMap, promise: Promise) {
+        try {
+            val parentTx = params.getArray("parentTx")?.toByteArray()
+                ?: throw Exception("Invalid parentTx format")
+            val vout = params.getInt("vout").toUInt()
+            val address = params.getString("address")
+                ?: throw Exception("Invalid address format")
+            val sequence = params.getInt("sequence").toUInt()
+            val directSequence = params.getInt("directSequence").toUInt()
+            val feeSats = params.getString("feeSats")
+                ?.toULong()
+                ?: throw Exception("Invalid feeSats format")
+
+            val result = uniffi.spark_frost.constructNodeTxPair(
+                parentTx = parentTx,
+                vout = vout,
+                address = address,
+                sequence = sequence,
+                directSequence = directSequence,
+                feeSats = feeSats
+            )
+
+            val cpfpMap = Arguments.createMap().apply {
+                putArray("tx", result.cpfp.tx.toWritableArray())
+            }
+            val directMap = Arguments.createMap().apply {
+                putArray("tx", result.direct.tx.toWritableArray())
+            }
+            val resultMap = Arguments.createMap().apply {
+                putMap("cpfp", cpfpMap)
+                putMap("direct", directMap)
+            }
+
+            promise.resolve(resultMap)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e)
+        }
+    }
+
+    @ReactMethod
+    fun constructRefundTxTrio(params: ReadableMap, promise: Promise) {
+        try {
+            val cpfpNodeTx = params.getArray("cpfpNodeTx")?.toByteArray()
+                ?: throw Exception("Invalid cpfpNodeTx format")
+
+            val directNodeTx: ByteArray? = params.getArray("directNodeTx")?.toByteArray()
+
+            val vout = params.getInt("vout").toUInt()
+            val receivingPubkey = params.getArray("receivingPubkey")?.toByteArray()
+                ?: throw Exception("Invalid receivingPubkey format")
+            val network = params.getString("network")
+                ?: throw Exception("Invalid network format")
+            val sequence = params.getInt("sequence").toUInt()
+            val directSequence = params.getInt("directSequence").toUInt()
+            val feeSats = params.getString("feeSats")
+                ?.toULong()
+                ?: throw Exception("Invalid feeSats format")
+
+            val result = uniffi.spark_frost.constructRefundTxTrio(
+                cpfpNodeTx = cpfpNodeTx,
+                directNodeTx = directNodeTx,
+                vout = vout,
+                receivingPubkey = receivingPubkey,
+                network = network,
+                sequence = sequence,
+                directSequence = directSequence,
+                feeSats = feeSats
+            )
+
+            val cpfpRefundMap = Arguments.createMap().apply {
+                putArray("tx", result.cpfpRefund.tx.toWritableArray())
+            }
+            val directFromCpfpRefundMap = Arguments.createMap().apply {
+                putArray("tx", result.directFromCpfpRefund.tx.toWritableArray())
+            }
+
+            val resultMap = Arguments.createMap().apply {
+                putMap("cpfp_refund", cpfpRefundMap)
+                putMap("direct_from_cpfp_refund", directFromCpfpRefundMap)
+            }
+
+            result.directRefund?.let { dr ->
+                val directRefundMap = Arguments.createMap().apply {
+                    putArray("tx", dr.tx.toWritableArray())
+                }
+                resultMap.putMap("direct_refund", directRefundMap)
+            }
+
+            promise.resolve(resultMap)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e)
+        }
+    }
+
+    @ReactMethod
+    fun computeMultiInputSighash(params: ReadableMap, promise: Promise) {
+        try {
+            val tx = params.getArray("tx")?.toByteArray()
+                ?: throw Exception("Invalid tx format")
+            val inputIndex = params.getInt("inputIndex").toUInt()
+
+            val prevOutScriptsArray = params.getArray("prevOutScripts")
+                ?: throw Exception("Invalid prevOutScripts format")
+            val prevOutScripts = mutableListOf<ByteArray>()
+            for (i in 0 until prevOutScriptsArray.size()) {
+                val script = prevOutScriptsArray.getArray(i)?.toByteArray()
+                    ?: throw Exception("Invalid prevOutScript at index $i")
+                prevOutScripts.add(script)
+            }
+
+            val prevOutValuesArray = params.getArray("prevOutValues")
+                ?: throw Exception("Invalid prevOutValues format")
+            val prevOutValues = mutableListOf<ULong>()
+            for (i in 0 until prevOutValuesArray.size()) {
+                prevOutValues.add(prevOutValuesArray.getDouble(i).toULong())
+            }
+
+            val result = uniffi.spark_frost.computeMultiInputSighashUniffi(
+                tx = tx,
+                inputIndex = inputIndex,
+                prevOutScripts = prevOutScripts,
+                prevOutValues = prevOutValues
+            )
+
+            promise.resolve(result.toWritableArray())
         } catch (e: Exception) {
             promise.reject("ERROR", e)
         }

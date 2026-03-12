@@ -13,6 +13,8 @@ import (
 	"github.com/lightsparkdev/spark/common/btcnetwork"
 	"github.com/lightsparkdev/spark/common/keys"
 	"github.com/lightsparkdev/spark/common/uint128"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenjusticetransaction"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenoutputwithdrawal"
 	"github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	"github.com/lightsparkdev/spark/so/ent/signingkeyshare"
 	"github.com/lightsparkdev/spark/so/ent/tokencreate"
@@ -29,41 +31,43 @@ type TokenOutput struct {
 	CreateTime time.Time `json:"create_time,omitempty"`
 	// The time when the entity was last updated.
 	UpdateTime time.Time `json:"update_time,omitempty"`
-	// Status holds the value of the "status" field.
+	// Current lifecycle status of the token output (e.g., CREATED_FINALIZED, SPENT).
 	Status schematype.TokenOutputStatus `json:"status,omitempty"`
-	// OwnerPublicKey holds the value of the "owner_public_key" field.
+	// The public key of the owner of this token output.
 	OwnerPublicKey keys.Public `json:"owner_public_key,omitempty"`
-	// WithdrawBondSats holds the value of the "withdraw_bond_sats" field.
+	// Bond amount in satoshis required to initiate an L1 withdrawal.
 	WithdrawBondSats uint64 `json:"withdraw_bond_sats,omitempty"`
-	// WithdrawRelativeBlockLocktime holds the value of the "withdraw_relative_block_locktime" field.
+	// Relative block locktime for the L1 withdrawal transaction.
 	WithdrawRelativeBlockLocktime uint64 `json:"withdraw_relative_block_locktime,omitempty"`
-	// WithdrawRevocationCommitment holds the value of the "withdraw_revocation_commitment" field.
+	// Commitment to the revocation secret, used to punish invalid withdrawals.
 	WithdrawRevocationCommitment []byte `json:"withdraw_revocation_commitment,omitempty"`
-	// TokenPublicKey holds the value of the "token_public_key" field.
+	// The public key identifying the token type held in this output.
 	TokenPublicKey keys.Public `json:"token_public_key,omitempty"`
-	// TokenAmount holds the value of the "token_amount" field.
+	// The token amount held in this output as raw bytes (uint128).
 	TokenAmount []byte `json:"token_amount,omitempty"`
 	// The uint128 token amount in this output as a numeric.
 	Amount uint128.Uint128 `json:"amount,omitempty"`
-	// CreatedTransactionOutputVout holds the value of the "created_transaction_output_vout" field.
+	// The vout index of this output in the creating token transaction.
 	CreatedTransactionOutputVout int32 `json:"created_transaction_output_vout,omitempty"`
 	// Denormalized finalized transaction hash from the output_created_token_transaction edge. Auto-populated by hook.
 	CreatedTransactionFinalizedHash []byte `json:"created_transaction_finalized_hash,omitempty"`
-	// SpentOwnershipSignature holds the value of the "spent_ownership_signature" field.
+	// SE adaptor signature locked to the finalization secret. Created during transaction signing (Phase 1).
+	SeFinalizationAdaptorSig []byte `json:"se_finalization_adaptor_sig,omitempty"`
+	// Final SE Schnorr signature over SparkExitReceipt. Computed by adapting se_finalization_adaptor_sig with the finalization secret (Phase 2). Enables offline L1 withdrawal capability.
+	SeWithdrawalSignature []byte `json:"se_withdrawal_signature,omitempty"`
+	// The ownership signature provided when this output was spent.
 	SpentOwnershipSignature []byte `json:"spent_ownership_signature,omitempty"`
-	// SpentOperatorSpecificOwnershipSignature holds the value of the "spent_operator_specific_ownership_signature" field.
+	// An operator-specific ownership signature provided when this output was spent.
 	SpentOperatorSpecificOwnershipSignature []byte `json:"spent_operator_specific_ownership_signature,omitempty"`
-	// SpentTransactionInputVout holds the value of the "spent_transaction_input_vout" field.
+	// The vout index used as input in the spending token transaction.
 	SpentTransactionInputVout int32 `json:"spent_transaction_input_vout,omitempty"`
-	// SpentRevocationSecret holds the value of the "spent_revocation_secret" field.
+	// The revocation secret revealed when this output was spent.
 	SpentRevocationSecret keys.Private `json:"spent_revocation_secret,omitempty"`
-	// ConfirmedWithdrawBlockHash holds the value of the "confirmed_withdraw_block_hash" field.
-	ConfirmedWithdrawBlockHash []byte `json:"confirmed_withdraw_block_hash,omitempty"`
-	// Network holds the value of the "network" field.
+	// The Bitcoin network this token output belongs to.
 	Network btcnetwork.Network `json:"network,omitempty"`
-	// TokenIdentifier holds the value of the "token_identifier" field.
+	// The identifier of the token type held in this output.
 	TokenIdentifier []byte `json:"token_identifier,omitempty"`
-	// TokenCreateID holds the value of the "token_create_id" field.
+	// Foreign key referencing the associated TokenCreate record.
 	TokenCreateID uuid.UUID `json:"token_create_id,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the TokenOutputQuery when eager-loading is set.
@@ -88,9 +92,13 @@ type TokenOutputEdges struct {
 	TokenPartialRevocationSecretShares []*TokenPartialRevocationSecretShare `json:"token_partial_revocation_secret_shares,omitempty"`
 	// Token create contains the token metadata associated with this output.
 	TokenCreate *TokenCreate `json:"token_create,omitempty"`
+	// The L1 withdrawal record if this output has been withdrawn.
+	Withdrawal *L1TokenOutputWithdrawal `json:"withdrawal,omitempty"`
+	// The justice transaction if an invalid withdrawal was punished for this output.
+	JusticeTx *L1TokenJusticeTransaction `json:"justice_tx,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [6]bool
+	loadedTypes [8]bool
 }
 
 // RevocationKeyshareOrErr returns the RevocationKeyshare value or an error if the edge
@@ -155,12 +163,34 @@ func (e TokenOutputEdges) TokenCreateOrErr() (*TokenCreate, error) {
 	return nil, &NotLoadedError{edge: "token_create"}
 }
 
+// WithdrawalOrErr returns the Withdrawal value or an error if the edge
+// was not loaded in eager-loading, or loaded but was not found.
+func (e TokenOutputEdges) WithdrawalOrErr() (*L1TokenOutputWithdrawal, error) {
+	if e.Withdrawal != nil {
+		return e.Withdrawal, nil
+	} else if e.loadedTypes[6] {
+		return nil, &NotFoundError{label: l1tokenoutputwithdrawal.Label}
+	}
+	return nil, &NotLoadedError{edge: "withdrawal"}
+}
+
+// JusticeTxOrErr returns the JusticeTx value or an error if the edge
+// was not loaded in eager-loading, or loaded but was not found.
+func (e TokenOutputEdges) JusticeTxOrErr() (*L1TokenJusticeTransaction, error) {
+	if e.JusticeTx != nil {
+		return e.JusticeTx, nil
+	} else if e.loadedTypes[7] {
+		return nil, &NotFoundError{label: l1tokenjusticetransaction.Label}
+	}
+	return nil, &NotLoadedError{edge: "justice_tx"}
+}
+
 // scanValues returns the types for scanning values from sql.Rows.
 func (*TokenOutput) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case tokenoutput.FieldWithdrawRevocationCommitment, tokenoutput.FieldTokenAmount, tokenoutput.FieldCreatedTransactionFinalizedHash, tokenoutput.FieldSpentOwnershipSignature, tokenoutput.FieldSpentOperatorSpecificOwnershipSignature, tokenoutput.FieldConfirmedWithdrawBlockHash, tokenoutput.FieldTokenIdentifier:
+		case tokenoutput.FieldWithdrawRevocationCommitment, tokenoutput.FieldTokenAmount, tokenoutput.FieldCreatedTransactionFinalizedHash, tokenoutput.FieldSeFinalizationAdaptorSig, tokenoutput.FieldSeWithdrawalSignature, tokenoutput.FieldSpentOwnershipSignature, tokenoutput.FieldSpentOperatorSpecificOwnershipSignature, tokenoutput.FieldTokenIdentifier:
 			values[i] = new([]byte)
 		case tokenoutput.FieldNetwork:
 			values[i] = new(btcnetwork.Network)
@@ -277,6 +307,18 @@ func (to *TokenOutput) assignValues(columns []string, values []any) error {
 			} else if value != nil {
 				to.CreatedTransactionFinalizedHash = *value
 			}
+		case tokenoutput.FieldSeFinalizationAdaptorSig:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field se_finalization_adaptor_sig", values[i])
+			} else if value != nil {
+				to.SeFinalizationAdaptorSig = *value
+			}
+		case tokenoutput.FieldSeWithdrawalSignature:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field se_withdrawal_signature", values[i])
+			} else if value != nil {
+				to.SeWithdrawalSignature = *value
+			}
 		case tokenoutput.FieldSpentOwnershipSignature:
 			if value, ok := values[i].(*[]byte); !ok {
 				return fmt.Errorf("unexpected type %T for field spent_ownership_signature", values[i])
@@ -300,12 +342,6 @@ func (to *TokenOutput) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field spent_revocation_secret", values[i])
 			} else if value != nil {
 				to.SpentRevocationSecret = *value
-			}
-		case tokenoutput.FieldConfirmedWithdrawBlockHash:
-			if value, ok := values[i].(*[]byte); !ok {
-				return fmt.Errorf("unexpected type %T for field confirmed_withdraw_block_hash", values[i])
-			} else if value != nil {
-				to.ConfirmedWithdrawBlockHash = *value
 			}
 		case tokenoutput.FieldNetwork:
 			if value, ok := values[i].(*btcnetwork.Network); !ok {
@@ -389,6 +425,16 @@ func (to *TokenOutput) QueryTokenCreate() *TokenCreateQuery {
 	return NewTokenOutputClient(to.config).QueryTokenCreate(to)
 }
 
+// QueryWithdrawal queries the "withdrawal" edge of the TokenOutput entity.
+func (to *TokenOutput) QueryWithdrawal() *L1TokenOutputWithdrawalQuery {
+	return NewTokenOutputClient(to.config).QueryWithdrawal(to)
+}
+
+// QueryJusticeTx queries the "justice_tx" edge of the TokenOutput entity.
+func (to *TokenOutput) QueryJusticeTx() *L1TokenJusticeTransactionQuery {
+	return NewTokenOutputClient(to.config).QueryJusticeTx(to)
+}
+
 // Update returns a builder for updating this TokenOutput.
 // Note that you need to call TokenOutput.Unwrap() before calling this method if this TokenOutput
 // was returned from a transaction, and the transaction was committed or rolled back.
@@ -448,6 +494,12 @@ func (to *TokenOutput) String() string {
 	builder.WriteString("created_transaction_finalized_hash=")
 	builder.WriteString(fmt.Sprintf("%v", to.CreatedTransactionFinalizedHash))
 	builder.WriteString(", ")
+	builder.WriteString("se_finalization_adaptor_sig=")
+	builder.WriteString(fmt.Sprintf("%v", to.SeFinalizationAdaptorSig))
+	builder.WriteString(", ")
+	builder.WriteString("se_withdrawal_signature=")
+	builder.WriteString(fmt.Sprintf("%v", to.SeWithdrawalSignature))
+	builder.WriteString(", ")
 	builder.WriteString("spent_ownership_signature=")
 	builder.WriteString(fmt.Sprintf("%v", to.SpentOwnershipSignature))
 	builder.WriteString(", ")
@@ -459,9 +511,6 @@ func (to *TokenOutput) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("spent_revocation_secret=")
 	builder.WriteString(fmt.Sprintf("%v", to.SpentRevocationSecret))
-	builder.WriteString(", ")
-	builder.WriteString("confirmed_withdraw_block_hash=")
-	builder.WriteString(fmt.Sprintf("%v", to.ConfirmedWithdrawBlockHash))
 	builder.WriteString(", ")
 	builder.WriteString("network=")
 	builder.WriteString(fmt.Sprintf("%v", to.Network))

@@ -86,12 +86,18 @@ func (h *FrostSigningHandler) FrostRound2(ctx context.Context, req *pb.FrostRoun
 
 	// Fetch nonces in one call.
 	commitments := make([]frost.SigningCommitment, len(req.SigningJobs))
+	seenCommitments := make(map[frost.SigningCommitment]int, len(req.SigningJobs))
 	for i, job := range req.SigningJobs {
 		commitments[i] = frost.SigningCommitment{}
 		err = commitments[i].UnmarshalProto(job.Commitments[h.config.Identifier])
 		if err != nil {
 			return nil, err
 		}
+		if prevIndex, ok := seenCommitments[commitments[i]]; ok {
+			commitmentHex := hex.EncodeToString(commitments[i].MarshalBinary())
+			return nil, fmt.Errorf("duplicate signing nonce commitment %s in request (jobs[%d]=%q, jobs[%d]=%q)", commitmentHex, prevIndex, req.SigningJobs[prevIndex].JobId, i, job.JobId)
+		}
+		seenCommitments[commitments[i]] = i
 	}
 	nonces, err := ent.GetSigningNoncesForUpdate(ctx, h.config, commitments)
 	if err != nil {
@@ -183,6 +189,10 @@ func retryFingerprint(job *pb.SigningJob) []byte {
 	hashState := sha256.New()
 
 	writeBytesCollisionResistant(hashState, job.Message)
+
+	writeBytesCollisionResistant(hashState, job.VerifyingKey)
+
+	writeBytesCollisionResistant(hashState, job.AdaptorPublicKey)
 
 	if job.UserCommitments != nil {
 		writeBytesCollisionResistant(hashState, job.UserCommitments.Hiding)

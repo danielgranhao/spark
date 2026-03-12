@@ -4,22 +4,23 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lightsparkdev/spark/so/errors"
+	"github.com/lightsparkdev/spark/common/logging"
 
-	"github.com/lightsparkdev/spark/common/keys"
 	tokenpb "github.com/lightsparkdev/spark/proto/spark_token"
+	tokeninternalpb "github.com/lightsparkdev/spark/proto/spark_token_internal"
 	"github.com/lightsparkdev/spark/so"
+	"github.com/lightsparkdev/spark/so/authz"
 	"github.com/lightsparkdev/spark/so/ent"
-	"github.com/lightsparkdev/spark/so/ent/tokencreate"
-	"github.com/lightsparkdev/spark/so/tokens"
-	"github.com/lightsparkdev/spark/so/utils"
+	"github.com/lightsparkdev/spark/so/errors"
+	"github.com/lightsparkdev/spark/so/helper"
+	"github.com/lightsparkdev/spark/so/knobs"
+	"go.uber.org/zap"
 )
 
 type FreezeTokenHandler struct {
 	config *so.Config
 }
 
-// NewFreezeTokenHandler creates a new FreezeTokenHandler.
 func NewFreezeTokenHandler(config *so.Config) *FreezeTokenHandler {
 	return &FreezeTokenHandler{
 		config: config,
@@ -27,83 +28,108 @@ func NewFreezeTokenHandler(config *so.Config) *FreezeTokenHandler {
 }
 
 // FreezeTokens freezes or unfreezes tokens on the LRC20 node.
+// When coordinated freeze is enabled, this handler acts as coordinator and fans out
+// the freeze request to all other SOs before applying locally.
 func (h *FreezeTokenHandler) FreezeTokens(ctx context.Context, req *tokenpb.FreezeTokensRequest) (*tokenpb.FreezeTokensResponse, error) {
-	// Validate freeze tokens payload
-	if err := utils.ValidateFreezeTokensPayload(req.FreezeTokensPayload, h.config.IdentityPublicKey()); err != nil {
-		return nil, fmt.Errorf("freeze tokens payload validation failed: %w", err)
+	// Verify session auth - only the issuer can freeze tokens
+	tokenIdentifier := req.FreezeTokensPayload.GetTokenIdentifier()
+	if tokenIdentifier == nil {
+		return nil, errors.InvalidArgumentMalformedField(fmt.Errorf("token identifier is required"))
+	}
+	tokenCreateEnt, err := ent.GetTokenCreateByIdentifier(ctx, tokenIdentifier)
+	if err != nil {
+		return nil, errors.NotFoundMissingEntity(fmt.Errorf("failed to get token for freeze request: %w", err))
+	}
+	if err := authz.EnforceSessionIdentityPublicKeyMatches(ctx, h.config, tokenCreateEnt.IssuerPublicKey); err != nil {
+		return nil, err
 	}
 
-	freezePayloadHash, err := utils.HashFreezeTokensPayload(req.FreezeTokensPayload)
+	result, err := ValidateAndApplyFreeze(ctx, h.config, req.FreezeTokensPayload, req.IssuerSignature)
 	if err != nil {
-		return nil, fmt.Errorf("failed to hash freeze tokens payload: %w", err)
+		return nil, err
 	}
 
-	db, err := ent.GetDbFromContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get database: %w", err)
-	}
-	var tokenCreateEnt *ent.TokenCreate
-	if freezeTokenID := req.GetFreezeTokensPayload().GetTokenIdentifier(); freezeTokenID != nil {
-		tokenCreateEnt, err = db.TokenCreate.Query().Where(tokencreate.TokenIdentifier(freezeTokenID)).Only(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get single token for freeze request: %w", err)
-		}
-	}
-	if !tokenCreateEnt.IsFreezable {
-		return nil, errors.FailedPreconditionTokenRulesViolation(fmt.Errorf("%s: token identifier %x", tokens.ErrTokenNotFreezable, tokenCreateEnt.TokenIdentifier))
-	}
-	expectedIssuerPublicKey := tokenCreateEnt.IssuerPublicKey
-	if err := utils.ValidateOwnershipSignature(req.IssuerSignature, freezePayloadHash, expectedIssuerPublicKey); err != nil {
-		return nil, fmt.Errorf("invalid issuer signature %s to freeze token with identifier %x with issuer public key %v: %w", req.IssuerSignature, req.GetFreezeTokensPayload().GetTokenIdentifier(), expectedIssuerPublicKey, err)
-	}
+	var freezeProgress *tokenpb.FreezeProgress
 
-	// Check for existing freeze.
-	ownerPubKey, err := keys.ParsePublicKey(req.FreezeTokensPayload.OwnerPublicKey)
-	if err != nil {
-		return nil, errors.InvalidArgumentMalformedKey(fmt.Errorf("failed to parse owner public key: %w", err))
-	}
+	knobService := knobs.GetKnobsService(ctx)
+	coordinatedFreezeEnabled := knobService != nil && knobService.RolloutRandom(knobs.KnobCoordinatedFreezeEnabled, 0)
+	if coordinatedFreezeEnabled {
+		// Commit the transaction before fanning out so we don't hold the lock during network calls
+		if err := ent.DbCommit(ctx); err != nil {
+			return nil, errors.InternalDatabaseWriteError(fmt.Errorf("failed to commit freeze transaction: %w", err))
+		}
 
-	activeFreezes, err := ent.GetActiveFreezes(ctx, []keys.Public{ownerPubKey}, tokenCreateEnt.ID)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", tokens.ErrFailedToQueryTokenFreezeStatus, err)
-	}
-	if req.FreezeTokensPayload.ShouldUnfreeze {
-		if len(activeFreezes) == 0 {
-			return nil, fmt.Errorf("no active freezes found to thaw")
-		}
-		if len(activeFreezes) > 1 {
-			return nil, fmt.Errorf(tokens.ErrMultipleActiveFreezes)
-		}
-		err = ent.ThawActiveFreeze(ctx, activeFreezes[0].ID, req.FreezeTokensPayload.IssuerProvidedTimestamp)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", tokens.ErrFailedToUpdateTokenFreeze, err)
-		}
-	} else { // Freeze
-		if len(activeFreezes) > 0 {
-			return nil, fmt.Errorf(tokens.ErrAlreadyFrozen)
-		}
-		err = ent.ActivateFreeze(ctx,
-			ownerPubKey,
-			tokenCreateEnt.ID,
-			req.IssuerSignature,
-			req.FreezeTokensPayload.IssuerProvidedTimestamp,
+		freezeProgress = h.fanOutFreezeToOtherOperators(ctx, req)
+		freezeProgress.AppliedOperatorPublicKeys = append(
+			freezeProgress.AppliedOperatorPublicKeys,
+			h.config.IdentityPublicKey().Serialize(),
 		)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", tokens.ErrFailedToCreateTokenFreeze, err)
-		}
-	}
-	// Collect information about the frozen outputs.
-	outputIDs, totalAmount, err := ent.GetOwnedTokenOutputStats(ctx,
-		[]keys.Public{ownerPubKey},
-		tokenCreateEnt.TokenIdentifier,
-		tokenCreateEnt.Network,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", tokens.ErrFailedToGetOwnedOutputStats, err)
 	}
 
 	return &tokenpb.FreezeTokensResponse{
-		ImpactedOutputIds:   outputIDs.Strings(),
-		ImpactedTokenAmount: totalAmount.Bytes(),
+		ImpactedTokenOutputs: result.OutputRefs,
+		ImpactedTokenAmount:  result.TotalAmount,
+		FreezeProgress:       freezeProgress,
 	}, nil
+}
+
+// fanOutFreezeToOtherOperators sends freeze requests to all other operators.
+// Returns progress showing which operators successfully applied the operation.
+func (h *FreezeTokenHandler) fanOutFreezeToOtherOperators(ctx context.Context, req *tokenpb.FreezeTokensRequest) *tokenpb.FreezeProgress {
+	logger := logging.GetLoggerFromContext(ctx)
+
+	excludeSelf := helper.OperatorSelection{Option: helper.OperatorSelectionOptionExcludeSelf}
+	results, err := helper.ExecuteTaskWithAllOperatorsWithAllResponses(ctx, h.config, &excludeSelf,
+		func(ctx context.Context, operator *so.SigningOperator) (*tokeninternalpb.InternalFreezeTokensResponse, error) {
+			conn, err := operator.NewOperatorGRPCConnection()
+			if err != nil {
+				return nil, err
+			}
+			defer conn.Close()
+
+			client := tokeninternalpb.NewSparkTokenInternalServiceClient(conn)
+			return client.InternalFreezeTokens(ctx, &tokeninternalpb.InternalFreezeTokensRequest{
+				FreezeTokensPayload: req.FreezeTokensPayload,
+				IssuerSignature:     req.IssuerSignature,
+			})
+		},
+	)
+	if err != nil {
+		logger.Warn("coordinated freeze fan-out setup failed",
+			zap.Error(err),
+			zap.Binary("token_identifier", req.FreezeTokensPayload.GetTokenIdentifier()),
+		)
+		results = &helper.PartialResults[*tokeninternalpb.InternalFreezeTokensResponse]{
+			Successes: make(map[string]*tokeninternalpb.InternalFreezeTokensResponse),
+			Errors:    make(map[string]error),
+		}
+	} else if results.HasErrors() {
+		for opID, opErr := range results.Errors {
+			logger.Warn("coordinated freeze failed for operator",
+				zap.String("operator_id", opID),
+				zap.Error(opErr),
+				zap.Binary("token_identifier", req.FreezeTokensPayload.GetTokenIdentifier()),
+			)
+		}
+	}
+
+	return h.buildFreezeProgress(results)
+}
+
+// buildFreezeProgress builds a FreezeProgress from the fan-out results.
+func (h *FreezeTokenHandler) buildFreezeProgress(results *helper.PartialResults[*tokeninternalpb.InternalFreezeTokensResponse]) *tokenpb.FreezeProgress {
+	var applied [][]byte
+
+	for identifier, operator := range h.config.SigningOperatorMap {
+		if identifier == h.config.Identifier {
+			continue // Self is added by the caller.
+		}
+		if _, ok := results.Successes[identifier]; ok {
+			applied = append(applied, operator.IdentityPublicKey.Serialize())
+		}
+	}
+
+	return &tokenpb.FreezeProgress{
+		AppliedOperatorPublicKeys: applied,
+	}
 }

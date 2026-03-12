@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common/btcnetwork"
@@ -33,6 +34,14 @@ var (
 	// Metrics
 	nodeTxBroadcastCounter   metric.Int64Counter
 	refundTxBroadcastCounter metric.Int64Counter
+
+	// Terminal statuses where nodes no longer need watchtower protection.
+	terminalStatuses = []st.TreeNodeStatus{
+		st.TreeNodeStatusAggregated,
+		st.TreeNodeStatusExited,
+		st.TreeNodeStatusSplitted,
+		st.TreeNodeStatusReimbursed,
+	}
 )
 
 func init() {
@@ -92,19 +101,18 @@ func alreadyBroadcasted(err error) bool {
 
 // QueryBroadcastableNodes returns nodes that are eligible for broadcast.
 func QueryBroadcastableNodes(ctx context.Context, dbClient *ent.Client, blockHeight int64, network btcnetwork.Network) ([]*ent.TreeNode, error) {
-	var rootNodes, childNodes, refundNodes []*ent.TreeNode
+	var childNodes, refundNodes []*ent.TreeNode
 
-	//1. Child nodes whose parent is confirmed but the node itself is not.
+	// 1. Child nodes whose parent is confirmed but the node itself is not.
 	childNodes, err := dbClient.TreeNode.Query().
 		Where(
 			treenode.HasParentWith(
-				treenode.And(
-					treenode.NodeConfirmationHeightNotNil(),
-					treenode.NodeConfirmationHeightGT(0),
-				),
+				treenode.NodeConfirmationHeightNotNil(),
+				treenode.NodeConfirmationHeightGT(0),
 			),
 			treenode.NodeConfirmationHeightIsNil(),
 			treenode.NetworkEQ(network),
+			treenode.StatusNotIn(terminalStatuses...),
 		).
 		WithParent().
 		All(ctx)
@@ -118,6 +126,7 @@ func QueryBroadcastableNodes(ctx context.Context, dbClient *ent.Client, blockHei
 			treenode.NodeConfirmationHeightNotNil(),
 			treenode.RefundConfirmationHeightIsNil(),
 			treenode.NetworkEQ(network),
+			treenode.StatusNotIn(terminalStatuses...),
 		).
 		WithParent().
 		All(ctx)
@@ -126,10 +135,7 @@ func QueryBroadcastableNodes(ctx context.Context, dbClient *ent.Client, blockHei
 	}
 
 	// Deduplicate nodes.
-	allNodes := make([]*ent.TreeNode, 0, len(rootNodes)+len(childNodes)+len(refundNodes))
-	allNodes = append(allNodes, rootNodes...)
-	allNodes = append(allNodes, childNodes...)
-	allNodes = append(allNodes, refundNodes...)
+	allNodes := slices.Concat(childNodes, refundNodes)
 
 	uniqueNodes := make([]*ent.TreeNode, 0, len(allNodes))
 	seen := make(map[uuid.UUID]struct{})
@@ -151,6 +157,7 @@ func QueryBroadcastableTransferLeaves(ctx context.Context, dbClient *ent.Client,
 			treenode.NodeConfirmationHeightNotNil(),
 			treenode.RefundConfirmationHeightIsNil(),
 			treenode.NetworkEQ(network),
+			treenode.StatusNotIn(terminalStatuses...),
 		).
 		IDs(ctx)
 	if err != nil {
@@ -172,6 +179,7 @@ func QueryBroadcastableTransferLeaves(ctx context.Context, dbClient *ent.Client,
 			transferleaf.HasLeafWith(treenode.IDIn(eligibleNodeIDs...)),
 			transferleaf.HasTransferWith(transfer.StatusNotIn(excludedStatuses...)),
 		).
+		WithLeaf().
 		All(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query transfer leaves for eligible nodes: %w", err)
@@ -182,116 +190,192 @@ func QueryBroadcastableTransferLeaves(ctx context.Context, dbClient *ent.Client,
 
 // CheckExpiredTimeLocks checks for TXs with expired time locks and broadcasts them if needed.
 func CheckExpiredTimeLocks(ctx context.Context, bitcoinClient *rpcclient.Client, node *ent.TreeNode, blockHeight int64, network btcnetwork.Network) error {
-	logger := logging.GetLoggerFromContext(ctx)
 
 	if len(node.DirectTx) > 0 && node.NodeConfirmationHeight == 0 {
-		directTx, err := common.TxFromRawTxBytes(node.DirectTx)
-		if err != nil {
-			return fmt.Errorf("watchtower failed to parse node tx for node %s: %w", node.ID, err)
-		}
-		// Check if direct TX has a timelock and has parent
-		if directTx.TxIn[0].Sequence <= 0xFFFFFFFE {
-			// Check if parent is confirmed and timelock has expired
-			parent := node.Edges.Parent
-			if parent == nil {
-				p, err := node.QueryParent().Only(ctx)
-				if ent.IsNotFound(err) {
-					// Exit gracefully if the node is a root node and has no parent
-					return nil
-				} else if err != nil {
-					return fmt.Errorf("watchtower failed to query parent for node %s: %w", node.ID, err)
-				}
-				parent = p
-			}
-			if parent.NodeConfirmationHeight > 0 {
-				timelockExpiryHeight := uint64(directTx.TxIn[0].Sequence&0xFFFF) + parent.NodeConfirmationHeight
-				if timelockExpiryHeight <= uint64(blockHeight) {
-					if err := BroadcastTransaction(ctx, bitcoinClient, node.ID, node.DirectTx); err != nil {
-						// Record node tx broadcast failure
-						if nodeTxBroadcastCounter != nil {
-							nodeTxBroadcastCounter.Add(ctx, 1, metric.WithAttributes(
-								attribute.String("network", network.String()),
-								attribute.String("result", "failure"),
-							))
-						}
-						logger.With(zap.Error(err)).Sugar().Infof("Failed to broadcast node tx for node %s", node.ID)
-						return fmt.Errorf("watchtower failed to broadcast node tx for node %s: %w", node.ID, err)
-					}
+		return checkAndBroadcastNodeTx(ctx, bitcoinClient, node, network, blockHeight)
+	}
 
-					// Record successful node tx broadcast
-					if nodeTxBroadcastCounter != nil {
-						nodeTxBroadcastCounter.Add(ctx, 1, metric.WithAttributes(
-							attribute.String("network", network.String()),
-							attribute.String("result", "success"),
-						))
-					}
-				}
-			}
-		}
-	} else if len(node.DirectRefundTx) > 0 && node.RefundConfirmationHeight == 0 {
-		directRefundTx, err := common.TxFromRawTxBytes(node.DirectRefundTx)
-		if err != nil {
-			return fmt.Errorf("watchtower failed to parse direct refund tx for node %s: %w", node.ID, err)
-		}
-
-		timelockExpiryHeight := uint64(directRefundTx.TxIn[0].Sequence & 0xFFFF)
-		if timelockExpiryHeight <= uint64(blockHeight) {
-			if err := BroadcastTransaction(ctx, bitcoinClient, node.ID, node.DirectRefundTx); err != nil {
-				// Try broadcasting the DirectFromCpfpRefundTx as a fallback
-				if len(node.DirectFromCpfpRefundTx) > 0 {
-					if err := BroadcastTransaction(ctx, bitcoinClient, node.ID, node.DirectFromCpfpRefundTx); err != nil {
-						// Record refund tx broadcast failure
-						if refundTxBroadcastCounter != nil {
-							refundTxBroadcastCounter.Add(ctx, 1, metric.WithAttributes(
-								attribute.String("network", network.String()),
-								attribute.String("result", "failure"),
-							))
-						}
-						logger.With(zap.Error(err)).Sugar().Infof(
-							"Failed to broadcast both direct refund tx and direct from cpfp refund tx for node %s",
-							node.ID,
-						)
-						return fmt.Errorf("watchtower failed to broadcast refund txs for node %s: %w", node.ID, err)
-					}
-					// Record successful refund tx broadcast
-					if refundTxBroadcastCounter != nil {
-						refundTxBroadcastCounter.Add(ctx, 1, metric.WithAttributes(
-							attribute.String("network", network.String()),
-							attribute.String("result", "success"),
-						))
-					}
-					return nil
-				}
-				// Record refund tx broadcast failure if no DirectFromCpfpRefundTx available
-				if refundTxBroadcastCounter != nil {
-					refundTxBroadcastCounter.Add(ctx, 1, metric.WithAttributes(
-						attribute.String("network", network.String()),
-						attribute.String("result", "failure"),
-					))
-				}
-				logger.With(zap.Error(err)).Sugar().Infof("Failed to broadcast direct refund tx for node %s", node.ID)
-				return fmt.Errorf("watchtower failed to broadcast refund tx for node %s: %w", node.ID, err)
-			}
-
-			// Record successful refund tx broadcast
-			if refundTxBroadcastCounter != nil {
-				refundTxBroadcastCounter.Add(ctx, 1, metric.WithAttributes(
-					attribute.String("network", network.String()),
-					attribute.String("result", "success"),
-				))
-			}
-		}
+	if node.NodeConfirmationHeight > 0 && node.RefundConfirmationHeight == 0 {
+		return checkAndBroadcastRefundTx(ctx, bitcoinClient, node, blockHeight, network)
 	}
 
 	return nil
 }
 
-// BroadcastTransferLeafRefund attempts to broadcast the refund transactions for a transfer leaf.
-func BroadcastTransferLeafRefund(ctx context.Context, bitcoinClient *rpcclient.Client, transferLeaf *ent.TransferLeaf, network btcnetwork.Network, blockHeight int64) error {
+func checkAndBroadcastNodeTx(ctx context.Context, bitcoinClient *rpcclient.Client, node *ent.TreeNode, network btcnetwork.Network, blockHeight int64) error {
+	// Sanity check since we cast this to uint64 later.
+	if blockHeight < 0 {
+		return fmt.Errorf("watchtower invalid block height: %d", blockHeight)
+	}
+
 	logger := logging.GetLoggerFromContext(ctx)
 
-	directRefundTimelockExpired := transferLeaf.IntermediateDirectRefundTimelock > 0 && transferLeaf.IntermediateDirectRefundTimelock <= uint64(blockHeight)
-	directFromCpfpRefundTimelockExpired := transferLeaf.IntermediateDirectFromCpfpRefundTimelock > 0 && transferLeaf.IntermediateDirectFromCpfpRefundTimelock <= uint64(blockHeight)
+	directTx, err := common.TxFromRawTxBytes(node.DirectTx)
+	if err != nil {
+		return fmt.Errorf("watchtower failed to parse node tx for node %s: %w", node.ID, err)
+	}
+
+	if len(directTx.TxIn) != 1 {
+		return fmt.Errorf("watchtower invalid node tx for node %s: expected 1 input, got %d", node.ID, len(directTx.TxIn))
+	}
+
+	sequence := directTx.TxIn[0].Sequence
+
+	// Check if bit 31 is set (SequenceLockTimeDisabled). If so, timelock is disabled.
+	if (sequence & wire.SequenceLockTimeDisabled) != 0 {
+		return fmt.Errorf("watchtower invalid node tx for node %s: timelock disabled", node.ID)
+	}
+
+	// Verify it is a block-based relative timelock (bit 22 is NOT set)
+	if (sequence & wire.SequenceLockTimeIsSeconds) != 0 {
+		return fmt.Errorf("watchtower invalid node tx for node %s: expected block-based timelock, got time-based", node.ID)
+	}
+
+	parent := node.Edges.Parent
+	if parent == nil {
+		var err error
+		parent, err = node.QueryParent().Only(ctx)
+		if ent.IsNotFound(err) {
+			logger.With(zap.Error(err)).Sugar().Infof("No parent found for node %s, skipping", node.ID)
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("watchtower failed to query parent for node %s: %w", node.ID, err)
+		}
+	}
+
+	if parent.NodeConfirmationHeight > 0 {
+		timelockExpiryHeight := uint64(directTx.TxIn[0].Sequence&wire.SequenceLockTimeMask) + parent.NodeConfirmationHeight
+		if timelockExpiryHeight <= uint64(blockHeight) {
+			if err := broadcastWithMetric(ctx, bitcoinClient, node.ID, node.DirectTx, network, nodeTxBroadcastCounter); err != nil {
+				logger.With(zap.Error(err)).Sugar().Infof("Failed to broadcast node tx for node %s", node.ID)
+				return fmt.Errorf("watchtower failed to broadcast node tx for node %s: %w", node.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+func checkAndBroadcastRefundTx(ctx context.Context, bitcoinClient *rpcclient.Client, node *ent.TreeNode, blockHeight int64, network btcnetwork.Network) error {
+	// Sanity check since we cast this to uint64 later.
+	if blockHeight < 0 {
+		return fmt.Errorf("watchtower invalid block height: %d", blockHeight)
+	}
+
+	logger := logging.GetLoggerFromContext(ctx)
+
+	candidates := [][]byte{node.DirectRefundTx, node.DirectFromCpfpRefundTx}
+
+	var lastErr error
+	attempted := false
+
+	// Attempt to broadcast direct refund tx first, then direct from CPFP refund tx.
+	for _, txBytes := range candidates {
+		if len(txBytes) == 0 {
+			continue
+		}
+
+		tx, err := common.TxFromRawTxBytes(txBytes)
+		if err != nil {
+			attempted = true
+			logger.With(zap.Error(err)).Sugar().Infof("Failed to parse refund candidate for node %s, trying next", node.ID)
+			lastErr = err
+			continue
+		}
+
+		if len(tx.TxIn) == 0 {
+			attempted = true
+			err := fmt.Errorf("watchtower refund tx has no inputs for node %s", node.ID)
+			logger.With(zap.Error(err)).Sugar().Infof("Invalid refund candidate for node %s, trying next", node.ID)
+			lastErr = err
+			continue
+		}
+
+		sequence := tx.TxIn[0].Sequence
+
+		// Check if bit 31 is set (SequenceLockTimeDisabled). If so, timelock is disabled.
+		if (sequence & wire.SequenceLockTimeDisabled) != 0 {
+			attempted = true
+			lastErr = fmt.Errorf("watchtower invalid refund tx for node %s: timelock disabled", node.ID)
+			logger.With(zap.Error(lastErr)).Sugar().Infof("Invalid refund candidate for node %s, trying next", node.ID)
+			continue
+		}
+
+		// Verify it is a block-based relative timelock (bit 22 is NOT set)
+		if (sequence & wire.SequenceLockTimeIsSeconds) != 0 {
+			attempted = true
+			lastErr = fmt.Errorf("watchtower invalid refund tx for node %s: expected block-based timelock, got time-based", node.ID)
+			logger.With(zap.Error(lastErr)).Sugar().Infof("Invalid refund candidate for node %s, trying next", node.ID)
+			continue
+		}
+
+		// If we reached here, the candidate passed validation. We clear any previous lastErr
+		// so that we don't return an error if we simply end up waiting for this valid candidate to expire.
+		lastErr = nil
+
+		timelockExpiryHeight := uint64(sequence&wire.SequenceLockTimeMask) + node.NodeConfirmationHeight
+		if timelockExpiryHeight <= uint64(blockHeight) {
+			attempted = true
+			err := broadcastWithMetric(ctx, bitcoinClient, node.ID, txBytes, network, refundTxBroadcastCounter)
+			if err == nil {
+				return nil
+			}
+
+			logger.With(zap.Error(err)).Sugar().Infof("Failed to broadcast refund candidate for node %s", node.ID)
+			lastErr = err
+		}
+	}
+
+	if attempted && lastErr != nil {
+		return fmt.Errorf("watchtower failed to broadcast any refund tx for node %s: %w", node.ID, lastErr)
+	}
+	return nil
+}
+
+func broadcastWithMetric(
+	ctx context.Context,
+	btcClient bitcoinClient,
+	nodeID uuid.UUID,
+	txBytes []byte,
+	network btcnetwork.Network,
+	counter metric.Int64Counter,
+) error {
+	err := BroadcastTransaction(ctx, btcClient, nodeID, txBytes)
+	if err != nil {
+		if counter != nil {
+			counter.Add(ctx, 1, metric.WithAttributes(
+				attribute.String("network", network.String()),
+				attribute.String("result", "failure"),
+			))
+		}
+		return err
+	}
+
+	if counter != nil {
+		counter.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("network", network.String()),
+			attribute.String("result", "success"),
+		))
+	}
+	return nil
+}
+
+// BroadcastTransferLeafRefund attempts to broadcast the refund transactions for a transfer leaf.
+// The intermediate refund timelocks are relative to nodeConfirmationHeight,
+// the block height at which the leaf's Spark node was confirmed.
+// The timelock is expired when blockHeight >= nodeConfirmationHeight + timelock.
+func BroadcastTransferLeafRefund(ctx context.Context, bitcoinClient *rpcclient.Client, transferLeaf *ent.TransferLeaf, nodeConfirmationHeight uint64, network btcnetwork.Network, blockHeight int64) error {
+	logger := logging.GetLoggerFromContext(ctx)
+
+	// A confirmed node has confirmation height much greater than zero.
+	if nodeConfirmationHeight == 0 {
+		return nil
+	}
+
+	directRefundExpiryHeight := nodeConfirmationHeight + transferLeaf.IntermediateDirectRefundTimelock
+	directRefundTimelockExpired := transferLeaf.IntermediateDirectRefundTimelock > 0 && directRefundExpiryHeight <= uint64(blockHeight)
+
+	directFromCpfpRefundExpiryHeight := nodeConfirmationHeight + transferLeaf.IntermediateDirectFromCpfpRefundTimelock
+	directFromCpfpRefundTimelockExpired := transferLeaf.IntermediateDirectFromCpfpRefundTimelock > 0 && directFromCpfpRefundExpiryHeight <= uint64(blockHeight)
 
 	// If neither timelock is expired, return early
 	if !directRefundTimelockExpired && !directFromCpfpRefundTimelockExpired {

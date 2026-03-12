@@ -1,6 +1,6 @@
 {
   "name": "@buildonspark/spark-react-native-app",
-  "version": "0.0.42",
+  "version": "0.0.56",
   "private": true,
   "scripts": {
     "android": "react-native run-android",
@@ -10,12 +10,19 @@
     "lint": "eslint .",
     "start": "react-native start",
     "build:ios:debug": "../../node_modules/.bin/detox build --configuration ios.sim.debug",
-    "test:ios:debug": "../../node_modules/.bin/detox test --configuration ios.sim.debug"
+    "test:ios:debug": "../../node_modules/.bin/detox test --configuration ios.sim.debug",
+    "build:ios:release": "../../node_modules/.bin/detox build --configuration ios.sim.release",
+    "test:ios:release": "../../node_modules/.bin/detox test --configuration ios.sim.release",
+    "build:android:debug": "../../node_modules/.bin/detox build --configuration android.emu.debug",
+    "build:android:release": "../../node_modules/.bin/detox build --configuration android.emu.release",
+    "test:android:debug": "../../node_modules/.bin/detox test --configuration android.emu.debug",
+    "test:android:release": "../../node_modules/.bin/detox test --configuration android.emu.release",
+    "test:android:hermetic": "../../node_modules/.bin/detox test --configuration android.emu.hermetic e2e/spark-hermetic.test.js"
   },
   "dependencies": {
     "@azure/core-asynciterator-polyfill": "^1.0.2",
-    "@buildonspark/issuer-sdk": "0.1.4",
-    "@buildonspark/spark-sdk": "0.5.4",
+    "@buildonspark/issuer-sdk": "0.1.18",
+    "@buildonspark/spark-sdk": "0.7.0",
     "@react-native/new-app-screen": "0.80.1",
     "@react-navigation/bottom-tabs": "^7.4.8",
     "@react-navigation/drawer": "^7.5.9",
@@ -27,7 +34,7 @@
     "react-native-get-random-values": "^1.11.0",
     "react-native-keyboard-aware-scroll-view": "^0.9.5",
     "react-native-safe-area-context": "^5.6.1",
-    "react-native-screens": "^4.16.0",
+    "react-native-screens": "~4.18.0",
     "text-encoding": "^0.7.0"
   },
   "devDependencies": {

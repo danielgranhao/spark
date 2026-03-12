@@ -134,7 +134,7 @@ func TestStaticDepositUserRefund(t *testing.T) {
 	// Create spend tx from Alice's deposit to an Alice wallet address
 	// *********************************************************************************
 	depositOutPoint := &wire.OutPoint{Hash: signedDepositTx.TxHash(), Index: uint32(vout)}
-	spendTx := wire.NewMsgTx(2)
+	spendTx := wire.NewMsgTx(3)
 	spendTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: *depositOutPoint,
 		SignatureScript:  nil,
@@ -154,7 +154,7 @@ func TestStaticDepositUserRefund(t *testing.T) {
 		signedDepositTx.TxOut[vout],
 	)
 	require.NoError(t, err)
-	userSignature := wallet.CreateUserSignature(
+	userSignature, err := wallet.CreateUserSignature(
 		signedDepositTx.TxHash().String(),
 		uint32(vout),
 		btcnetwork.Regtest,
@@ -163,6 +163,7 @@ func TestStaticDepositUserRefund(t *testing.T) {
 		spendTxSighash,
 		aliceConfig.IdentityPrivateKey,
 	)
+	require.NoError(t, err)
 
 	// *********************************************************************************
 	// Refund Static Deposit
@@ -199,7 +200,7 @@ func TestStaticDepositUserRefund(t *testing.T) {
 		require.NoError(t, err)
 		bobCtx := wallet.ContextWithToken(t.Context(), bobConnectionToken)
 
-		wrongUserSignature := wallet.CreateUserSignature(
+		wrongUserSignature, err := wallet.CreateUserSignature(
 			signedDepositTx.TxHash().String(),
 			uint32(vout),
 			btcnetwork.Regtest,
@@ -208,6 +209,7 @@ func TestStaticDepositUserRefund(t *testing.T) {
 			spendTxSighash,
 			bobConfig.IdentityPrivateKey,
 		)
+		require.NoError(t, err)
 
 		_, err = wallet.RefundStaticDeposit(
 			bobCtx,
@@ -250,7 +252,7 @@ func TestStaticDepositUserRefund(t *testing.T) {
 	})
 
 	t.Run("Refunding a Static Deposit again to another address produces another transaction", func(t *testing.T) {
-		spendTx2 := wire.NewMsgTx(2)
+		spendTx2 := wire.NewMsgTx(3)
 		spendTx2.AddTxIn(&wire.TxIn{
 			PreviousOutPoint: *depositOutPoint,
 			SignatureScript:  nil,
@@ -264,7 +266,7 @@ func TestStaticDepositUserRefund(t *testing.T) {
 
 		spendTxSighash2, err := common.SigHashFromTx(spendTx2, 0, signedDepositTx.TxOut[vout])
 		require.NoError(t, err)
-		userSignature2 := wallet.CreateUserSignature(
+		userSignature2, err := wallet.CreateUserSignature(
 			signedDepositTx.TxHash().String(),
 			uint32(vout),
 			btcnetwork.Regtest,
@@ -273,6 +275,7 @@ func TestStaticDepositUserRefund(t *testing.T) {
 			spendTxSighash2,
 			aliceConfig.IdentityPrivateKey,
 		)
+		require.NoError(t, err)
 
 		signedSpendTx2, err := wallet.RefundStaticDeposit(
 			aliceCtx,
@@ -334,12 +337,22 @@ func TestStaticDepositUserRefund(t *testing.T) {
 		require.NoError(t, err)
 		bobCtx := wallet.ContextWithToken(t.Context(), bobConnectionToken)
 
+		// Create a fresh transaction for Bob's attempt (spendTx may have been modified)
+		bobSpendTx := wire.NewMsgTx(3)
+		bobSpendTx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: *depositOutPoint,
+			SignatureScript:  nil,
+			Witness:          nil,
+			Sequence:         wire.MaxTxInSequenceNum,
+		})
+		bobSpendTx.AddTxOut(wire.NewTxOut(int64(quoteAmount), spendPkScript))
+
 		_, err = wallet.RefundStaticDeposit(
 			bobCtx,
 			bobConfig,
 			wallet.RefundStaticDepositParams{
 				Network:                 btcnetwork.Regtest,
-				SpendTx:                 spendTx,
+				SpendTx:                 bobSpendTx,
 				DepositAddressSecretKey: aliceDepositPrivKey,
 				UserSignature:           userSignature,
 				PrevTxOut:               signedDepositTx.TxOut[vout],

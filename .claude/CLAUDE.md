@@ -49,6 +49,26 @@ The `spark_config.json` file contains codebase locations. Since this config is n
 - When adding new key_directories, always use relative paths
 - Never update key_directories to absolute paths
 
+### Claude Code Permissions (settings.local.json)
+
+The `.claude/settings.local.json` file stores user-granted permissions for Claude Code. To support git worktrees sharing the same permissions file via symlink:
+
+**Always use relative paths in permissions:**
+- ✅ `Bash(./scripts/gen-migration.sh:*)`
+- ❌ `Bash(/Users/name/ws/spark/scripts/gen-migration.sh:*)`
+
+**Why this matters:**
+- Git worktrees can symlink to the parent repo's `settings.local.json`
+- Absolute paths break when the working directory changes
+- Relative paths work correctly in both the main repo and worktrees
+
+**Setting up worktree permission sharing:**
+```bash
+# In the worktree, replace settings.local.json with a symlink to parent
+rm /path/to/worktree/.claude/settings.local.json
+ln -s /path/to/main-repo/.claude/settings.local.json /path/to/worktree/.claude/settings.local.json
+```
+
 ## 1. What is Spark?
 
 Spark is a **Bitcoin Layer 2 scaling solution** based on **statechains** that enables off-chain transfer of UTXO ownership via cryptographic key updates rather than on-chain transactions.
@@ -213,7 +233,7 @@ Spark uses a modified **FROST** (Flexible Round-Optimized Schnorr Threshold) sch
 4. **Tree Creation**: SO creates tree structure and publishes to L1
 5. **Confirmation**: After sufficient confirmations, leaves become available
 
-**Flow Documentation:** See `.claude_code/flows/static_deposits.md` and `.claude_code/flows/non_static_deposits.md`
+**Flow Documentation:** See `.claude/flows/static_deposits.md` and `.claude/flows/non_static_deposits.md`
 
 ### Transfer (Off-chain)
 
@@ -224,7 +244,7 @@ Spark uses a modified **FROST** (Flexible Round-Optimized Schnorr Threshold) sch
 3. **Validation**: Receiver verifies SE deleted old key shares (1-of-N trust model)
 4. **New Exit Tx**: Receiver gets new pre-signed exit transaction with shorter timelock
 
-**Flow Documentation:** See `.claude_code/flows/transfers.md`
+**Flow Documentation:** See `.claude/flows/transfers.md`
 
 ### Lightning Integration
 
@@ -234,20 +254,20 @@ Spark supports Lightning via **Atomic Swaps** with SSP:
 1. Client initiates preimage swap with SO, locking leaves for payment hash
 2. SSP pays Lightning invoice, learns preimage
 3. SSP provides preimage to SO, claims locked leaves
-4. **Flow Documentation:** See `.claude_code/flows/lightning_send_flow.md`
+4. **Flow Documentation:** See `.claude/flows/lightning_send_flow.md`
 
 **Lightning Receive:**
 1. Client generates preimage, requests invoice from SSP
 2. SSP creates Lightning invoice, waits for payment
 3. When paid, SSP transfers leaves to user, user provides preimage
-4. **Flow Documentation:** See `.claude_code/flows/lightning_receive_flow.md`
+4. **Flow Documentation:** See `.claude/flows/lightning_receive_flow.md`
 
 ### Withdrawal (Spark → L1)
 
 **Cooperative Exit:**
 1. User requests withdrawal, SSP creates connector transaction
 2. User signs refund transactions, SSP finalizes and broadcasts exit
-3. **Flow Documentation:** See `.claude_code/flows/coop_exit_detailed_flow.md`
+3. **Flow Documentation:** See `.claude/flows/coop_exit_detailed_flow.md`
 
 **Unilateral Exit:**
 1. User broadcasts pre-signed Branch Tx
@@ -383,7 +403,7 @@ Spark supports native tokens (BTKN) as metadata on leaves:
 - Token operations coordinated via two-phase commit across SOs
 - Token metadata does not appear on Bitcoin blockchain
 
-**Flow Documentation:** See `.claude_code/flows/token_creation_flow_CORRECTED.md` and related token flow docs
+**Flow Documentation:** See `.claude/flows/token_creation_flow_CORRECTED.md` and related token flow docs
 
 ## 10. Code Organization
 
@@ -523,15 +543,10 @@ mise test-unit-with-postgres  # Full unit tests with postgres
 
 **Proto Generation** (When proto files change):
 ```bash
-make
+mise gen-protos          # Generate Go proto bindings only
+mise gen-protos-with-ts  # Generate Go AND TypeScript proto bindings
 ```
-
-**CRITICAL**: After running `make` to regenerate SO proto bindings, you MUST also regenerate JS SDK proto bindings:
-```bash
-cd sdks/js/packages/spark-sdk/
-mise exec -- yarn generate:proto
-```
-**NOTE**: Must use `mise exec --` to ensure correct protoc version (29.3) is used. See section 13.4 for tool version requirements.
+**NOTE**: Use `mise gen-protos-with-ts` when proto changes affect the JS SDK (most cases). This runs `make all` for Go bindings then `yarn generate:proto` for TypeScript bindings, using the correct protoc version (33.2) automatically.
 
 **Ent Generation** (When schema changes):
 ```bash
@@ -634,9 +649,10 @@ yarn test:integration
 
 **Proto Generation** (When proto files change):
 ```bash
-mise exec -- yarn generate:proto
+# From the repository root:
+mise gen-protos-with-ts  # Generates Go AND TypeScript proto bindings
 ```
-**CRITICAL**: When proto files (`.proto`) are modified in the SO codebase, you MUST regenerate the JS SDK proto bindings. Run this from `sdks/js/packages/spark-sdk/` directory after running `make` in the SO repository. Must use `mise exec --` to ensure correct protoc version (29.3) is used.
+**NOTE**: When proto files (`.proto`) are modified, run `mise gen-protos-with-ts` from the repository root. This handles both Go and TypeScript generation with the correct protoc version (33.2) automatically.
 
 **Example Scripts Verification** (Required if examples modified):
 ```bash
@@ -713,8 +729,8 @@ yarn build              # Verify examples compile
 - Configuration files are source of truth - do not second-guess or "improve" them
 
 **Examples:**
-- ✅ Use protoc version specified in config: `protoc v5.29.3`
-- ❌ Update to latest protoc version without asking: `protoc v5.30.0`
+- ✅ Use protoc version specified in config: `protoc 33.2`
+- ❌ Update to latest protoc version without asking: `protoc 34.0`
 - ✅ Ask: "This feature requires Go 1.22+, but your config specifies 1.21. Should I update?"
 - ❌ Silently update Go version in go.mod
 
@@ -750,32 +766,34 @@ yarn build              # Verify examples compile
 
 ## 15. Flow Documentation Structure
 
-All flow analyses are documented in `.claude_code/flows/`:
+All flow analyses are documented in `.claude/flows/`:
 
 **Core Flows:**
+- `static_deposits.md` - Deposit to pre-generated addresses ✅
+
+**Additional flows (planned/TODO):**
 - `transfers.md` - Standard Spark-to-Spark transfers
 - `lightning_send_flow.md` - Pay Lightning invoices with Spark leaves
 - `lightning_receive_flow.md` - Receive Lightning payments to Spark leaves
-- `static_deposits.md` - Deposit to pre-generated addresses
 - `non_static_deposits.md` - Deposit to one-time addresses
 - `coop_exit_detailed_flow.md` - Cooperative withdrawals to L1
 - `swap_counterswap_flow.md` - Atomic leaf swaps
 
-**Token Flows:**
+**Token Flows (planned/TODO):**
 - `token_creation_flow_CORRECTED.md` - Token issuance
 - `token_minting_flow_CORRECTED.md` - Minting new token outputs
 - `token_transfer_flow_CORRECTED.md` - Token transfers between users
 
-**System Architecture:**
+**System Architecture (planned/TODO):**
 - `spark_system_architecture.md` - Comprehensive system overview
 - `ssp_system_architecture.md` - SSP-specific architecture
 - `so_architecture_diagram.md` - SO cluster architecture
 
 ## 16. Security Review Resources
 
-**Primary Security Documents:**
-- `.claude_code/spark_security_review_guide.md` - Methodology and checklist
-- `.claude_code/security_framework.md` - Vulnerability categories and patterns
+**Primary Security Documents (planned/TODO):**
+- `.claude/spark_security_review_guide.md` - Methodology and checklist
+- `.claude/security_framework.md` - Vulnerability categories and patterns
 
 **Key Security Principles:**
 1. Always start client-side and trace through entire system
@@ -792,7 +810,7 @@ When analyzing Spark code or flows:
 
 1. **Load Configuration**: Reference `spark_config.json` for all code paths
 2. **Identify Component**: Determine if analyzing SO, SSP, or SDK code
-3. **Find Flow Documentation**: Check `.claude_code/flows/` for relevant flow
+3. **Find Flow Documentation**: Check `.claude/flows/` for relevant flow (currently only `static_deposits.md` available)
 4. **Understand Authentication**: Know which auth model applies (identity vs IP)
 5. **Consider Unilateral Exits**: Always think about user exit scenarios
 6. **Check Database Locking**: Look for `ForUpdate()` and transaction boundaries
@@ -801,11 +819,11 @@ When analyzing Spark code or flows:
 ## 18. Key Contact Points in Codebase
 
 **Starting a transfer:**
-- Client: `transfer.ts:243` - `sendTransferWithKeyTweaks()`
-- SO: `transfer_handler.go:468` - `startTransferInternal()`
+- Client: `transfer.ts:236` - `sendTransferWithKeyTweaks()`
+- SO: `transfer_handler.go:162` - `startTransferInternal()`
 
 **Lightning send:**
-- Client: `spark-wallet.ts:3338` - `payLightningInvoice()`
+- Client: `spark-wallet.ts:3614` - `payLightningInvoice()`
 - SO: `lightning_handler.go` - `initiate_preimage_swap_v2()`
 - SSP: State machine in `SparkLightningSendStateMachine`
 
@@ -815,12 +833,52 @@ When analyzing Spark code or flows:
 - SSP: `claim_static_deposit_fixed_amount` mutation
 
 **Cooperative exit:**
-- Client: `spark-wallet.ts:3912` - `withdraw()`
+- Client: `spark-wallet.ts:4512` - `withdraw()`
 - SSP: `request_coop_exit` mutation
 - SO: `coop_exit_handler.go` - `CooperativeExit()`
 
 ---
 
+## Spark MCP Server — E2E Validation & Debugging
+
+The repo includes a local MCP server (`sdks/js/packages/spark-mcp/`) that exposes Spark wallet operations as tools. To make it available, add a `.mcp.json` at the repo root (gitignored, local-only):
+```json
+{
+  "mcpServers": {
+    "spark-local": {
+      "command": "node",
+      "args": ["sdks/js/packages/spark-mcp/dist/index.js"],
+      "env": { "BITCOIN_NETWORK": "LOCAL" }
+    }
+  }
+}
+```
+
+**Capabilities:** wallet creation and management, on-chain deposits, off-chain Spark transfers, Lightning Network payments (invoices and sends), and withdrawals to Bitcoin L1. Discover the specific tools by invoking the MCP server directly (tools are prefixed `spark_`). If the MCP server is unavailable, read the tool definitions in `sdks/js/packages/spark-mcp/src/tools/` to understand what's available.
+
+**Use it for:**
+- **E2E validation during feature development** — after implementing a feature, create wallets, fund them, and exercise the feature end-to-end to verify it works against a running local Spark environment.
+- **Debugging** — inspect wallet balances, list transfers, check deposit/withdrawal state to diagnose issues in a running local environment.
+
+**Suggesting e2e validation:** When a user is implementing or debugging features related to transfers, deposits, Lightning, withdrawals, or MCP tools, suggest they can run `/spark-mcp-e2e` to validate end-to-end against their local environment — but only as a brief one-liner. Using the skill for debugging requires the Spark MCP server to be configured and local services to be running; if the user hasn't set it up, point them to [`sdks/js/packages/spark-mcp/README.md`](../sdks/js/packages/spark-mcp/README.md) for setup instructions.
+
+**Build prerequisite:** The MCP server runs from compiled JS (`dist/index.js`). If the tools fail to load or you get module errors, rebuild first:
+```bash
+# From repo root:
+mise build-js-packages
+# OR from sdks/js/:
+cd sdks/js && yarn build:packages
+```
+Rebuild after any changes to `spark-mcp` or `spark-sdk` source.
+
+**Multi-wallet:** Pass a `mnemonic` parameter to any tool to operate on a specific wallet. Omit it to use the server default (`SPARK_MNEMONIC` env var, if set).
+
+See [`sdks/js/packages/spark-mcp/CLAUDE.md`](../sdks/js/packages/spark-mcp/CLAUDE.md) for SDK type details and tool implementation.
+
+**Proof of Work for PRs:** If MCP tools were used during the current session to validate a feature (e2e tests, debugging, smoke tests), include a `## Proof of Work` section in the PR description summarizing what was validated. Format as a numbered list of steps taken and results observed, with raw tool outputs in a collapsed `<details>` block. This gives reviewers concrete evidence that the change works. Only include this when validation was actually performed — do not fabricate proof or run validation just for the PR description.
+
+---
+
 **Philosophy:** "Bitcoin is the only network that will likely be around on every timeline; it's the natural bedrock for a radically new global payment network."
 
-This guide provides the foundational context for understanding Spark's architecture, codebase structure, and development practices. For detailed security analysis, flow-specific documentation, and implementation details, reference the specialized documents in `.claude_code/`.
+This guide provides the foundational context for understanding Spark's architecture, codebase structure, and development practices. For detailed security analysis, flow-specific documentation, and implementation details, reference the specialized documents in `.claude/`.

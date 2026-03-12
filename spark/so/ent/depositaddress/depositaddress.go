@@ -34,10 +34,14 @@ const (
 	FieldConfirmationHeight = "confirmation_height"
 	// FieldConfirmationTxid holds the string denoting the confirmation_txid field in the database.
 	FieldConfirmationTxid = "confirmation_txid"
+	// FieldAvailabilityConfirmedAt holds the string denoting the availability_confirmed_at field in the database.
+	FieldAvailabilityConfirmedAt = "availability_confirmed_at"
 	// FieldAddressSignatures holds the string denoting the address_signatures field in the database.
 	FieldAddressSignatures = "address_signatures"
 	// FieldPossessionSignature holds the string denoting the possession_signature field in the database.
 	FieldPossessionSignature = "possession_signature"
+	// FieldPossessionSignatureV2 holds the string denoting the possession_signature_v2 field in the database.
+	FieldPossessionSignatureV2 = "possession_signature_v2"
 	// FieldNodeID holds the string denoting the node_id field in the database.
 	FieldNodeID = "node_id"
 	// FieldIsStatic holds the string denoting the is_static field in the database.
@@ -95,8 +99,10 @@ var Columns = []string{
 	FieldOwnerSigningPubkey,
 	FieldConfirmationHeight,
 	FieldConfirmationTxid,
+	FieldAvailabilityConfirmedAt,
 	FieldAddressSignatures,
 	FieldPossessionSignature,
+	FieldPossessionSignatureV2,
 	FieldNodeID,
 	FieldIsStatic,
 	FieldIsDefault,
@@ -192,6 +198,11 @@ func ByConfirmationHeight(opts ...sql.OrderTermOption) OrderOption {
 // ByConfirmationTxid orders the results by the confirmation_txid field.
 func ByConfirmationTxid(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldConfirmationTxid, opts...).ToFunc()
+}
+
+// ByAvailabilityConfirmedAt orders the results by the availability_confirmed_at field.
+func ByAvailabilityConfirmedAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldAvailabilityConfirmedAt, opts...).ToFunc()
 }
 
 // ByNodeID orders the results by the node_id field.

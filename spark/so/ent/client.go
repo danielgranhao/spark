@@ -22,7 +22,13 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/entitydkgkey"
 	"github.com/lightsparkdev/spark/so/ent/eventmessage"
 	"github.com/lightsparkdev/spark/so/ent/gossip"
+	"github.com/lightsparkdev/spark/so/ent/idempotencykey"
 	"github.com/lightsparkdev/spark/so/ent/l1tokencreate"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenjusticetransaction"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenoutputwithdrawal"
+	"github.com/lightsparkdev/spark/so/ent/l1withdrawaltransaction"
+	"github.com/lightsparkdev/spark/so/ent/multisigconfig"
+	"github.com/lightsparkdev/spark/so/ent/multisigmember"
 	"github.com/lightsparkdev/spark/so/ent/paymentintent"
 	"github.com/lightsparkdev/spark/so/ent/pendingsendtransfer"
 	"github.com/lightsparkdev/spark/so/ent/preimagerequest"
@@ -40,6 +46,8 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/tokentransactionpeersignature"
 	"github.com/lightsparkdev/spark/so/ent/transfer"
 	"github.com/lightsparkdev/spark/so/ent/transferleaf"
+	"github.com/lightsparkdev/spark/so/ent/transferreceiver"
+	"github.com/lightsparkdev/spark/so/ent/transfersender"
 	"github.com/lightsparkdev/spark/so/ent/tree"
 	"github.com/lightsparkdev/spark/so/ent/treenode"
 	"github.com/lightsparkdev/spark/so/ent/usersignedtransaction"
@@ -67,8 +75,20 @@ type Client struct {
 	EventMessage *EventMessageClient
 	// Gossip is the client for interacting with the Gossip builders.
 	Gossip *GossipClient
+	// IdempotencyKey is the client for interacting with the IdempotencyKey builders.
+	IdempotencyKey *IdempotencyKeyClient
 	// L1TokenCreate is the client for interacting with the L1TokenCreate builders.
 	L1TokenCreate *L1TokenCreateClient
+	// L1TokenJusticeTransaction is the client for interacting with the L1TokenJusticeTransaction builders.
+	L1TokenJusticeTransaction *L1TokenJusticeTransactionClient
+	// L1TokenOutputWithdrawal is the client for interacting with the L1TokenOutputWithdrawal builders.
+	L1TokenOutputWithdrawal *L1TokenOutputWithdrawalClient
+	// L1WithdrawalTransaction is the client for interacting with the L1WithdrawalTransaction builders.
+	L1WithdrawalTransaction *L1WithdrawalTransactionClient
+	// MultisigConfig is the client for interacting with the MultisigConfig builders.
+	MultisigConfig *MultisigConfigClient
+	// MultisigMember is the client for interacting with the MultisigMember builders.
+	MultisigMember *MultisigMemberClient
 	// PaymentIntent is the client for interacting with the PaymentIntent builders.
 	PaymentIntent *PaymentIntentClient
 	// PendingSendTransfer is the client for interacting with the PendingSendTransfer builders.
@@ -103,6 +123,10 @@ type Client struct {
 	Transfer *TransferClient
 	// TransferLeaf is the client for interacting with the TransferLeaf builders.
 	TransferLeaf *TransferLeafClient
+	// TransferReceiver is the client for interacting with the TransferReceiver builders.
+	TransferReceiver *TransferReceiverClient
+	// TransferSender is the client for interacting with the TransferSender builders.
+	TransferSender *TransferSenderClient
 	// Tree is the client for interacting with the Tree builders.
 	Tree *TreeClient
 	// TreeNode is the client for interacting with the TreeNode builders.
@@ -132,7 +156,13 @@ func (c *Client) init() {
 	c.EntityDkgKey = NewEntityDkgKeyClient(c.config)
 	c.EventMessage = NewEventMessageClient(c.config)
 	c.Gossip = NewGossipClient(c.config)
+	c.IdempotencyKey = NewIdempotencyKeyClient(c.config)
 	c.L1TokenCreate = NewL1TokenCreateClient(c.config)
+	c.L1TokenJusticeTransaction = NewL1TokenJusticeTransactionClient(c.config)
+	c.L1TokenOutputWithdrawal = NewL1TokenOutputWithdrawalClient(c.config)
+	c.L1WithdrawalTransaction = NewL1WithdrawalTransactionClient(c.config)
+	c.MultisigConfig = NewMultisigConfigClient(c.config)
+	c.MultisigMember = NewMultisigMemberClient(c.config)
 	c.PaymentIntent = NewPaymentIntentClient(c.config)
 	c.PendingSendTransfer = NewPendingSendTransferClient(c.config)
 	c.PreimageRequest = NewPreimageRequestClient(c.config)
@@ -150,6 +180,8 @@ func (c *Client) init() {
 	c.TokenTransactionPeerSignature = NewTokenTransactionPeerSignatureClient(c.config)
 	c.Transfer = NewTransferClient(c.config)
 	c.TransferLeaf = NewTransferLeafClient(c.config)
+	c.TransferReceiver = NewTransferReceiverClient(c.config)
+	c.TransferSender = NewTransferSenderClient(c.config)
 	c.Tree = NewTreeClient(c.config)
 	c.TreeNode = NewTreeNodeClient(c.config)
 	c.UserSignedTransaction = NewUserSignedTransactionClient(c.config)
@@ -254,7 +286,13 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		EntityDkgKey:                      NewEntityDkgKeyClient(cfg),
 		EventMessage:                      NewEventMessageClient(cfg),
 		Gossip:                            NewGossipClient(cfg),
+		IdempotencyKey:                    NewIdempotencyKeyClient(cfg),
 		L1TokenCreate:                     NewL1TokenCreateClient(cfg),
+		L1TokenJusticeTransaction:         NewL1TokenJusticeTransactionClient(cfg),
+		L1TokenOutputWithdrawal:           NewL1TokenOutputWithdrawalClient(cfg),
+		L1WithdrawalTransaction:           NewL1WithdrawalTransactionClient(cfg),
+		MultisigConfig:                    NewMultisigConfigClient(cfg),
+		MultisigMember:                    NewMultisigMemberClient(cfg),
 		PaymentIntent:                     NewPaymentIntentClient(cfg),
 		PendingSendTransfer:               NewPendingSendTransferClient(cfg),
 		PreimageRequest:                   NewPreimageRequestClient(cfg),
@@ -272,6 +310,8 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		TokenTransactionPeerSignature:     NewTokenTransactionPeerSignatureClient(cfg),
 		Transfer:                          NewTransferClient(cfg),
 		TransferLeaf:                      NewTransferLeafClient(cfg),
+		TransferReceiver:                  NewTransferReceiverClient(cfg),
+		TransferSender:                    NewTransferSenderClient(cfg),
 		Tree:                              NewTreeClient(cfg),
 		TreeNode:                          NewTreeNodeClient(cfg),
 		UserSignedTransaction:             NewUserSignedTransactionClient(cfg),
@@ -303,7 +343,13 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		EntityDkgKey:                      NewEntityDkgKeyClient(cfg),
 		EventMessage:                      NewEventMessageClient(cfg),
 		Gossip:                            NewGossipClient(cfg),
+		IdempotencyKey:                    NewIdempotencyKeyClient(cfg),
 		L1TokenCreate:                     NewL1TokenCreateClient(cfg),
+		L1TokenJusticeTransaction:         NewL1TokenJusticeTransactionClient(cfg),
+		L1TokenOutputWithdrawal:           NewL1TokenOutputWithdrawalClient(cfg),
+		L1WithdrawalTransaction:           NewL1WithdrawalTransactionClient(cfg),
+		MultisigConfig:                    NewMultisigConfigClient(cfg),
+		MultisigMember:                    NewMultisigMemberClient(cfg),
 		PaymentIntent:                     NewPaymentIntentClient(cfg),
 		PendingSendTransfer:               NewPendingSendTransferClient(cfg),
 		PreimageRequest:                   NewPreimageRequestClient(cfg),
@@ -321,6 +367,8 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		TokenTransactionPeerSignature:     NewTokenTransactionPeerSignatureClient(cfg),
 		Transfer:                          NewTransferClient(cfg),
 		TransferLeaf:                      NewTransferLeafClient(cfg),
+		TransferReceiver:                  NewTransferReceiverClient(cfg),
+		TransferSender:                    NewTransferSenderClient(cfg),
 		Tree:                              NewTreeClient(cfg),
 		TreeNode:                          NewTreeNodeClient(cfg),
 		UserSignedTransaction:             NewUserSignedTransactionClient(cfg),
@@ -357,13 +405,15 @@ func (c *Client) Close() error {
 func (c *Client) Use(hooks ...Hook) {
 	for _, n := range []interface{ Use(...Hook) }{
 		c.BlockHeight, c.CooperativeExit, c.DepositAddress, c.EntityDkgKey,
-		c.EventMessage, c.Gossip, c.L1TokenCreate, c.PaymentIntent,
+		c.EventMessage, c.Gossip, c.IdempotencyKey, c.L1TokenCreate,
+		c.L1TokenJusticeTransaction, c.L1TokenOutputWithdrawal,
+		c.L1WithdrawalTransaction, c.MultisigConfig, c.MultisigMember, c.PaymentIntent,
 		c.PendingSendTransfer, c.PreimageRequest, c.PreimageShare, c.SigningCommitment,
 		c.SigningKeyshare, c.SigningNonce, c.SparkInvoice, c.TokenCreate,
 		c.TokenFreeze, c.TokenMint, c.TokenOutput, c.TokenPartialRevocationSecretShare,
 		c.TokenTransaction, c.TokenTransactionPeerSignature, c.Transfer,
-		c.TransferLeaf, c.Tree, c.TreeNode, c.UserSignedTransaction, c.Utxo,
-		c.UtxoSwap, c.WalletSetting,
+		c.TransferLeaf, c.TransferReceiver, c.TransferSender, c.Tree, c.TreeNode,
+		c.UserSignedTransaction, c.Utxo, c.UtxoSwap, c.WalletSetting,
 	} {
 		n.Use(hooks...)
 	}
@@ -374,13 +424,15 @@ func (c *Client) Use(hooks ...Hook) {
 func (c *Client) Intercept(interceptors ...Interceptor) {
 	for _, n := range []interface{ Intercept(...Interceptor) }{
 		c.BlockHeight, c.CooperativeExit, c.DepositAddress, c.EntityDkgKey,
-		c.EventMessage, c.Gossip, c.L1TokenCreate, c.PaymentIntent,
+		c.EventMessage, c.Gossip, c.IdempotencyKey, c.L1TokenCreate,
+		c.L1TokenJusticeTransaction, c.L1TokenOutputWithdrawal,
+		c.L1WithdrawalTransaction, c.MultisigConfig, c.MultisigMember, c.PaymentIntent,
 		c.PendingSendTransfer, c.PreimageRequest, c.PreimageShare, c.SigningCommitment,
 		c.SigningKeyshare, c.SigningNonce, c.SparkInvoice, c.TokenCreate,
 		c.TokenFreeze, c.TokenMint, c.TokenOutput, c.TokenPartialRevocationSecretShare,
 		c.TokenTransaction, c.TokenTransactionPeerSignature, c.Transfer,
-		c.TransferLeaf, c.Tree, c.TreeNode, c.UserSignedTransaction, c.Utxo,
-		c.UtxoSwap, c.WalletSetting,
+		c.TransferLeaf, c.TransferReceiver, c.TransferSender, c.Tree, c.TreeNode,
+		c.UserSignedTransaction, c.Utxo, c.UtxoSwap, c.WalletSetting,
 	} {
 		n.Intercept(interceptors...)
 	}
@@ -401,8 +453,20 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.EventMessage.mutate(ctx, m)
 	case *GossipMutation:
 		return c.Gossip.mutate(ctx, m)
+	case *IdempotencyKeyMutation:
+		return c.IdempotencyKey.mutate(ctx, m)
 	case *L1TokenCreateMutation:
 		return c.L1TokenCreate.mutate(ctx, m)
+	case *L1TokenJusticeTransactionMutation:
+		return c.L1TokenJusticeTransaction.mutate(ctx, m)
+	case *L1TokenOutputWithdrawalMutation:
+		return c.L1TokenOutputWithdrawal.mutate(ctx, m)
+	case *L1WithdrawalTransactionMutation:
+		return c.L1WithdrawalTransaction.mutate(ctx, m)
+	case *MultisigConfigMutation:
+		return c.MultisigConfig.mutate(ctx, m)
+	case *MultisigMemberMutation:
+		return c.MultisigMember.mutate(ctx, m)
 	case *PaymentIntentMutation:
 		return c.PaymentIntent.mutate(ctx, m)
 	case *PendingSendTransferMutation:
@@ -437,6 +501,10 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.Transfer.mutate(ctx, m)
 	case *TransferLeafMutation:
 		return c.TransferLeaf.mutate(ctx, m)
+	case *TransferReceiverMutation:
+		return c.TransferReceiver.mutate(ctx, m)
+	case *TransferSenderMutation:
+		return c.TransferSender.mutate(ctx, m)
 	case *TreeMutation:
 		return c.Tree.mutate(ctx, m)
 	case *TreeNodeMutation:
@@ -1349,6 +1417,139 @@ func (c *GossipClient) mutate(ctx context.Context, m *GossipMutation) (Value, er
 	}
 }
 
+// IdempotencyKeyClient is a client for the IdempotencyKey schema.
+type IdempotencyKeyClient struct {
+	config
+}
+
+// NewIdempotencyKeyClient returns a client for the IdempotencyKey from the given config.
+func NewIdempotencyKeyClient(c config) *IdempotencyKeyClient {
+	return &IdempotencyKeyClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `idempotencykey.Hooks(f(g(h())))`.
+func (c *IdempotencyKeyClient) Use(hooks ...Hook) {
+	c.hooks.IdempotencyKey = append(c.hooks.IdempotencyKey, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `idempotencykey.Intercept(f(g(h())))`.
+func (c *IdempotencyKeyClient) Intercept(interceptors ...Interceptor) {
+	c.inters.IdempotencyKey = append(c.inters.IdempotencyKey, interceptors...)
+}
+
+// Create returns a builder for creating a IdempotencyKey entity.
+func (c *IdempotencyKeyClient) Create() *IdempotencyKeyCreate {
+	mutation := newIdempotencyKeyMutation(c.config, OpCreate)
+	return &IdempotencyKeyCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of IdempotencyKey entities.
+func (c *IdempotencyKeyClient) CreateBulk(builders ...*IdempotencyKeyCreate) *IdempotencyKeyCreateBulk {
+	return &IdempotencyKeyCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *IdempotencyKeyClient) MapCreateBulk(slice any, setFunc func(*IdempotencyKeyCreate, int)) *IdempotencyKeyCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &IdempotencyKeyCreateBulk{err: fmt.Errorf("calling to IdempotencyKeyClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*IdempotencyKeyCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &IdempotencyKeyCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for IdempotencyKey.
+func (c *IdempotencyKeyClient) Update() *IdempotencyKeyUpdate {
+	mutation := newIdempotencyKeyMutation(c.config, OpUpdate)
+	return &IdempotencyKeyUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *IdempotencyKeyClient) UpdateOne(ik *IdempotencyKey) *IdempotencyKeyUpdateOne {
+	mutation := newIdempotencyKeyMutation(c.config, OpUpdateOne, withIdempotencyKey(ik))
+	return &IdempotencyKeyUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *IdempotencyKeyClient) UpdateOneID(id uuid.UUID) *IdempotencyKeyUpdateOne {
+	mutation := newIdempotencyKeyMutation(c.config, OpUpdateOne, withIdempotencyKeyID(id))
+	return &IdempotencyKeyUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for IdempotencyKey.
+func (c *IdempotencyKeyClient) Delete() *IdempotencyKeyDelete {
+	mutation := newIdempotencyKeyMutation(c.config, OpDelete)
+	return &IdempotencyKeyDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *IdempotencyKeyClient) DeleteOne(ik *IdempotencyKey) *IdempotencyKeyDeleteOne {
+	return c.DeleteOneID(ik.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *IdempotencyKeyClient) DeleteOneID(id uuid.UUID) *IdempotencyKeyDeleteOne {
+	builder := c.Delete().Where(idempotencykey.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &IdempotencyKeyDeleteOne{builder}
+}
+
+// Query returns a query builder for IdempotencyKey.
+func (c *IdempotencyKeyClient) Query() *IdempotencyKeyQuery {
+	return &IdempotencyKeyQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeIdempotencyKey},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a IdempotencyKey entity by its id.
+func (c *IdempotencyKeyClient) Get(ctx context.Context, id uuid.UUID) (*IdempotencyKey, error) {
+	return c.Query().Where(idempotencykey.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *IdempotencyKeyClient) GetX(ctx context.Context, id uuid.UUID) *IdempotencyKey {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// Hooks returns the client hooks.
+func (c *IdempotencyKeyClient) Hooks() []Hook {
+	return c.hooks.IdempotencyKey
+}
+
+// Interceptors returns the client interceptors.
+func (c *IdempotencyKeyClient) Interceptors() []Interceptor {
+	return c.inters.IdempotencyKey
+}
+
+func (c *IdempotencyKeyClient) mutate(ctx context.Context, m *IdempotencyKeyMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&IdempotencyKeyCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&IdempotencyKeyUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&IdempotencyKeyUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&IdempotencyKeyDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown IdempotencyKey mutation op: %q", m.Op())
+	}
+}
+
 // L1TokenCreateClient is a client for the L1TokenCreate schema.
 type L1TokenCreateClient struct {
 	config
@@ -1479,6 +1680,817 @@ func (c *L1TokenCreateClient) mutate(ctx context.Context, m *L1TokenCreateMutati
 		return (&L1TokenCreateDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown L1TokenCreate mutation op: %q", m.Op())
+	}
+}
+
+// L1TokenJusticeTransactionClient is a client for the L1TokenJusticeTransaction schema.
+type L1TokenJusticeTransactionClient struct {
+	config
+}
+
+// NewL1TokenJusticeTransactionClient returns a client for the L1TokenJusticeTransaction from the given config.
+func NewL1TokenJusticeTransactionClient(c config) *L1TokenJusticeTransactionClient {
+	return &L1TokenJusticeTransactionClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `l1tokenjusticetransaction.Hooks(f(g(h())))`.
+func (c *L1TokenJusticeTransactionClient) Use(hooks ...Hook) {
+	c.hooks.L1TokenJusticeTransaction = append(c.hooks.L1TokenJusticeTransaction, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `l1tokenjusticetransaction.Intercept(f(g(h())))`.
+func (c *L1TokenJusticeTransactionClient) Intercept(interceptors ...Interceptor) {
+	c.inters.L1TokenJusticeTransaction = append(c.inters.L1TokenJusticeTransaction, interceptors...)
+}
+
+// Create returns a builder for creating a L1TokenJusticeTransaction entity.
+func (c *L1TokenJusticeTransactionClient) Create() *L1TokenJusticeTransactionCreate {
+	mutation := newL1TokenJusticeTransactionMutation(c.config, OpCreate)
+	return &L1TokenJusticeTransactionCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of L1TokenJusticeTransaction entities.
+func (c *L1TokenJusticeTransactionClient) CreateBulk(builders ...*L1TokenJusticeTransactionCreate) *L1TokenJusticeTransactionCreateBulk {
+	return &L1TokenJusticeTransactionCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *L1TokenJusticeTransactionClient) MapCreateBulk(slice any, setFunc func(*L1TokenJusticeTransactionCreate, int)) *L1TokenJusticeTransactionCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &L1TokenJusticeTransactionCreateBulk{err: fmt.Errorf("calling to L1TokenJusticeTransactionClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*L1TokenJusticeTransactionCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &L1TokenJusticeTransactionCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for L1TokenJusticeTransaction.
+func (c *L1TokenJusticeTransactionClient) Update() *L1TokenJusticeTransactionUpdate {
+	mutation := newL1TokenJusticeTransactionMutation(c.config, OpUpdate)
+	return &L1TokenJusticeTransactionUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *L1TokenJusticeTransactionClient) UpdateOne(ljt *L1TokenJusticeTransaction) *L1TokenJusticeTransactionUpdateOne {
+	mutation := newL1TokenJusticeTransactionMutation(c.config, OpUpdateOne, withL1TokenJusticeTransaction(ljt))
+	return &L1TokenJusticeTransactionUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *L1TokenJusticeTransactionClient) UpdateOneID(id uuid.UUID) *L1TokenJusticeTransactionUpdateOne {
+	mutation := newL1TokenJusticeTransactionMutation(c.config, OpUpdateOne, withL1TokenJusticeTransactionID(id))
+	return &L1TokenJusticeTransactionUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for L1TokenJusticeTransaction.
+func (c *L1TokenJusticeTransactionClient) Delete() *L1TokenJusticeTransactionDelete {
+	mutation := newL1TokenJusticeTransactionMutation(c.config, OpDelete)
+	return &L1TokenJusticeTransactionDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *L1TokenJusticeTransactionClient) DeleteOne(ljt *L1TokenJusticeTransaction) *L1TokenJusticeTransactionDeleteOne {
+	return c.DeleteOneID(ljt.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *L1TokenJusticeTransactionClient) DeleteOneID(id uuid.UUID) *L1TokenJusticeTransactionDeleteOne {
+	builder := c.Delete().Where(l1tokenjusticetransaction.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &L1TokenJusticeTransactionDeleteOne{builder}
+}
+
+// Query returns a query builder for L1TokenJusticeTransaction.
+func (c *L1TokenJusticeTransactionClient) Query() *L1TokenJusticeTransactionQuery {
+	return &L1TokenJusticeTransactionQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeL1TokenJusticeTransaction},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a L1TokenJusticeTransaction entity by its id.
+func (c *L1TokenJusticeTransactionClient) Get(ctx context.Context, id uuid.UUID) (*L1TokenJusticeTransaction, error) {
+	return c.Query().Where(l1tokenjusticetransaction.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *L1TokenJusticeTransactionClient) GetX(ctx context.Context, id uuid.UUID) *L1TokenJusticeTransaction {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryTokenOutput queries the token_output edge of a L1TokenJusticeTransaction.
+func (c *L1TokenJusticeTransactionClient) QueryTokenOutput(ljt *L1TokenJusticeTransaction) *TokenOutputQuery {
+	query := (&TokenOutputClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := ljt.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(l1tokenjusticetransaction.Table, l1tokenjusticetransaction.FieldID, id),
+			sqlgraph.To(tokenoutput.Table, tokenoutput.FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, true, l1tokenjusticetransaction.TokenOutputTable, l1tokenjusticetransaction.TokenOutputColumn),
+		)
+		fromV = sqlgraph.Neighbors(ljt.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryL1TokenOutputWithdrawal queries the l1_token_output_withdrawal edge of a L1TokenJusticeTransaction.
+func (c *L1TokenJusticeTransactionClient) QueryL1TokenOutputWithdrawal(ljt *L1TokenJusticeTransaction) *L1TokenOutputWithdrawalQuery {
+	query := (&L1TokenOutputWithdrawalClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := ljt.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(l1tokenjusticetransaction.Table, l1tokenjusticetransaction.FieldID, id),
+			sqlgraph.To(l1tokenoutputwithdrawal.Table, l1tokenoutputwithdrawal.FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, true, l1tokenjusticetransaction.L1TokenOutputWithdrawalTable, l1tokenjusticetransaction.L1TokenOutputWithdrawalColumn),
+		)
+		fromV = sqlgraph.Neighbors(ljt.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *L1TokenJusticeTransactionClient) Hooks() []Hook {
+	return c.hooks.L1TokenJusticeTransaction
+}
+
+// Interceptors returns the client interceptors.
+func (c *L1TokenJusticeTransactionClient) Interceptors() []Interceptor {
+	return c.inters.L1TokenJusticeTransaction
+}
+
+func (c *L1TokenJusticeTransactionClient) mutate(ctx context.Context, m *L1TokenJusticeTransactionMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&L1TokenJusticeTransactionCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&L1TokenJusticeTransactionUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&L1TokenJusticeTransactionUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&L1TokenJusticeTransactionDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown L1TokenJusticeTransaction mutation op: %q", m.Op())
+	}
+}
+
+// L1TokenOutputWithdrawalClient is a client for the L1TokenOutputWithdrawal schema.
+type L1TokenOutputWithdrawalClient struct {
+	config
+}
+
+// NewL1TokenOutputWithdrawalClient returns a client for the L1TokenOutputWithdrawal from the given config.
+func NewL1TokenOutputWithdrawalClient(c config) *L1TokenOutputWithdrawalClient {
+	return &L1TokenOutputWithdrawalClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `l1tokenoutputwithdrawal.Hooks(f(g(h())))`.
+func (c *L1TokenOutputWithdrawalClient) Use(hooks ...Hook) {
+	c.hooks.L1TokenOutputWithdrawal = append(c.hooks.L1TokenOutputWithdrawal, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `l1tokenoutputwithdrawal.Intercept(f(g(h())))`.
+func (c *L1TokenOutputWithdrawalClient) Intercept(interceptors ...Interceptor) {
+	c.inters.L1TokenOutputWithdrawal = append(c.inters.L1TokenOutputWithdrawal, interceptors...)
+}
+
+// Create returns a builder for creating a L1TokenOutputWithdrawal entity.
+func (c *L1TokenOutputWithdrawalClient) Create() *L1TokenOutputWithdrawalCreate {
+	mutation := newL1TokenOutputWithdrawalMutation(c.config, OpCreate)
+	return &L1TokenOutputWithdrawalCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of L1TokenOutputWithdrawal entities.
+func (c *L1TokenOutputWithdrawalClient) CreateBulk(builders ...*L1TokenOutputWithdrawalCreate) *L1TokenOutputWithdrawalCreateBulk {
+	return &L1TokenOutputWithdrawalCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *L1TokenOutputWithdrawalClient) MapCreateBulk(slice any, setFunc func(*L1TokenOutputWithdrawalCreate, int)) *L1TokenOutputWithdrawalCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &L1TokenOutputWithdrawalCreateBulk{err: fmt.Errorf("calling to L1TokenOutputWithdrawalClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*L1TokenOutputWithdrawalCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &L1TokenOutputWithdrawalCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for L1TokenOutputWithdrawal.
+func (c *L1TokenOutputWithdrawalClient) Update() *L1TokenOutputWithdrawalUpdate {
+	mutation := newL1TokenOutputWithdrawalMutation(c.config, OpUpdate)
+	return &L1TokenOutputWithdrawalUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *L1TokenOutputWithdrawalClient) UpdateOne(low *L1TokenOutputWithdrawal) *L1TokenOutputWithdrawalUpdateOne {
+	mutation := newL1TokenOutputWithdrawalMutation(c.config, OpUpdateOne, withL1TokenOutputWithdrawal(low))
+	return &L1TokenOutputWithdrawalUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *L1TokenOutputWithdrawalClient) UpdateOneID(id uuid.UUID) *L1TokenOutputWithdrawalUpdateOne {
+	mutation := newL1TokenOutputWithdrawalMutation(c.config, OpUpdateOne, withL1TokenOutputWithdrawalID(id))
+	return &L1TokenOutputWithdrawalUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for L1TokenOutputWithdrawal.
+func (c *L1TokenOutputWithdrawalClient) Delete() *L1TokenOutputWithdrawalDelete {
+	mutation := newL1TokenOutputWithdrawalMutation(c.config, OpDelete)
+	return &L1TokenOutputWithdrawalDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *L1TokenOutputWithdrawalClient) DeleteOne(low *L1TokenOutputWithdrawal) *L1TokenOutputWithdrawalDeleteOne {
+	return c.DeleteOneID(low.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *L1TokenOutputWithdrawalClient) DeleteOneID(id uuid.UUID) *L1TokenOutputWithdrawalDeleteOne {
+	builder := c.Delete().Where(l1tokenoutputwithdrawal.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &L1TokenOutputWithdrawalDeleteOne{builder}
+}
+
+// Query returns a query builder for L1TokenOutputWithdrawal.
+func (c *L1TokenOutputWithdrawalClient) Query() *L1TokenOutputWithdrawalQuery {
+	return &L1TokenOutputWithdrawalQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeL1TokenOutputWithdrawal},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a L1TokenOutputWithdrawal entity by its id.
+func (c *L1TokenOutputWithdrawalClient) Get(ctx context.Context, id uuid.UUID) (*L1TokenOutputWithdrawal, error) {
+	return c.Query().Where(l1tokenoutputwithdrawal.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *L1TokenOutputWithdrawalClient) GetX(ctx context.Context, id uuid.UUID) *L1TokenOutputWithdrawal {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryTokenOutput queries the token_output edge of a L1TokenOutputWithdrawal.
+func (c *L1TokenOutputWithdrawalClient) QueryTokenOutput(low *L1TokenOutputWithdrawal) *TokenOutputQuery {
+	query := (&TokenOutputClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := low.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(l1tokenoutputwithdrawal.Table, l1tokenoutputwithdrawal.FieldID, id),
+			sqlgraph.To(tokenoutput.Table, tokenoutput.FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, true, l1tokenoutputwithdrawal.TokenOutputTable, l1tokenoutputwithdrawal.TokenOutputColumn),
+		)
+		fromV = sqlgraph.Neighbors(low.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryL1WithdrawalTransaction queries the l1_withdrawal_transaction edge of a L1TokenOutputWithdrawal.
+func (c *L1TokenOutputWithdrawalClient) QueryL1WithdrawalTransaction(low *L1TokenOutputWithdrawal) *L1WithdrawalTransactionQuery {
+	query := (&L1WithdrawalTransactionClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := low.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(l1tokenoutputwithdrawal.Table, l1tokenoutputwithdrawal.FieldID, id),
+			sqlgraph.To(l1withdrawaltransaction.Table, l1withdrawaltransaction.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, l1tokenoutputwithdrawal.L1WithdrawalTransactionTable, l1tokenoutputwithdrawal.L1WithdrawalTransactionColumn),
+		)
+		fromV = sqlgraph.Neighbors(low.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryJusticeTx queries the justice_tx edge of a L1TokenOutputWithdrawal.
+func (c *L1TokenOutputWithdrawalClient) QueryJusticeTx(low *L1TokenOutputWithdrawal) *L1TokenJusticeTransactionQuery {
+	query := (&L1TokenJusticeTransactionClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := low.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(l1tokenoutputwithdrawal.Table, l1tokenoutputwithdrawal.FieldID, id),
+			sqlgraph.To(l1tokenjusticetransaction.Table, l1tokenjusticetransaction.FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, false, l1tokenoutputwithdrawal.JusticeTxTable, l1tokenoutputwithdrawal.JusticeTxColumn),
+		)
+		fromV = sqlgraph.Neighbors(low.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *L1TokenOutputWithdrawalClient) Hooks() []Hook {
+	return c.hooks.L1TokenOutputWithdrawal
+}
+
+// Interceptors returns the client interceptors.
+func (c *L1TokenOutputWithdrawalClient) Interceptors() []Interceptor {
+	return c.inters.L1TokenOutputWithdrawal
+}
+
+func (c *L1TokenOutputWithdrawalClient) mutate(ctx context.Context, m *L1TokenOutputWithdrawalMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&L1TokenOutputWithdrawalCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&L1TokenOutputWithdrawalUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&L1TokenOutputWithdrawalUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&L1TokenOutputWithdrawalDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown L1TokenOutputWithdrawal mutation op: %q", m.Op())
+	}
+}
+
+// L1WithdrawalTransactionClient is a client for the L1WithdrawalTransaction schema.
+type L1WithdrawalTransactionClient struct {
+	config
+}
+
+// NewL1WithdrawalTransactionClient returns a client for the L1WithdrawalTransaction from the given config.
+func NewL1WithdrawalTransactionClient(c config) *L1WithdrawalTransactionClient {
+	return &L1WithdrawalTransactionClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `l1withdrawaltransaction.Hooks(f(g(h())))`.
+func (c *L1WithdrawalTransactionClient) Use(hooks ...Hook) {
+	c.hooks.L1WithdrawalTransaction = append(c.hooks.L1WithdrawalTransaction, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `l1withdrawaltransaction.Intercept(f(g(h())))`.
+func (c *L1WithdrawalTransactionClient) Intercept(interceptors ...Interceptor) {
+	c.inters.L1WithdrawalTransaction = append(c.inters.L1WithdrawalTransaction, interceptors...)
+}
+
+// Create returns a builder for creating a L1WithdrawalTransaction entity.
+func (c *L1WithdrawalTransactionClient) Create() *L1WithdrawalTransactionCreate {
+	mutation := newL1WithdrawalTransactionMutation(c.config, OpCreate)
+	return &L1WithdrawalTransactionCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of L1WithdrawalTransaction entities.
+func (c *L1WithdrawalTransactionClient) CreateBulk(builders ...*L1WithdrawalTransactionCreate) *L1WithdrawalTransactionCreateBulk {
+	return &L1WithdrawalTransactionCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *L1WithdrawalTransactionClient) MapCreateBulk(slice any, setFunc func(*L1WithdrawalTransactionCreate, int)) *L1WithdrawalTransactionCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &L1WithdrawalTransactionCreateBulk{err: fmt.Errorf("calling to L1WithdrawalTransactionClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*L1WithdrawalTransactionCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &L1WithdrawalTransactionCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for L1WithdrawalTransaction.
+func (c *L1WithdrawalTransactionClient) Update() *L1WithdrawalTransactionUpdate {
+	mutation := newL1WithdrawalTransactionMutation(c.config, OpUpdate)
+	return &L1WithdrawalTransactionUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *L1WithdrawalTransactionClient) UpdateOne(lt *L1WithdrawalTransaction) *L1WithdrawalTransactionUpdateOne {
+	mutation := newL1WithdrawalTransactionMutation(c.config, OpUpdateOne, withL1WithdrawalTransaction(lt))
+	return &L1WithdrawalTransactionUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *L1WithdrawalTransactionClient) UpdateOneID(id uuid.UUID) *L1WithdrawalTransactionUpdateOne {
+	mutation := newL1WithdrawalTransactionMutation(c.config, OpUpdateOne, withL1WithdrawalTransactionID(id))
+	return &L1WithdrawalTransactionUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for L1WithdrawalTransaction.
+func (c *L1WithdrawalTransactionClient) Delete() *L1WithdrawalTransactionDelete {
+	mutation := newL1WithdrawalTransactionMutation(c.config, OpDelete)
+	return &L1WithdrawalTransactionDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *L1WithdrawalTransactionClient) DeleteOne(lt *L1WithdrawalTransaction) *L1WithdrawalTransactionDeleteOne {
+	return c.DeleteOneID(lt.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *L1WithdrawalTransactionClient) DeleteOneID(id uuid.UUID) *L1WithdrawalTransactionDeleteOne {
+	builder := c.Delete().Where(l1withdrawaltransaction.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &L1WithdrawalTransactionDeleteOne{builder}
+}
+
+// Query returns a query builder for L1WithdrawalTransaction.
+func (c *L1WithdrawalTransactionClient) Query() *L1WithdrawalTransactionQuery {
+	return &L1WithdrawalTransactionQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeL1WithdrawalTransaction},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a L1WithdrawalTransaction entity by its id.
+func (c *L1WithdrawalTransactionClient) Get(ctx context.Context, id uuid.UUID) (*L1WithdrawalTransaction, error) {
+	return c.Query().Where(l1withdrawaltransaction.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *L1WithdrawalTransactionClient) GetX(ctx context.Context, id uuid.UUID) *L1WithdrawalTransaction {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryWithdrawals queries the withdrawals edge of a L1WithdrawalTransaction.
+func (c *L1WithdrawalTransactionClient) QueryWithdrawals(lt *L1WithdrawalTransaction) *L1TokenOutputWithdrawalQuery {
+	query := (&L1TokenOutputWithdrawalClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := lt.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(l1withdrawaltransaction.Table, l1withdrawaltransaction.FieldID, id),
+			sqlgraph.To(l1tokenoutputwithdrawal.Table, l1tokenoutputwithdrawal.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, l1withdrawaltransaction.WithdrawalsTable, l1withdrawaltransaction.WithdrawalsColumn),
+		)
+		fromV = sqlgraph.Neighbors(lt.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QuerySeEntity queries the se_entity edge of a L1WithdrawalTransaction.
+func (c *L1WithdrawalTransactionClient) QuerySeEntity(lt *L1WithdrawalTransaction) *EntityDkgKeyQuery {
+	query := (&EntityDkgKeyClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := lt.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(l1withdrawaltransaction.Table, l1withdrawaltransaction.FieldID, id),
+			sqlgraph.To(entitydkgkey.Table, entitydkgkey.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, l1withdrawaltransaction.SeEntityTable, l1withdrawaltransaction.SeEntityColumn),
+		)
+		fromV = sqlgraph.Neighbors(lt.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *L1WithdrawalTransactionClient) Hooks() []Hook {
+	return c.hooks.L1WithdrawalTransaction
+}
+
+// Interceptors returns the client interceptors.
+func (c *L1WithdrawalTransactionClient) Interceptors() []Interceptor {
+	return c.inters.L1WithdrawalTransaction
+}
+
+func (c *L1WithdrawalTransactionClient) mutate(ctx context.Context, m *L1WithdrawalTransactionMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&L1WithdrawalTransactionCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&L1WithdrawalTransactionUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&L1WithdrawalTransactionUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&L1WithdrawalTransactionDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown L1WithdrawalTransaction mutation op: %q", m.Op())
+	}
+}
+
+// MultisigConfigClient is a client for the MultisigConfig schema.
+type MultisigConfigClient struct {
+	config
+}
+
+// NewMultisigConfigClient returns a client for the MultisigConfig from the given config.
+func NewMultisigConfigClient(c config) *MultisigConfigClient {
+	return &MultisigConfigClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `multisigconfig.Hooks(f(g(h())))`.
+func (c *MultisigConfigClient) Use(hooks ...Hook) {
+	c.hooks.MultisigConfig = append(c.hooks.MultisigConfig, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `multisigconfig.Intercept(f(g(h())))`.
+func (c *MultisigConfigClient) Intercept(interceptors ...Interceptor) {
+	c.inters.MultisigConfig = append(c.inters.MultisigConfig, interceptors...)
+}
+
+// Create returns a builder for creating a MultisigConfig entity.
+func (c *MultisigConfigClient) Create() *MultisigConfigCreate {
+	mutation := newMultisigConfigMutation(c.config, OpCreate)
+	return &MultisigConfigCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of MultisigConfig entities.
+func (c *MultisigConfigClient) CreateBulk(builders ...*MultisigConfigCreate) *MultisigConfigCreateBulk {
+	return &MultisigConfigCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *MultisigConfigClient) MapCreateBulk(slice any, setFunc func(*MultisigConfigCreate, int)) *MultisigConfigCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &MultisigConfigCreateBulk{err: fmt.Errorf("calling to MultisigConfigClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*MultisigConfigCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &MultisigConfigCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for MultisigConfig.
+func (c *MultisigConfigClient) Update() *MultisigConfigUpdate {
+	mutation := newMultisigConfigMutation(c.config, OpUpdate)
+	return &MultisigConfigUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *MultisigConfigClient) UpdateOne(mc *MultisigConfig) *MultisigConfigUpdateOne {
+	mutation := newMultisigConfigMutation(c.config, OpUpdateOne, withMultisigConfig(mc))
+	return &MultisigConfigUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *MultisigConfigClient) UpdateOneID(id uuid.UUID) *MultisigConfigUpdateOne {
+	mutation := newMultisigConfigMutation(c.config, OpUpdateOne, withMultisigConfigID(id))
+	return &MultisigConfigUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for MultisigConfig.
+func (c *MultisigConfigClient) Delete() *MultisigConfigDelete {
+	mutation := newMultisigConfigMutation(c.config, OpDelete)
+	return &MultisigConfigDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *MultisigConfigClient) DeleteOne(mc *MultisigConfig) *MultisigConfigDeleteOne {
+	return c.DeleteOneID(mc.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *MultisigConfigClient) DeleteOneID(id uuid.UUID) *MultisigConfigDeleteOne {
+	builder := c.Delete().Where(multisigconfig.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &MultisigConfigDeleteOne{builder}
+}
+
+// Query returns a query builder for MultisigConfig.
+func (c *MultisigConfigClient) Query() *MultisigConfigQuery {
+	return &MultisigConfigQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeMultisigConfig},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a MultisigConfig entity by its id.
+func (c *MultisigConfigClient) Get(ctx context.Context, id uuid.UUID) (*MultisigConfig, error) {
+	return c.Query().Where(multisigconfig.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *MultisigConfigClient) GetX(ctx context.Context, id uuid.UUID) *MultisigConfig {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryMembers queries the members edge of a MultisigConfig.
+func (c *MultisigConfigClient) QueryMembers(mc *MultisigConfig) *MultisigMemberQuery {
+	query := (&MultisigMemberClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := mc.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(multisigconfig.Table, multisigconfig.FieldID, id),
+			sqlgraph.To(multisigmember.Table, multisigmember.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, multisigconfig.MembersTable, multisigconfig.MembersColumn),
+		)
+		fromV = sqlgraph.Neighbors(mc.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *MultisigConfigClient) Hooks() []Hook {
+	hooks := c.hooks.MultisigConfig
+	return append(hooks[:len(hooks):len(hooks)], multisigconfig.Hooks[:]...)
+}
+
+// Interceptors returns the client interceptors.
+func (c *MultisigConfigClient) Interceptors() []Interceptor {
+	return c.inters.MultisigConfig
+}
+
+func (c *MultisigConfigClient) mutate(ctx context.Context, m *MultisigConfigMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&MultisigConfigCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&MultisigConfigUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&MultisigConfigUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&MultisigConfigDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown MultisigConfig mutation op: %q", m.Op())
+	}
+}
+
+// MultisigMemberClient is a client for the MultisigMember schema.
+type MultisigMemberClient struct {
+	config
+}
+
+// NewMultisigMemberClient returns a client for the MultisigMember from the given config.
+func NewMultisigMemberClient(c config) *MultisigMemberClient {
+	return &MultisigMemberClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `multisigmember.Hooks(f(g(h())))`.
+func (c *MultisigMemberClient) Use(hooks ...Hook) {
+	c.hooks.MultisigMember = append(c.hooks.MultisigMember, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `multisigmember.Intercept(f(g(h())))`.
+func (c *MultisigMemberClient) Intercept(interceptors ...Interceptor) {
+	c.inters.MultisigMember = append(c.inters.MultisigMember, interceptors...)
+}
+
+// Create returns a builder for creating a MultisigMember entity.
+func (c *MultisigMemberClient) Create() *MultisigMemberCreate {
+	mutation := newMultisigMemberMutation(c.config, OpCreate)
+	return &MultisigMemberCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of MultisigMember entities.
+func (c *MultisigMemberClient) CreateBulk(builders ...*MultisigMemberCreate) *MultisigMemberCreateBulk {
+	return &MultisigMemberCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *MultisigMemberClient) MapCreateBulk(slice any, setFunc func(*MultisigMemberCreate, int)) *MultisigMemberCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &MultisigMemberCreateBulk{err: fmt.Errorf("calling to MultisigMemberClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*MultisigMemberCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &MultisigMemberCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for MultisigMember.
+func (c *MultisigMemberClient) Update() *MultisigMemberUpdate {
+	mutation := newMultisigMemberMutation(c.config, OpUpdate)
+	return &MultisigMemberUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *MultisigMemberClient) UpdateOne(mm *MultisigMember) *MultisigMemberUpdateOne {
+	mutation := newMultisigMemberMutation(c.config, OpUpdateOne, withMultisigMember(mm))
+	return &MultisigMemberUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *MultisigMemberClient) UpdateOneID(id uuid.UUID) *MultisigMemberUpdateOne {
+	mutation := newMultisigMemberMutation(c.config, OpUpdateOne, withMultisigMemberID(id))
+	return &MultisigMemberUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for MultisigMember.
+func (c *MultisigMemberClient) Delete() *MultisigMemberDelete {
+	mutation := newMultisigMemberMutation(c.config, OpDelete)
+	return &MultisigMemberDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *MultisigMemberClient) DeleteOne(mm *MultisigMember) *MultisigMemberDeleteOne {
+	return c.DeleteOneID(mm.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *MultisigMemberClient) DeleteOneID(id uuid.UUID) *MultisigMemberDeleteOne {
+	builder := c.Delete().Where(multisigmember.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &MultisigMemberDeleteOne{builder}
+}
+
+// Query returns a query builder for MultisigMember.
+func (c *MultisigMemberClient) Query() *MultisigMemberQuery {
+	return &MultisigMemberQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeMultisigMember},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a MultisigMember entity by its id.
+func (c *MultisigMemberClient) Get(ctx context.Context, id uuid.UUID) (*MultisigMember, error) {
+	return c.Query().Where(multisigmember.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *MultisigMemberClient) GetX(ctx context.Context, id uuid.UUID) *MultisigMember {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryConfig queries the config edge of a MultisigMember.
+func (c *MultisigMemberClient) QueryConfig(mm *MultisigMember) *MultisigConfigQuery {
+	query := (&MultisigConfigClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := mm.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(multisigmember.Table, multisigmember.FieldID, id),
+			sqlgraph.To(multisigconfig.Table, multisigconfig.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, multisigmember.ConfigTable, multisigmember.ConfigColumn),
+		)
+		fromV = sqlgraph.Neighbors(mm.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *MultisigMemberClient) Hooks() []Hook {
+	hooks := c.hooks.MultisigMember
+	return append(hooks[:len(hooks):len(hooks)], multisigmember.Hooks[:]...)
+}
+
+// Interceptors returns the client interceptors.
+func (c *MultisigMemberClient) Interceptors() []Interceptor {
+	return c.inters.MultisigMember
+}
+
+func (c *MultisigMemberClient) mutate(ctx context.Context, m *MultisigMemberMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&MultisigMemberCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&MultisigMemberUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&MultisigMemberUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&MultisigMemberDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown MultisigMember mutation op: %q", m.Op())
 	}
 }
 
@@ -3374,6 +4386,38 @@ func (c *TokenOutputClient) QueryTokenCreate(to *TokenOutput) *TokenCreateQuery 
 	return query
 }
 
+// QueryWithdrawal queries the withdrawal edge of a TokenOutput.
+func (c *TokenOutputClient) QueryWithdrawal(to *TokenOutput) *L1TokenOutputWithdrawalQuery {
+	query := (&L1TokenOutputWithdrawalClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := to.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(tokenoutput.Table, tokenoutput.FieldID, id),
+			sqlgraph.To(l1tokenoutputwithdrawal.Table, l1tokenoutputwithdrawal.FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, false, tokenoutput.WithdrawalTable, tokenoutput.WithdrawalColumn),
+		)
+		fromV = sqlgraph.Neighbors(to.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryJusticeTx queries the justice_tx edge of a TokenOutput.
+func (c *TokenOutputClient) QueryJusticeTx(to *TokenOutput) *L1TokenJusticeTransactionQuery {
+	query := (&L1TokenJusticeTransactionClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := to.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(tokenoutput.Table, tokenoutput.FieldID, id),
+			sqlgraph.To(l1tokenjusticetransaction.Table, l1tokenjusticetransaction.FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, false, tokenoutput.JusticeTxTable, tokenoutput.JusticeTxColumn),
+		)
+		fromV = sqlgraph.Neighbors(to.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // Hooks returns the client hooks.
 func (c *TokenOutputClient) Hooks() []Hook {
 	hooks := c.hooks.TokenOutput
@@ -4148,6 +5192,38 @@ func (c *TransferClient) QueryPrimarySwapTransfer(t *Transfer) *TransferQuery {
 	return query
 }
 
+// QueryTransferSenders queries the transfer_senders edge of a Transfer.
+func (c *TransferClient) QueryTransferSenders(t *Transfer) *TransferSenderQuery {
+	query := (&TransferSenderClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := t.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(transfer.Table, transfer.FieldID, id),
+			sqlgraph.To(transfersender.Table, transfersender.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, true, transfer.TransferSendersTable, transfer.TransferSendersColumn),
+		)
+		fromV = sqlgraph.Neighbors(t.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryTransferReceivers queries the transfer_receivers edge of a Transfer.
+func (c *TransferClient) QueryTransferReceivers(t *Transfer) *TransferReceiverQuery {
+	query := (&TransferReceiverClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := t.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(transfer.Table, transfer.FieldID, id),
+			sqlgraph.To(transferreceiver.Table, transferreceiver.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, true, transfer.TransferReceiversTable, transfer.TransferReceiversColumn),
+		)
+		fromV = sqlgraph.Neighbors(t.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // Hooks returns the client hooks.
 func (c *TransferClient) Hooks() []Hook {
 	hooks := c.hooks.Transfer
@@ -4314,6 +5390,38 @@ func (c *TransferLeafClient) QueryLeaf(tl *TransferLeaf) *TreeNodeQuery {
 	return query
 }
 
+// QueryTransferReceiver queries the transfer_receiver edge of a TransferLeaf.
+func (c *TransferLeafClient) QueryTransferReceiver(tl *TransferLeaf) *TransferReceiverQuery {
+	query := (&TransferReceiverClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := tl.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(transferleaf.Table, transferleaf.FieldID, id),
+			sqlgraph.To(transferreceiver.Table, transferreceiver.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, transferleaf.TransferReceiverTable, transferleaf.TransferReceiverColumn),
+		)
+		fromV = sqlgraph.Neighbors(tl.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryTransferSender queries the transfer_sender edge of a TransferLeaf.
+func (c *TransferLeafClient) QueryTransferSender(tl *TransferLeaf) *TransferSenderQuery {
+	query := (&TransferSenderClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := tl.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(transferleaf.Table, transferleaf.FieldID, id),
+			sqlgraph.To(transfersender.Table, transfersender.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, transferleaf.TransferSenderTable, transferleaf.TransferSenderColumn),
+		)
+		fromV = sqlgraph.Neighbors(tl.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // Hooks returns the client hooks.
 func (c *TransferLeafClient) Hooks() []Hook {
 	hooks := c.hooks.TransferLeaf
@@ -4337,6 +5445,305 @@ func (c *TransferLeafClient) mutate(ctx context.Context, m *TransferLeafMutation
 		return (&TransferLeafDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown TransferLeaf mutation op: %q", m.Op())
+	}
+}
+
+// TransferReceiverClient is a client for the TransferReceiver schema.
+type TransferReceiverClient struct {
+	config
+}
+
+// NewTransferReceiverClient returns a client for the TransferReceiver from the given config.
+func NewTransferReceiverClient(c config) *TransferReceiverClient {
+	return &TransferReceiverClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `transferreceiver.Hooks(f(g(h())))`.
+func (c *TransferReceiverClient) Use(hooks ...Hook) {
+	c.hooks.TransferReceiver = append(c.hooks.TransferReceiver, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `transferreceiver.Intercept(f(g(h())))`.
+func (c *TransferReceiverClient) Intercept(interceptors ...Interceptor) {
+	c.inters.TransferReceiver = append(c.inters.TransferReceiver, interceptors...)
+}
+
+// Create returns a builder for creating a TransferReceiver entity.
+func (c *TransferReceiverClient) Create() *TransferReceiverCreate {
+	mutation := newTransferReceiverMutation(c.config, OpCreate)
+	return &TransferReceiverCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of TransferReceiver entities.
+func (c *TransferReceiverClient) CreateBulk(builders ...*TransferReceiverCreate) *TransferReceiverCreateBulk {
+	return &TransferReceiverCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *TransferReceiverClient) MapCreateBulk(slice any, setFunc func(*TransferReceiverCreate, int)) *TransferReceiverCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &TransferReceiverCreateBulk{err: fmt.Errorf("calling to TransferReceiverClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*TransferReceiverCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &TransferReceiverCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for TransferReceiver.
+func (c *TransferReceiverClient) Update() *TransferReceiverUpdate {
+	mutation := newTransferReceiverMutation(c.config, OpUpdate)
+	return &TransferReceiverUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *TransferReceiverClient) UpdateOne(tr *TransferReceiver) *TransferReceiverUpdateOne {
+	mutation := newTransferReceiverMutation(c.config, OpUpdateOne, withTransferReceiver(tr))
+	return &TransferReceiverUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *TransferReceiverClient) UpdateOneID(id uuid.UUID) *TransferReceiverUpdateOne {
+	mutation := newTransferReceiverMutation(c.config, OpUpdateOne, withTransferReceiverID(id))
+	return &TransferReceiverUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for TransferReceiver.
+func (c *TransferReceiverClient) Delete() *TransferReceiverDelete {
+	mutation := newTransferReceiverMutation(c.config, OpDelete)
+	return &TransferReceiverDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *TransferReceiverClient) DeleteOne(tr *TransferReceiver) *TransferReceiverDeleteOne {
+	return c.DeleteOneID(tr.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *TransferReceiverClient) DeleteOneID(id uuid.UUID) *TransferReceiverDeleteOne {
+	builder := c.Delete().Where(transferreceiver.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &TransferReceiverDeleteOne{builder}
+}
+
+// Query returns a query builder for TransferReceiver.
+func (c *TransferReceiverClient) Query() *TransferReceiverQuery {
+	return &TransferReceiverQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeTransferReceiver},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a TransferReceiver entity by its id.
+func (c *TransferReceiverClient) Get(ctx context.Context, id uuid.UUID) (*TransferReceiver, error) {
+	return c.Query().Where(transferreceiver.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *TransferReceiverClient) GetX(ctx context.Context, id uuid.UUID) *TransferReceiver {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryTransfer queries the transfer edge of a TransferReceiver.
+func (c *TransferReceiverClient) QueryTransfer(tr *TransferReceiver) *TransferQuery {
+	query := (&TransferClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := tr.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(transferreceiver.Table, transferreceiver.FieldID, id),
+			sqlgraph.To(transfer.Table, transfer.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, transferreceiver.TransferTable, transferreceiver.TransferColumn),
+		)
+		fromV = sqlgraph.Neighbors(tr.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *TransferReceiverClient) Hooks() []Hook {
+	hooks := c.hooks.TransferReceiver
+	return append(hooks[:len(hooks):len(hooks)], transferreceiver.Hooks[:]...)
+}
+
+// Interceptors returns the client interceptors.
+func (c *TransferReceiverClient) Interceptors() []Interceptor {
+	return c.inters.TransferReceiver
+}
+
+func (c *TransferReceiverClient) mutate(ctx context.Context, m *TransferReceiverMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&TransferReceiverCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&TransferReceiverUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&TransferReceiverUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&TransferReceiverDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown TransferReceiver mutation op: %q", m.Op())
+	}
+}
+
+// TransferSenderClient is a client for the TransferSender schema.
+type TransferSenderClient struct {
+	config
+}
+
+// NewTransferSenderClient returns a client for the TransferSender from the given config.
+func NewTransferSenderClient(c config) *TransferSenderClient {
+	return &TransferSenderClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `transfersender.Hooks(f(g(h())))`.
+func (c *TransferSenderClient) Use(hooks ...Hook) {
+	c.hooks.TransferSender = append(c.hooks.TransferSender, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `transfersender.Intercept(f(g(h())))`.
+func (c *TransferSenderClient) Intercept(interceptors ...Interceptor) {
+	c.inters.TransferSender = append(c.inters.TransferSender, interceptors...)
+}
+
+// Create returns a builder for creating a TransferSender entity.
+func (c *TransferSenderClient) Create() *TransferSenderCreate {
+	mutation := newTransferSenderMutation(c.config, OpCreate)
+	return &TransferSenderCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of TransferSender entities.
+func (c *TransferSenderClient) CreateBulk(builders ...*TransferSenderCreate) *TransferSenderCreateBulk {
+	return &TransferSenderCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *TransferSenderClient) MapCreateBulk(slice any, setFunc func(*TransferSenderCreate, int)) *TransferSenderCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &TransferSenderCreateBulk{err: fmt.Errorf("calling to TransferSenderClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*TransferSenderCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &TransferSenderCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for TransferSender.
+func (c *TransferSenderClient) Update() *TransferSenderUpdate {
+	mutation := newTransferSenderMutation(c.config, OpUpdate)
+	return &TransferSenderUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *TransferSenderClient) UpdateOne(ts *TransferSender) *TransferSenderUpdateOne {
+	mutation := newTransferSenderMutation(c.config, OpUpdateOne, withTransferSender(ts))
+	return &TransferSenderUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *TransferSenderClient) UpdateOneID(id uuid.UUID) *TransferSenderUpdateOne {
+	mutation := newTransferSenderMutation(c.config, OpUpdateOne, withTransferSenderID(id))
+	return &TransferSenderUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for TransferSender.
+func (c *TransferSenderClient) Delete() *TransferSenderDelete {
+	mutation := newTransferSenderMutation(c.config, OpDelete)
+	return &TransferSenderDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *TransferSenderClient) DeleteOne(ts *TransferSender) *TransferSenderDeleteOne {
+	return c.DeleteOneID(ts.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *TransferSenderClient) DeleteOneID(id uuid.UUID) *TransferSenderDeleteOne {
+	builder := c.Delete().Where(transfersender.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &TransferSenderDeleteOne{builder}
+}
+
+// Query returns a query builder for TransferSender.
+func (c *TransferSenderClient) Query() *TransferSenderQuery {
+	return &TransferSenderQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeTransferSender},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a TransferSender entity by its id.
+func (c *TransferSenderClient) Get(ctx context.Context, id uuid.UUID) (*TransferSender, error) {
+	return c.Query().Where(transfersender.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *TransferSenderClient) GetX(ctx context.Context, id uuid.UUID) *TransferSender {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryTransfer queries the transfer edge of a TransferSender.
+func (c *TransferSenderClient) QueryTransfer(ts *TransferSender) *TransferQuery {
+	query := (&TransferClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := ts.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(transfersender.Table, transfersender.FieldID, id),
+			sqlgraph.To(transfer.Table, transfer.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, transfersender.TransferTable, transfersender.TransferColumn),
+		)
+		fromV = sqlgraph.Neighbors(ts.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *TransferSenderClient) Hooks() []Hook {
+	return c.hooks.TransferSender
+}
+
+// Interceptors returns the client interceptors.
+func (c *TransferSenderClient) Interceptors() []Interceptor {
+	return c.inters.TransferSender
+}
+
+func (c *TransferSenderClient) mutate(ctx context.Context, m *TransferSenderMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&TransferSenderCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&TransferSenderUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&TransferSenderUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&TransferSenderDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown TransferSender mutation op: %q", m.Op())
 	}
 }
 
@@ -4457,6 +5864,22 @@ func (c *TreeClient) QueryRoot(t *Tree) *TreeNodeQuery {
 			sqlgraph.From(tree.Table, tree.FieldID, id),
 			sqlgraph.To(treenode.Table, treenode.FieldID),
 			sqlgraph.Edge(sqlgraph.M2O, false, tree.RootTable, tree.RootColumn),
+		)
+		fromV = sqlgraph.Neighbors(t.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryUtxos queries the utxos edge of a Tree.
+func (c *TreeClient) QueryUtxos(t *Tree) *UtxoQuery {
+	query := (&UtxoClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := t.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(tree.Table, tree.FieldID, id),
+			sqlgraph.To(utxo.Table, utxo.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, tree.UtxosTable, tree.UtxosColumn),
 		)
 		fromV = sqlgraph.Neighbors(t.driver.Dialect(), step)
 		return fromV, nil
@@ -5008,6 +6431,22 @@ func (c *UtxoClient) QueryDepositAddress(u *Utxo) *DepositAddressQuery {
 	return query
 }
 
+// QueryTree queries the tree edge of a Utxo.
+func (c *UtxoClient) QueryTree(u *Utxo) *TreeQuery {
+	query := (&TreeClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := u.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(utxo.Table, utxo.FieldID, id),
+			sqlgraph.To(tree.Table, tree.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, utxo.TreeTable, utxo.TreeColumn),
+		)
+		fromV = sqlgraph.Neighbors(u.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // Hooks returns the client hooks.
 func (c *UtxoClient) Hooks() []Hook {
 	return c.hooks.Utxo
@@ -5173,9 +6612,26 @@ func (c *UtxoSwapClient) QueryTransfer(us *UtxoSwap) *TransferQuery {
 	return query
 }
 
+// QuerySecondaryTransfer queries the secondary_transfer edge of a UtxoSwap.
+func (c *UtxoSwapClient) QuerySecondaryTransfer(us *UtxoSwap) *TransferQuery {
+	query := (&TransferClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := us.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(utxoswap.Table, utxoswap.FieldID, id),
+			sqlgraph.To(transfer.Table, transfer.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, utxoswap.SecondaryTransferTable, utxoswap.SecondaryTransferColumn),
+		)
+		fromV = sqlgraph.Neighbors(us.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // Hooks returns the client hooks.
 func (c *UtxoSwapClient) Hooks() []Hook {
-	return c.hooks.UtxoSwap
+	hooks := c.hooks.UtxoSwap
+	return append(hooks[:len(hooks):len(hooks)], utxoswap.Hooks[:]...)
 }
 
 // Interceptors returns the client interceptors.
@@ -5335,21 +6791,27 @@ func (c *WalletSettingClient) mutate(ctx context.Context, m *WalletSettingMutati
 type (
 	hooks struct {
 		BlockHeight, CooperativeExit, DepositAddress, EntityDkgKey, EventMessage,
-		Gossip, L1TokenCreate, PaymentIntent, PendingSendTransfer, PreimageRequest,
+		Gossip, IdempotencyKey, L1TokenCreate, L1TokenJusticeTransaction,
+		L1TokenOutputWithdrawal, L1WithdrawalTransaction, MultisigConfig,
+		MultisigMember, PaymentIntent, PendingSendTransfer, PreimageRequest,
 		PreimageShare, SigningCommitment, SigningKeyshare, SigningNonce, SparkInvoice,
 		TokenCreate, TokenFreeze, TokenMint, TokenOutput,
 		TokenPartialRevocationSecretShare, TokenTransaction,
-		TokenTransactionPeerSignature, Transfer, TransferLeaf, Tree, TreeNode,
-		UserSignedTransaction, Utxo, UtxoSwap, WalletSetting []ent.Hook
+		TokenTransactionPeerSignature, Transfer, TransferLeaf, TransferReceiver,
+		TransferSender, Tree, TreeNode, UserSignedTransaction, Utxo, UtxoSwap,
+		WalletSetting []ent.Hook
 	}
 	inters struct {
 		BlockHeight, CooperativeExit, DepositAddress, EntityDkgKey, EventMessage,
-		Gossip, L1TokenCreate, PaymentIntent, PendingSendTransfer, PreimageRequest,
+		Gossip, IdempotencyKey, L1TokenCreate, L1TokenJusticeTransaction,
+		L1TokenOutputWithdrawal, L1WithdrawalTransaction, MultisigConfig,
+		MultisigMember, PaymentIntent, PendingSendTransfer, PreimageRequest,
 		PreimageShare, SigningCommitment, SigningKeyshare, SigningNonce, SparkInvoice,
 		TokenCreate, TokenFreeze, TokenMint, TokenOutput,
 		TokenPartialRevocationSecretShare, TokenTransaction,
-		TokenTransactionPeerSignature, Transfer, TransferLeaf, Tree, TreeNode,
-		UserSignedTransaction, Utxo, UtxoSwap, WalletSetting []ent.Interceptor
+		TokenTransactionPeerSignature, Transfer, TransferLeaf, TransferReceiver,
+		TransferSender, Tree, TreeNode, UserSignedTransaction, Utxo, UtxoSwap,
+		WalletSetting []ent.Interceptor
 	}
 )
 

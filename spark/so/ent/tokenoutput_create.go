@@ -16,6 +16,8 @@ import (
 	"github.com/lightsparkdev/spark/common/btcnetwork"
 	"github.com/lightsparkdev/spark/common/keys"
 	"github.com/lightsparkdev/spark/common/uint128"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenjusticetransaction"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenoutputwithdrawal"
 	"github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	"github.com/lightsparkdev/spark/so/ent/signingkeyshare"
 	"github.com/lightsparkdev/spark/so/ent/tokencreate"
@@ -136,6 +138,18 @@ func (toc *TokenOutputCreate) SetCreatedTransactionFinalizedHash(b []byte) *Toke
 	return toc
 }
 
+// SetSeFinalizationAdaptorSig sets the "se_finalization_adaptor_sig" field.
+func (toc *TokenOutputCreate) SetSeFinalizationAdaptorSig(b []byte) *TokenOutputCreate {
+	toc.mutation.SetSeFinalizationAdaptorSig(b)
+	return toc
+}
+
+// SetSeWithdrawalSignature sets the "se_withdrawal_signature" field.
+func (toc *TokenOutputCreate) SetSeWithdrawalSignature(b []byte) *TokenOutputCreate {
+	toc.mutation.SetSeWithdrawalSignature(b)
+	return toc
+}
+
 // SetSpentOwnershipSignature sets the "spent_ownership_signature" field.
 func (toc *TokenOutputCreate) SetSpentOwnershipSignature(b []byte) *TokenOutputCreate {
 	toc.mutation.SetSpentOwnershipSignature(b)
@@ -173,12 +187,6 @@ func (toc *TokenOutputCreate) SetNillableSpentRevocationSecret(k *keys.Private) 
 	if k != nil {
 		toc.SetSpentRevocationSecret(*k)
 	}
-	return toc
-}
-
-// SetConfirmedWithdrawBlockHash sets the "confirmed_withdraw_block_hash" field.
-func (toc *TokenOutputCreate) SetConfirmedWithdrawBlockHash(b []byte) *TokenOutputCreate {
-	toc.mutation.SetConfirmedWithdrawBlockHash(b)
 	return toc
 }
 
@@ -296,6 +304,44 @@ func (toc *TokenOutputCreate) AddTokenPartialRevocationSecretShares(t ...*TokenP
 // SetTokenCreate sets the "token_create" edge to the TokenCreate entity.
 func (toc *TokenOutputCreate) SetTokenCreate(t *TokenCreate) *TokenOutputCreate {
 	return toc.SetTokenCreateID(t.ID)
+}
+
+// SetWithdrawalID sets the "withdrawal" edge to the L1TokenOutputWithdrawal entity by ID.
+func (toc *TokenOutputCreate) SetWithdrawalID(id uuid.UUID) *TokenOutputCreate {
+	toc.mutation.SetWithdrawalID(id)
+	return toc
+}
+
+// SetNillableWithdrawalID sets the "withdrawal" edge to the L1TokenOutputWithdrawal entity by ID if the given value is not nil.
+func (toc *TokenOutputCreate) SetNillableWithdrawalID(id *uuid.UUID) *TokenOutputCreate {
+	if id != nil {
+		toc = toc.SetWithdrawalID(*id)
+	}
+	return toc
+}
+
+// SetWithdrawal sets the "withdrawal" edge to the L1TokenOutputWithdrawal entity.
+func (toc *TokenOutputCreate) SetWithdrawal(l *L1TokenOutputWithdrawal) *TokenOutputCreate {
+	return toc.SetWithdrawalID(l.ID)
+}
+
+// SetJusticeTxID sets the "justice_tx" edge to the L1TokenJusticeTransaction entity by ID.
+func (toc *TokenOutputCreate) SetJusticeTxID(id uuid.UUID) *TokenOutputCreate {
+	toc.mutation.SetJusticeTxID(id)
+	return toc
+}
+
+// SetNillableJusticeTxID sets the "justice_tx" edge to the L1TokenJusticeTransaction entity by ID if the given value is not nil.
+func (toc *TokenOutputCreate) SetNillableJusticeTxID(id *uuid.UUID) *TokenOutputCreate {
+	if id != nil {
+		toc = toc.SetJusticeTxID(*id)
+	}
+	return toc
+}
+
+// SetJusticeTx sets the "justice_tx" edge to the L1TokenJusticeTransaction entity.
+func (toc *TokenOutputCreate) SetJusticeTx(l *L1TokenJusticeTransaction) *TokenOutputCreate {
+	return toc.SetJusticeTxID(l.ID)
 }
 
 // Mutation returns the TokenOutputMutation object of the builder.
@@ -505,6 +551,14 @@ func (toc *TokenOutputCreate) createSpec() (*TokenOutput, *sqlgraph.CreateSpec) 
 		_spec.SetField(tokenoutput.FieldCreatedTransactionFinalizedHash, field.TypeBytes, value)
 		_node.CreatedTransactionFinalizedHash = value
 	}
+	if value, ok := toc.mutation.SeFinalizationAdaptorSig(); ok {
+		_spec.SetField(tokenoutput.FieldSeFinalizationAdaptorSig, field.TypeBytes, value)
+		_node.SeFinalizationAdaptorSig = value
+	}
+	if value, ok := toc.mutation.SeWithdrawalSignature(); ok {
+		_spec.SetField(tokenoutput.FieldSeWithdrawalSignature, field.TypeBytes, value)
+		_node.SeWithdrawalSignature = value
+	}
 	if value, ok := toc.mutation.SpentOwnershipSignature(); ok {
 		_spec.SetField(tokenoutput.FieldSpentOwnershipSignature, field.TypeBytes, value)
 		_node.SpentOwnershipSignature = value
@@ -520,10 +574,6 @@ func (toc *TokenOutputCreate) createSpec() (*TokenOutput, *sqlgraph.CreateSpec) 
 	if value, ok := toc.mutation.SpentRevocationSecret(); ok {
 		_spec.SetField(tokenoutput.FieldSpentRevocationSecret, field.TypeBytes, value)
 		_node.SpentRevocationSecret = value
-	}
-	if value, ok := toc.mutation.ConfirmedWithdrawBlockHash(); ok {
-		_spec.SetField(tokenoutput.FieldConfirmedWithdrawBlockHash, field.TypeBytes, value)
-		_node.ConfirmedWithdrawBlockHash = value
 	}
 	if value, ok := toc.mutation.Network(); ok {
 		_spec.SetField(tokenoutput.FieldNetwork, field.TypeEnum, value)
@@ -633,6 +683,38 @@ func (toc *TokenOutputCreate) createSpec() (*TokenOutput, *sqlgraph.CreateSpec) 
 		_node.TokenCreateID = nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
+	if nodes := toc.mutation.WithdrawalIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   tokenoutput.WithdrawalTable,
+			Columns: []string{tokenoutput.WithdrawalColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(l1tokenoutputwithdrawal.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := toc.mutation.JusticeTxIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   tokenoutput.JusticeTxTable,
+			Columns: []string{tokenoutput.JusticeTxColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(l1tokenjusticetransaction.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
 	return _node, _spec
 }
 
@@ -727,6 +809,42 @@ func (u *TokenOutputUpsert) ClearAmount() *TokenOutputUpsert {
 	return u
 }
 
+// SetSeFinalizationAdaptorSig sets the "se_finalization_adaptor_sig" field.
+func (u *TokenOutputUpsert) SetSeFinalizationAdaptorSig(v []byte) *TokenOutputUpsert {
+	u.Set(tokenoutput.FieldSeFinalizationAdaptorSig, v)
+	return u
+}
+
+// UpdateSeFinalizationAdaptorSig sets the "se_finalization_adaptor_sig" field to the value that was provided on create.
+func (u *TokenOutputUpsert) UpdateSeFinalizationAdaptorSig() *TokenOutputUpsert {
+	u.SetExcluded(tokenoutput.FieldSeFinalizationAdaptorSig)
+	return u
+}
+
+// ClearSeFinalizationAdaptorSig clears the value of the "se_finalization_adaptor_sig" field.
+func (u *TokenOutputUpsert) ClearSeFinalizationAdaptorSig() *TokenOutputUpsert {
+	u.SetNull(tokenoutput.FieldSeFinalizationAdaptorSig)
+	return u
+}
+
+// SetSeWithdrawalSignature sets the "se_withdrawal_signature" field.
+func (u *TokenOutputUpsert) SetSeWithdrawalSignature(v []byte) *TokenOutputUpsert {
+	u.Set(tokenoutput.FieldSeWithdrawalSignature, v)
+	return u
+}
+
+// UpdateSeWithdrawalSignature sets the "se_withdrawal_signature" field to the value that was provided on create.
+func (u *TokenOutputUpsert) UpdateSeWithdrawalSignature() *TokenOutputUpsert {
+	u.SetExcluded(tokenoutput.FieldSeWithdrawalSignature)
+	return u
+}
+
+// ClearSeWithdrawalSignature clears the value of the "se_withdrawal_signature" field.
+func (u *TokenOutputUpsert) ClearSeWithdrawalSignature() *TokenOutputUpsert {
+	u.SetNull(tokenoutput.FieldSeWithdrawalSignature)
+	return u
+}
+
 // SetSpentOwnershipSignature sets the "spent_ownership_signature" field.
 func (u *TokenOutputUpsert) SetSpentOwnershipSignature(v []byte) *TokenOutputUpsert {
 	u.Set(tokenoutput.FieldSpentOwnershipSignature, v)
@@ -802,24 +920,6 @@ func (u *TokenOutputUpsert) UpdateSpentRevocationSecret() *TokenOutputUpsert {
 // ClearSpentRevocationSecret clears the value of the "spent_revocation_secret" field.
 func (u *TokenOutputUpsert) ClearSpentRevocationSecret() *TokenOutputUpsert {
 	u.SetNull(tokenoutput.FieldSpentRevocationSecret)
-	return u
-}
-
-// SetConfirmedWithdrawBlockHash sets the "confirmed_withdraw_block_hash" field.
-func (u *TokenOutputUpsert) SetConfirmedWithdrawBlockHash(v []byte) *TokenOutputUpsert {
-	u.Set(tokenoutput.FieldConfirmedWithdrawBlockHash, v)
-	return u
-}
-
-// UpdateConfirmedWithdrawBlockHash sets the "confirmed_withdraw_block_hash" field to the value that was provided on create.
-func (u *TokenOutputUpsert) UpdateConfirmedWithdrawBlockHash() *TokenOutputUpsert {
-	u.SetExcluded(tokenoutput.FieldConfirmedWithdrawBlockHash)
-	return u
-}
-
-// ClearConfirmedWithdrawBlockHash clears the value of the "confirmed_withdraw_block_hash" field.
-func (u *TokenOutputUpsert) ClearConfirmedWithdrawBlockHash() *TokenOutputUpsert {
-	u.SetNull(tokenoutput.FieldConfirmedWithdrawBlockHash)
 	return u
 }
 
@@ -971,6 +1071,48 @@ func (u *TokenOutputUpsertOne) ClearAmount() *TokenOutputUpsertOne {
 	})
 }
 
+// SetSeFinalizationAdaptorSig sets the "se_finalization_adaptor_sig" field.
+func (u *TokenOutputUpsertOne) SetSeFinalizationAdaptorSig(v []byte) *TokenOutputUpsertOne {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.SetSeFinalizationAdaptorSig(v)
+	})
+}
+
+// UpdateSeFinalizationAdaptorSig sets the "se_finalization_adaptor_sig" field to the value that was provided on create.
+func (u *TokenOutputUpsertOne) UpdateSeFinalizationAdaptorSig() *TokenOutputUpsertOne {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.UpdateSeFinalizationAdaptorSig()
+	})
+}
+
+// ClearSeFinalizationAdaptorSig clears the value of the "se_finalization_adaptor_sig" field.
+func (u *TokenOutputUpsertOne) ClearSeFinalizationAdaptorSig() *TokenOutputUpsertOne {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.ClearSeFinalizationAdaptorSig()
+	})
+}
+
+// SetSeWithdrawalSignature sets the "se_withdrawal_signature" field.
+func (u *TokenOutputUpsertOne) SetSeWithdrawalSignature(v []byte) *TokenOutputUpsertOne {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.SetSeWithdrawalSignature(v)
+	})
+}
+
+// UpdateSeWithdrawalSignature sets the "se_withdrawal_signature" field to the value that was provided on create.
+func (u *TokenOutputUpsertOne) UpdateSeWithdrawalSignature() *TokenOutputUpsertOne {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.UpdateSeWithdrawalSignature()
+	})
+}
+
+// ClearSeWithdrawalSignature clears the value of the "se_withdrawal_signature" field.
+func (u *TokenOutputUpsertOne) ClearSeWithdrawalSignature() *TokenOutputUpsertOne {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.ClearSeWithdrawalSignature()
+	})
+}
+
 // SetSpentOwnershipSignature sets the "spent_ownership_signature" field.
 func (u *TokenOutputUpsertOne) SetSpentOwnershipSignature(v []byte) *TokenOutputUpsertOne {
 	return u.Update(func(s *TokenOutputUpsert) {
@@ -1059,27 +1201,6 @@ func (u *TokenOutputUpsertOne) UpdateSpentRevocationSecret() *TokenOutputUpsertO
 func (u *TokenOutputUpsertOne) ClearSpentRevocationSecret() *TokenOutputUpsertOne {
 	return u.Update(func(s *TokenOutputUpsert) {
 		s.ClearSpentRevocationSecret()
-	})
-}
-
-// SetConfirmedWithdrawBlockHash sets the "confirmed_withdraw_block_hash" field.
-func (u *TokenOutputUpsertOne) SetConfirmedWithdrawBlockHash(v []byte) *TokenOutputUpsertOne {
-	return u.Update(func(s *TokenOutputUpsert) {
-		s.SetConfirmedWithdrawBlockHash(v)
-	})
-}
-
-// UpdateConfirmedWithdrawBlockHash sets the "confirmed_withdraw_block_hash" field to the value that was provided on create.
-func (u *TokenOutputUpsertOne) UpdateConfirmedWithdrawBlockHash() *TokenOutputUpsertOne {
-	return u.Update(func(s *TokenOutputUpsert) {
-		s.UpdateConfirmedWithdrawBlockHash()
-	})
-}
-
-// ClearConfirmedWithdrawBlockHash clears the value of the "confirmed_withdraw_block_hash" field.
-func (u *TokenOutputUpsertOne) ClearConfirmedWithdrawBlockHash() *TokenOutputUpsertOne {
-	return u.Update(func(s *TokenOutputUpsert) {
-		s.ClearConfirmedWithdrawBlockHash()
 	})
 }
 
@@ -1401,6 +1522,48 @@ func (u *TokenOutputUpsertBulk) ClearAmount() *TokenOutputUpsertBulk {
 	})
 }
 
+// SetSeFinalizationAdaptorSig sets the "se_finalization_adaptor_sig" field.
+func (u *TokenOutputUpsertBulk) SetSeFinalizationAdaptorSig(v []byte) *TokenOutputUpsertBulk {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.SetSeFinalizationAdaptorSig(v)
+	})
+}
+
+// UpdateSeFinalizationAdaptorSig sets the "se_finalization_adaptor_sig" field to the value that was provided on create.
+func (u *TokenOutputUpsertBulk) UpdateSeFinalizationAdaptorSig() *TokenOutputUpsertBulk {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.UpdateSeFinalizationAdaptorSig()
+	})
+}
+
+// ClearSeFinalizationAdaptorSig clears the value of the "se_finalization_adaptor_sig" field.
+func (u *TokenOutputUpsertBulk) ClearSeFinalizationAdaptorSig() *TokenOutputUpsertBulk {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.ClearSeFinalizationAdaptorSig()
+	})
+}
+
+// SetSeWithdrawalSignature sets the "se_withdrawal_signature" field.
+func (u *TokenOutputUpsertBulk) SetSeWithdrawalSignature(v []byte) *TokenOutputUpsertBulk {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.SetSeWithdrawalSignature(v)
+	})
+}
+
+// UpdateSeWithdrawalSignature sets the "se_withdrawal_signature" field to the value that was provided on create.
+func (u *TokenOutputUpsertBulk) UpdateSeWithdrawalSignature() *TokenOutputUpsertBulk {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.UpdateSeWithdrawalSignature()
+	})
+}
+
+// ClearSeWithdrawalSignature clears the value of the "se_withdrawal_signature" field.
+func (u *TokenOutputUpsertBulk) ClearSeWithdrawalSignature() *TokenOutputUpsertBulk {
+	return u.Update(func(s *TokenOutputUpsert) {
+		s.ClearSeWithdrawalSignature()
+	})
+}
+
 // SetSpentOwnershipSignature sets the "spent_ownership_signature" field.
 func (u *TokenOutputUpsertBulk) SetSpentOwnershipSignature(v []byte) *TokenOutputUpsertBulk {
 	return u.Update(func(s *TokenOutputUpsert) {
@@ -1489,27 +1652,6 @@ func (u *TokenOutputUpsertBulk) UpdateSpentRevocationSecret() *TokenOutputUpsert
 func (u *TokenOutputUpsertBulk) ClearSpentRevocationSecret() *TokenOutputUpsertBulk {
 	return u.Update(func(s *TokenOutputUpsert) {
 		s.ClearSpentRevocationSecret()
-	})
-}
-
-// SetConfirmedWithdrawBlockHash sets the "confirmed_withdraw_block_hash" field.
-func (u *TokenOutputUpsertBulk) SetConfirmedWithdrawBlockHash(v []byte) *TokenOutputUpsertBulk {
-	return u.Update(func(s *TokenOutputUpsert) {
-		s.SetConfirmedWithdrawBlockHash(v)
-	})
-}
-
-// UpdateConfirmedWithdrawBlockHash sets the "confirmed_withdraw_block_hash" field to the value that was provided on create.
-func (u *TokenOutputUpsertBulk) UpdateConfirmedWithdrawBlockHash() *TokenOutputUpsertBulk {
-	return u.Update(func(s *TokenOutputUpsert) {
-		s.UpdateConfirmedWithdrawBlockHash()
-	})
-}
-
-// ClearConfirmedWithdrawBlockHash clears the value of the "confirmed_withdraw_block_hash" field.
-func (u *TokenOutputUpsertBulk) ClearConfirmedWithdrawBlockHash() *TokenOutputUpsertBulk {
-	return u.Update(func(s *TokenOutputUpsert) {
-		s.ClearConfirmedWithdrawBlockHash()
 	})
 }
 

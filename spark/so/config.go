@@ -39,7 +39,7 @@ import (
 )
 
 var (
-	defaultPoolMinConns              = 16
+	defaultPoolMinConns              = 4
 	defaultPoolMaxConns              = 256
 	defaultPoolMaxConnLifetime       = 30 * time.Minute
 	defaultPoolMaxConnLifetimeJitter = 5 * time.Minute
@@ -135,7 +135,8 @@ type Config struct {
 
 // DatabaseDriver returns the database driver based on the database path.
 func (c *Config) DatabaseDriver() string {
-	if strings.HasPrefix(c.DatabasePath, "postgresql") {
+	normalizedPath := strings.ToLower(c.DatabasePath)
+	if strings.HasPrefix(normalizedPath, "postgres://") || strings.HasPrefix(normalizedPath, "postgresql://") {
 		return "postgres"
 	}
 	return "sqlite3"
@@ -210,6 +211,10 @@ type BitcoindConfig struct {
 	Password                     string `yaml:"rpcpassword"`
 	ZmqPubRawBlock               string `yaml:"zmqpubrawblock"`
 	DepositConfirmationThreshold uint   `yaml:"deposit_confirmation_threshold"`
+	// NonStaticConfirmationThreshold specifies the number of blocks a non-static deposit must
+	// exist in before being marked as available. For example, a threshold of 3 means the deposit
+	// must be present in 3 confirmed blocks after the initial confirmation. Defaults to 3 if not set.
+	NonStaticConfirmationThreshold uint `yaml:"non_static_confirmation_threshold"`
 	// Enable Watchtowers in Chain Watcher, this may slow down block processing
 	ProcessNodesForWatchtowers *bool `yaml:"process_nodes_for_watchtowers"`
 }
@@ -705,6 +710,16 @@ func (c *Config) IsAuthzEnforced() bool {
 
 func (c *Config) IdentityPublicKey() keys.Public {
 	return c.SigningOperatorMap[c.Identifier].IdentityPublicKey
+}
+
+// TokenRequiredParticipatingOperatorsCount returns the number of operators required to
+// sign/reveal to consider a token transaction valid. By default, signatures from all operators
+// are required. If Token.RequireThresholdOperators is enabled, returns the threshold instead.
+func (c *Config) TokenRequiredParticipatingOperatorsCount() int {
+	if c.Token.RequireThresholdOperators {
+		return int(c.Threshold)
+	}
+	return len(c.SigningOperatorMap)
 }
 
 func (c *Config) GetRateLimiterConfig() *middleware.RateLimiterConfig {

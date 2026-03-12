@@ -32,6 +32,9 @@ const (
 	KnobRateLimitMemcacheMaxIdleConns = "spark.so.ratelimit.memcache.max_idle_conns"
 	KnobSoTransferLimit               = "spark.so.transfer_limit"
 
+	KnobReadMIMODataModelTransferSend   = "spark.so.read_mimo_data_model_transfer_send"
+	KnobReadMIMODataModelQueryTransfers = "spark.so.read_mimo_data_model_query_transfers"
+
 	KnobSoSigningCommitmentNodeLimit  = "spark.so.signing_commitments.nodes_limit"
 	KnobSoSigningCommitmentCountLimit = "spark.so.signing_commitments.count_limit"
 
@@ -47,20 +50,22 @@ const (
 	KnobGrpcServerConcurrencyExcludeIps     = "spark.so.grpc.server.concurrency_limit.exclude_ips"
 	KnobGrpcServerConcurrencyExcludePubkeys = "spark.so.grpc.server.concurrency_limit.exclude_pubkeys"
 
-	KnobSoMaxTransactionsPerRequest         = "spark.so.max_transactions_per_request"
-	KnobSoMaxKeysharesPerRequest            = "spark.so.max_keyshares_per_request"
-	KnobGRPCClientTimeout                   = "spark.so.grpc.client.timeout"
-	KnobGrpcClientPoolMinConnections        = "spark.so.grpc.client.pool.min_connections"
-	KnobGrpcClientPoolMaxConnections        = "spark.so.grpc.client.pool.max_connections"
-	KnobGrpcClientPoolIdleTimeoutSeconds    = "spark.so.grpc.client.pool.idle_timeout_seconds"
-	KnobGrpcClientPoolMaxLifetimeSeconds    = "spark.so.grpc.client.pool.max_lifetime_seconds"
-	KnobGrpcClientPoolUsersPerConnectionCap = "spark.so.grpc.client.pool.users_per_connection_cap"
-	KnobGrpcClientPoolScaleConcurrency      = "spark.so.grpc.client.pool.scale_concurrency"
+	KnobSoMaxTransactionsPerRequest             = "spark.so.max_transactions_per_request"
+	KnobSoMaxParallelFrostValidationsPerRequest = "spark.so.max_parallel_frost_validations_per_request"
+	KnobSoMaxKeysharesPerRequest                = "spark.so.max_keyshares_per_request"
+	KnobGRPCClientTimeout                       = "spark.so.grpc.client.timeout"
+	KnobGrpcClientPoolMinConnections            = "spark.so.grpc.client.pool.min_connections"
+	KnobGrpcClientPoolMaxConnections            = "spark.so.grpc.client.pool.max_connections"
+	KnobGrpcClientPoolIdleTimeoutSeconds        = "spark.so.grpc.client.pool.idle_timeout_seconds"
+	KnobGrpcClientPoolMaxLifetimeSeconds        = "spark.so.grpc.client.pool.max_lifetime_seconds"
+	KnobGrpcClientPoolUsersPerConnectionCap     = "spark.so.grpc.client.pool.users_per_connection_cap"
+	KnobGrpcClientPoolScaleConcurrency          = "spark.so.grpc.client.pool.scale_concurrency"
 
 	KnobSoDkgBatchSize = "spark.so.dkg.batch_size"
 
-	KnobRequireDirectFromCPFPRefund   = "spark.so.require_direct_from_cpfp_refund"
-	KnobBaseDirectTimelockOnNonDirect = "spark.so.base_direct_timelock_on_non_direct"
+	KnobRequireDirectFromCPFPRefund = "spark.so.require_direct_from_cpfp_refund"
+
+	KnobRequireConnectorTxValidation = "spark.so.require_connector_tx_validation"
 
 	// Task / gocron related knobs.
 	KnobSoTaskEnabled = "spark.so.task.enabled"
@@ -69,15 +74,34 @@ const (
 	// Watch Chain
 	// Set to 0 to disable updating exiting Tree Nodes in Chain Watcher.
 	// DANGEROUS: Disabling it can lead to loss of funds.
-	KnobWatchChainMarkExitingNodesEnabled = "spark.so.watch_chain.mark_exiting_nodes.enabled"
+	KnobWatchChainMarkExitingNodesEnabled          = "spark.so.watch_chain.mark_exiting_nodes.enabled"
+	KnobWatchChainTweakKeysForCoopExitDelayEnabled = "spark.so.watch_chain.tweak_keys_for_coop_exit_delay.enabled"
 
 	// Tokens
-	KnobUseNumericAmountForCurrentTokenSupply   = "spark.so.tokens.use_numeric_amount_for_current_token_supply"
-	KnobReclaimRemappedOutputsIfRevealRequested = "spark.so.tokens.reclaim_remapped_outputs_if_reveal_requested"
-	KnobFinalizeCreatedSignedOutputsJustInTime  = "spark.so.tokens.finalize_created_signed_outputs_just_in_time"
-	KnobTokenTransactionV3Enabled               = "spark.so.tokens.token_transaction_v3_enabled"
-	KnobAllowMultipleTokenCreatesPerIssuer      = "spark.so.tokens.allow_multiple_token_creates_per_issuer"
-	KnobAllowExtraMetadataOnMainnet             = "spark.so.tokens.allow_extra_metadata_on_mainnet"
+	KnobTokenTransactionV3Enabled = "spark.so.tokens.token_transaction_v3_enabled"
+	// Enable Phase 2 of the token transaction v3 migration which combines the internal prepare and sign RPCs into a single RPC.
+	// This will be flipped to true permanently (with Phase 1 and legacy handlers being cleaned up) once we are confident in the migration
+	// (which means passing integration tests, load tests, and likely an incremental production rollout).
+	KnobTokenTransactionV3Phase2Enabled = "spark.so.tokens.token_transaction_v3_phase2_enabled"
+	// Enable the retry task for Phase 2 token transaction broadcasts.
+	// When enabled, a scheduled task will retry broadcasting SIGNED token transactions to non-coordinator SOs
+	// that failed during the initial fanout. This is separate from phase 2 enablement to allow independent rollout control.
+	KnobTokenTransactionV3Phase2RetryEnabled = "spark.so.tokens.token_transaction_v3_phase2_retry_enabled"
+	KnobAllowExtraMetadataOnMainnet          = "spark.so.tokens.allow_extra_metadata_on_mainnet"
+	// Enable backfill task to update SIGNED v3 mint/create transactions to FINALIZED status.
+	// When enabled, a scheduled task will find SIGNED v3 mint/create transactions where all outputs
+	// are in finalized/spent states and update them to FINALIZED status.
+	KnobBackfillCreateMintFinalizedStatusEnabled = "spark.so.tokens.backfill_create_mint_finalized_status_enabled"
+	KnobCoordinatedFreezeEnabled                 = "spark.so.tokens.coordinated_freeze_enabled"
+
+	// Tokens - Killswitches
+	// When enabled (> 0), enforces owner signature validation for token withdrawals.
+	// By default (0), signature validation is skipped. Enable in production when SE signatures are available.
+	KnobEnforceWithdrawalSignatureValidation = "spark.so.tokens.enforce_withdrawal_signature_validation"
+	// Enable justice transaction broadcasting for invalid token withdrawals.
+	// When enabled (> 0), the SO will broadcast justice transactions to reclaim funds
+	// from invalid withdrawals where the revocation secret is available.
+	KnobEnableJusticeTransactions = "spark.so.tokens.enable_justice_transactions"
 
 	// Number of confirmations required before finalizing tree creation
 	KnobNumRequiredConfirmations = "spark.so.num_required_confirmations"
@@ -87,15 +111,38 @@ const (
 	KnobResumeSendTransferLimit  = "spark.so.resume_send_transfer.limit"
 
 	// Enable more rigorous checks for finalize signature requests. See SPARK-236
-	KnobEnableStrictFinalizeSignature        = "spark.so.enable_strict_finalize_signature"
-	KnobEnableStrictDirectRefundTxValidation = "spark.so.enable_strict_direct_refund_tx_validation"
+	KnobEnableStrictFinalizeSignature = "spark.so.enable_strict_finalize_signature"
 
 	KnobEnableDepositFlowValidation       = "spark.so.enable_deposit_flow_validation"
 	KnobSoEnhancedBitcoinTxValidation     = "spark.so.enhanced_bitcoin_tx_validation"
 	KnobEnhancedTransferReceiveValidation = "spark.so.enhanced_transfer_receive_validation"
 
 	KnobShutdownRenewNode        = "spark.so.shutdown_renew_node"
+	KnobShutdownHodlInvoices     = "spark.so.shutdown_hodl_invoices"
 	KnobDirectRefundTxValidation = "spark.so.direct_refund_tx_validation"
+
+	// Require multiple confirmations before marking non-static deposits as available (see SPARK-118)
+	KnobMultipleConfirmationForNonStaticDeposit = "spark.so.require_multiple_conf_for_non_static_deposit"
+
+	KnobMaxUnusedDepositAddresses = "spark.so.max_unused_deposit_addresses"
+	// Enforce that direct node transactions and direct refund transactions spending the deposit tx
+	// are not provided by the client. When enabled, the server will reject deprecated direct signing jobs.
+	KnobEnforceNoDirectTransactionsFromDepositTx = "spark.so.enforce_no_direct_transactions_from_deposit_tx"
+	KnobDisableV2TXs                             = "spark.so.disable_v2_txs"
+
+	// The SSP sometimes sends a counter swap as a normal transfer when it happens from a celery job
+	// This knob filters out these transfers from the query transfers endpoint if counter swaps are not explicitly requested.
+	KnobFilterSSPCounterSwapAsTransfer = "spark.so.filter_ssp_counter_swap_as_transfer"
+
+	// KnobMimoTransferMultiReceiverEnabled enables multi-input multi-output transfer support
+	// with multiple independent receivers. When enabled, ClaimTransfer resolves the receiver
+	// by identity public key and tracks per-receiver claim status.
+	KnobMimoTransferMultiReceiverEnabled = "spark.so.mimo_transfer_multi_receiver_enabled"
+
+	// Enable instant static deposit flow.
+	KnobEnableInstantStaticDeposit = "spark.so.enable_instant_static_deposit"
+	// Total number of sats that can be pending in the instant static deposit flow
+	KnobMaxPendingInstantStaticDepositAmount = "spark.so.max_pending_instant_static_deposit_amount"
 )
 
 type Config struct {

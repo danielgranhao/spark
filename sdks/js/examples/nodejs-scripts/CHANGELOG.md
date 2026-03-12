@@ -1,5 +1,120 @@
 # @buildonspark/nodejs-scripts
 
+## 0.0.124
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.7.0
+  - @buildonspark/issuer-sdk@0.1.18
+
+## 0.0.123
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.7
+  - @buildonspark/issuer-sdk@0.1.17
+
+## 0.0.122
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.6
+  - @buildonspark/issuer-sdk@0.1.16
+
+## 0.0.121
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @buildonspark/issuer-sdk@0.1.15
+  - @buildonspark/spark-sdk@0.6.5
+
+## 0.0.120
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.4
+  - @buildonspark/issuer-sdk@0.1.14
+
+## 0.0.119
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.3
+  - @buildonspark/issuer-sdk@0.1.13
+
+## 0.0.118
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.2
+  - @buildonspark/issuer-sdk@0.1.12
+
+## 0.0.117
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.1
+  - @buildonspark/issuer-sdk@0.1.11
+
+## 0.0.116
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.0
+  - @buildonspark/issuer-sdk@0.1.10
+
+## 0.0.115
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.9
+  - @buildonspark/issuer-sdk@0.1.9
+
+## 0.0.114
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.8
+  - @buildonspark/issuer-sdk@0.1.8
+
+## 0.0.113
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.7
+  - @buildonspark/issuer-sdk@0.1.7
+
+## 0.0.112
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.6
+  - @buildonspark/issuer-sdk@0.1.6
+
+## 0.0.111
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.5
+  - @buildonspark/issuer-sdk@0.1.5
+
 ## 0.0.110
 
 ### Patch Changes

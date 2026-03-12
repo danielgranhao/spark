@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"math/rand/v2"
@@ -32,7 +33,9 @@ func TestVerifiedTargetUtxo(t *testing.T) {
 
 	// Create test data
 	blockHeight := 100
-	txid, err := NewValidatedTxID(chainhash.DoubleHashB([]byte("test_txid")))
+	txid, err := chainhash.NewHash(chainhash.DoubleHashB([]byte("test_txid")))
+	require.NoError(t, err)
+	txidStringBytes, err := hex.DecodeString(txid.String())
 	require.NoError(t, err)
 	vout := uint32(0)
 
@@ -90,7 +93,7 @@ func TestVerifiedTargetUtxo(t *testing.T) {
 		utxoBlockHeight := blockHeight - int(config.BitcoindConfigs["regtest"].DepositConfirmationThreshold) + 1
 		utxo, err := tx.Utxo.Create().
 			SetNetwork(btcnetwork.Regtest).
-			SetTxid(txid[:]).
+			SetTxid(txidStringBytes).
 			SetVout(vout).
 			SetBlockHeight(int64(utxoBlockHeight)).
 			SetAmount(1000).
@@ -100,13 +103,13 @@ func TestVerifiedTargetUtxo(t *testing.T) {
 		require.NoError(t, err)
 
 		// Test verification
-		verifiedUtxo, err := VerifiedTargetUtxo(ctx, config, tx, btcnetwork.Regtest, txid, vout)
+		verifiedUtxo, err := VerifiedTargetUtxoFromRequest(ctx, config, tx, btcnetwork.Regtest, &pb.UTXO{Txid: txidStringBytes, Vout: vout}, nil)
 		require.NoError(t, err)
-		assert.Equal(t, utxo.ID, verifiedUtxo.ID)
-		assert.Equal(t, utxo.BlockHeight, verifiedUtxo.BlockHeight)
+		assert.Equal(t, utxo.ID, verifiedUtxo.inner.ID)
+		assert.Equal(t, utxo.BlockHeight, verifiedUtxo.inner.BlockHeight)
 
 		// Test verification in mainnet (should fail)
-		_, err = VerifiedTargetUtxo(ctx, config, tx, btcnetwork.Mainnet, txid, vout)
+		_, err = VerifiedTargetUtxoFromRequest(ctx, config, tx, btcnetwork.Mainnet, &pb.UTXO{Txid: txidStringBytes, Vout: vout}, nil)
 		require.ErrorContains(t, err, "utxo not found")
 	})
 
@@ -147,22 +150,24 @@ func TestVerifiedTargetUtxo(t *testing.T) {
 			Save(ctx)
 		require.NoError(t, err)
 
-		testTxid2, err := NewValidatedTxID(chainhash.DoubleHashB([]byte("test_txid2")))
+		testTxid2, err := chainhash.NewHash(chainhash.DoubleHashB([]byte("test_txid2")))
+		require.NoError(t, err)
+		testTxid2StringBytes, err := hex.DecodeString(testTxid2.String())
 		require.NoError(t, err)
 
 		// Test verification with not yet mined utxo
-		_, err = VerifiedTargetUtxo(ctx, config, tx, btcnetwork.Regtest, testTxid2, 1)
+		_, err = VerifiedTargetUtxoFromRequest(ctx, config, tx, btcnetwork.Regtest, &pb.UTXO{Txid: testTxid2StringBytes, Vout: 1}, nil)
 		require.Error(t, err)
 		grpcError, ok := status.FromError(err)
 		require.True(t, ok)
 		assert.Equal(t, codes.NotFound, grpcError.Code())
-		assert.Equal(t, fmt.Sprintf("utxo not found: txid: %s vout: 1", hex.EncodeToString(testTxid2[:])), grpcError.Message())
+		assert.Equal(t, fmt.Sprintf("utxo not found: txid: %s vout: 1", testTxid2.String()), grpcError.Message())
 
 		// Create UTXO with insufficient confirmations
 		utxoBlockHeight := blockHeight - int(config.BitcoindConfigs["regtest"].DepositConfirmationThreshold) + 2
 		_, err = tx.Utxo.Create().
 			SetNetwork(btcnetwork.Regtest).
-			SetTxid(testTxid2[:]).
+			SetTxid(testTxid2StringBytes).
 			SetVout(1).
 			SetBlockHeight(int64(utxoBlockHeight)).
 			SetAmount(1000).
@@ -172,9 +177,271 @@ func TestVerifiedTargetUtxo(t *testing.T) {
 		require.NoError(t, err)
 
 		// Test verification
-		_, err = VerifiedTargetUtxo(ctx, config, tx, btcnetwork.Regtest, testTxid2, 1)
+		_, err = VerifiedTargetUtxoFromRequest(ctx, config, tx, btcnetwork.Regtest, &pb.UTXO{Txid: testTxid2StringBytes, Vout: 1}, nil)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "deposit tx doesn't have enough confirmations")
+	})
+
+	t.Run("invalid txid", func(t *testing.T) {
+		config := &so.Config{
+			BitcoindConfigs: map[string]so.BitcoindConfig{
+				"regtest": {
+					DepositConfirmationThreshold: 1,
+				},
+			},
+			FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
+		}
+		// Test with invalid txid (too long - more than 32 bytes)
+		tooLongTxid := make([]byte, 33)
+		for i := range tooLongTxid {
+			tooLongTxid[i] = byte(i)
+		}
+		_, err := VerifiedTargetUtxoFromRequest(ctx, config, tx, btcnetwork.Regtest, &pb.UTXO{Txid: tooLongTxid, Vout: 0}, nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "invalid txid length: expected 32 bytes, got 33 bytes")
+		// Test with invalid txid (too short - less than 32 bytes)
+		tooShortTxid := make([]byte, 16)
+		for i := range tooShortTxid {
+			tooShortTxid[i] = byte(i)
+		}
+		_, err = VerifiedTargetUtxoFromRequest(ctx, config, tx, btcnetwork.Regtest, &pb.UTXO{Txid: tooShortTxid, Vout: 0}, nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "invalid txid length: expected 32 bytes, got 16 bytes")
+		// Test with empty txid
+		emptyTxid := []byte{}
+		_, err = VerifiedTargetUtxoFromRequest(ctx, config, tx, btcnetwork.Regtest, &pb.UTXO{Txid: emptyTxid, Vout: 0}, nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "invalid txid length: expected 32 bytes, got 0 bytes")
+		// Test with nil reqUtxo
+		_, err = VerifiedTargetUtxoFromRequest(ctx, config, tx, btcnetwork.Regtest, nil, nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "requested UTXO is nil")
+	})
+
+	t.Run("threshold_1_with_1_conf_succeeds", func(t *testing.T) {
+		testSecretKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		testPublicKey := testSecretKey.Public()
+		signingKeyshare, err := tx.SigningKeyshare.Create().
+			SetStatus(st.KeyshareStatusAvailable).
+			SetSecretShare(testSecretKey).
+			SetPublicShares(map[string]keys.Public{"test": testPublicKey}).
+			SetPublicKey(testPublicKey).
+			SetMinSigners(2).
+			SetCoordinatorIndex(0).
+			Save(ctx)
+		require.NoError(t, err)
+
+		testIdentityKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		testSigningKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		depositAddress, err := tx.DepositAddress.Create().
+			SetAddress("test_address_threshold_1_pass").
+			SetOwnerIdentityPubkey(testIdentityKey.Public()).
+			SetOwnerSigningPubkey(testSigningKey.Public()).
+			SetSigningKeyshare(signingKeyshare).
+			SetNetwork(btcnetwork.Regtest).
+			Save(ctx)
+		require.NoError(t, err)
+
+		testTxid, err := chainhash.NewHash(chainhash.DoubleHashB([]byte("threshold_1_pass")))
+		require.NoError(t, err)
+		txidBytes, err := hex.DecodeString(testTxid.String())
+		require.NoError(t, err)
+
+		// 1 confirmation: blockHeight(100) - utxoBlockHeight(100) + 1 = 1
+		_, err = tx.Utxo.Create().
+			SetNetwork(btcnetwork.Regtest).
+			SetTxid(txidBytes).
+			SetVout(0).
+			SetBlockHeight(int64(blockHeight)).
+			SetAmount(1000).
+			SetPkScript([]byte("test_script")).
+			SetDepositAddress(depositAddress).
+			Save(ctx)
+		require.NoError(t, err)
+
+		result, err := VerifiedTargetUtxoFromRequestWithThreshold(ctx, tx, btcnetwork.Regtest, &pb.UTXO{Txid: txidBytes, Vout: 0}, 1)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+	})
+
+	t.Run("threshold_1_with_0_conf_returns_nil", func(t *testing.T) {
+		testSecretKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		testPublicKey := testSecretKey.Public()
+		signingKeyshare, err := tx.SigningKeyshare.Create().
+			SetStatus(st.KeyshareStatusAvailable).
+			SetSecretShare(testSecretKey).
+			SetPublicShares(map[string]keys.Public{"test": testPublicKey}).
+			SetPublicKey(testPublicKey).
+			SetMinSigners(2).
+			SetCoordinatorIndex(0).
+			Save(ctx)
+		require.NoError(t, err)
+
+		testIdentityKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		testSigningKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		depositAddress, err := tx.DepositAddress.Create().
+			SetAddress("test_address_threshold_1_fail").
+			SetOwnerIdentityPubkey(testIdentityKey.Public()).
+			SetOwnerSigningPubkey(testSigningKey.Public()).
+			SetSigningKeyshare(signingKeyshare).
+			SetNetwork(btcnetwork.Regtest).
+			Save(ctx)
+		require.NoError(t, err)
+
+		testTxid, err := chainhash.NewHash(chainhash.DoubleHashB([]byte("threshold_1_fail")))
+		require.NoError(t, err)
+		txidBytes, err := hex.DecodeString(testTxid.String())
+		require.NoError(t, err)
+
+		// 0 confirmations: blockHeight(100) - utxoBlockHeight(101) + 1 = 0
+		_, err = tx.Utxo.Create().
+			SetNetwork(btcnetwork.Regtest).
+			SetTxid(txidBytes).
+			SetVout(0).
+			SetBlockHeight(int64(blockHeight + 1)).
+			SetAmount(1000).
+			SetPkScript([]byte("test_script")).
+			SetDepositAddress(depositAddress).
+			Save(ctx)
+		require.NoError(t, err)
+
+		result, err := VerifiedTargetUtxoFromRequestWithThreshold(ctx, tx, btcnetwork.Regtest, &pb.UTXO{Txid: txidBytes, Vout: 0}, 1)
+		require.NoError(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("threshold_3_with_3_conf_succeeds", func(t *testing.T) {
+		testSecretKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		testPublicKey := testSecretKey.Public()
+		signingKeyshare, err := tx.SigningKeyshare.Create().
+			SetStatus(st.KeyshareStatusAvailable).
+			SetSecretShare(testSecretKey).
+			SetPublicShares(map[string]keys.Public{"test": testPublicKey}).
+			SetPublicKey(testPublicKey).
+			SetMinSigners(2).
+			SetCoordinatorIndex(0).
+			Save(ctx)
+		require.NoError(t, err)
+
+		testIdentityKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		testSigningKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		depositAddress, err := tx.DepositAddress.Create().
+			SetAddress("test_address_threshold_3_pass").
+			SetOwnerIdentityPubkey(testIdentityKey.Public()).
+			SetOwnerSigningPubkey(testSigningKey.Public()).
+			SetSigningKeyshare(signingKeyshare).
+			SetNetwork(btcnetwork.Regtest).
+			Save(ctx)
+		require.NoError(t, err)
+
+		testTxid, err := chainhash.NewHash(chainhash.DoubleHashB([]byte("threshold_3_pass")))
+		require.NoError(t, err)
+		txidBytes, err := hex.DecodeString(testTxid.String())
+		require.NoError(t, err)
+
+		// 3 confirmations: blockHeight(100) - utxoBlockHeight(98) + 1 = 3
+		_, err = tx.Utxo.Create().
+			SetNetwork(btcnetwork.Regtest).
+			SetTxid(txidBytes).
+			SetVout(0).
+			SetBlockHeight(int64(blockHeight - 2)).
+			SetAmount(1000).
+			SetPkScript([]byte("test_script")).
+			SetDepositAddress(depositAddress).
+			Save(ctx)
+		require.NoError(t, err)
+
+		result, err := VerifiedTargetUtxoFromRequestWithThreshold(ctx, tx, btcnetwork.Regtest, &pb.UTXO{Txid: txidBytes, Vout: 0}, 3)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+	})
+
+	t.Run("threshold_3_with_2_conf_returns_nil", func(t *testing.T) {
+		testSecretKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		testPublicKey := testSecretKey.Public()
+		signingKeyshare, err := tx.SigningKeyshare.Create().
+			SetStatus(st.KeyshareStatusAvailable).
+			SetSecretShare(testSecretKey).
+			SetPublicShares(map[string]keys.Public{"test": testPublicKey}).
+			SetPublicKey(testPublicKey).
+			SetMinSigners(2).
+			SetCoordinatorIndex(0).
+			Save(ctx)
+		require.NoError(t, err)
+
+		testIdentityKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		testSigningKey := keys.MustGeneratePrivateKeyFromRand(rng)
+		depositAddress, err := tx.DepositAddress.Create().
+			SetAddress("test_address_threshold_3_fail").
+			SetOwnerIdentityPubkey(testIdentityKey.Public()).
+			SetOwnerSigningPubkey(testSigningKey.Public()).
+			SetSigningKeyshare(signingKeyshare).
+			SetNetwork(btcnetwork.Regtest).
+			Save(ctx)
+		require.NoError(t, err)
+
+		testTxid, err := chainhash.NewHash(chainhash.DoubleHashB([]byte("threshold_3_fail")))
+		require.NoError(t, err)
+		txidBytes, err := hex.DecodeString(testTxid.String())
+		require.NoError(t, err)
+
+		// 2 confirmations: blockHeight(100) - utxoBlockHeight(99) + 1 = 2, needs 3
+		_, err = tx.Utxo.Create().
+			SetNetwork(btcnetwork.Regtest).
+			SetTxid(txidBytes).
+			SetVout(0).
+			SetBlockHeight(int64(blockHeight - 1)).
+			SetAmount(1000).
+			SetPkScript([]byte("test_script")).
+			SetDepositAddress(depositAddress).
+			Save(ctx)
+		require.NoError(t, err)
+
+		result, err := VerifiedTargetUtxoFromRequestWithThreshold(ctx, tx, btcnetwork.Regtest, &pb.UTXO{Txid: txidBytes, Vout: 0}, 3)
+		require.NoError(t, err)
+		assert.Nil(t, result)
+	})
+}
+
+func TestResolveConfirmationThreshold(t *testing.T) {
+	t.Run("uses_request_value", func(t *testing.T) {
+		requested := uint32(1)
+		config := &so.Config{
+			BitcoindConfigs: map[string]so.BitcoindConfig{
+				"regtest": {DepositConfirmationThreshold: 3},
+			},
+		}
+		result := resolveConfirmationThreshold(&requested, config, btcnetwork.Regtest)
+		assert.Equal(t, uint32(1), result)
+	})
+
+	t.Run("falls_back_to_config", func(t *testing.T) {
+		config := &so.Config{
+			BitcoindConfigs: map[string]so.BitcoindConfig{
+				"regtest": {DepositConfirmationThreshold: 5},
+			},
+		}
+		result := resolveConfirmationThreshold(nil, config, btcnetwork.Regtest)
+		assert.Equal(t, uint32(5), result)
+	})
+
+	t.Run("falls_back_to_default", func(t *testing.T) {
+		config := &so.Config{
+			BitcoindConfigs: map[string]so.BitcoindConfig{},
+		}
+		result := resolveConfirmationThreshold(nil, config, btcnetwork.Regtest)
+		assert.Equal(t, uint32(DefaultDepositConfirmationThreshold), result)
+	})
+
+	t.Run("ignores_zero", func(t *testing.T) {
+		requested := uint32(0)
+		config := &so.Config{
+			BitcoindConfigs: map[string]so.BitcoindConfig{
+				"regtest": {DepositConfirmationThreshold: 5},
+			},
+		}
+		result := resolveConfirmationThreshold(&requested, config, btcnetwork.Regtest)
+		assert.Equal(t, uint32(5), result)
 	})
 }
 
@@ -226,6 +493,180 @@ func TestGenerateDepositAddress(t *testing.T) {
 		// Testing that the handler tries to create a new address
 		_, err := handler.GenerateDepositAddress(ctx, testConfig, req)
 		require.ErrorContains(t, err, "near \"SET\": syntax error")
+	})
+}
+
+func TestGenerateDepositAddressBlocksUnusedAddress(t *testing.T) {
+	config := &so.Config{
+		SupportedNetworks: []btcnetwork.Network{
+			btcnetwork.Regtest,
+			btcnetwork.Mainnet,
+		},
+		SigningOperatorMap:         map[string]*so.SigningOperator{},
+		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
+	}
+
+	handler := NewDepositHandler(config)
+
+	t.Run("blocks generation when unused non-static deposit address exists", func(t *testing.T) {
+		ctx, _ := db.NewTestSQLiteContext(t)
+		rng := rand.NewChaCha8([32]byte{})
+		tx, err := ent.GetDbFromContext(ctx)
+		require.NoError(t, err)
+
+		testIdentityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+		testSigningPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+
+		// Create DefaultMaxUnusedDepositAddresses unused non-static deposit addresses
+		for i := range DefaultMaxUnusedDepositAddresses {
+			secretShare := keys.MustGeneratePrivateKeyFromRand(rng)
+
+			signingKeyshare, err := tx.SigningKeyshare.Create().
+				SetStatus(st.KeyshareStatusAvailable).
+				SetSecretShare(secretShare).
+				SetPublicShares(map[string]keys.Public{"test": secretShare.Public()}).
+				SetPublicKey(secretShare.Public()).
+				SetMinSigners(2).
+				SetCoordinatorIndex(0).
+				Save(ctx)
+			require.NoError(t, err)
+
+			_, err = tx.DepositAddress.Create().
+				SetAddress(fmt.Sprintf("bcrt1p_existing_unused_address_%d", i)).
+				SetOwnerIdentityPubkey(testIdentityPubKey).
+				SetOwnerSigningPubkey(testSigningPubKey).
+				SetSigningKeyshare(signingKeyshare).
+				SetNetwork(btcnetwork.Regtest).
+				SetIsStatic(false).
+				Save(ctx)
+			require.NoError(t, err)
+		}
+
+		// Try to generate a new non-static deposit address for the same user and network
+		isStatic := false
+		req := &pb.GenerateDepositAddressRequest{
+			SigningPublicKey:  testSigningPubKey.Serialize(),
+			IdentityPublicKey: testIdentityPubKey.Serialize(),
+			Network:           pb.Network_REGTEST,
+			IsStatic:          &isStatic,
+		}
+
+		_, err = handler.GenerateDepositAddress(ctx, config, req)
+		require.Error(t, err)
+		grpcError, ok := status.FromError(err)
+		require.True(t, ok)
+		assert.Equal(t, codes.ResourceExhausted, grpcError.Code())
+		assert.Contains(t, grpcError.Message(), "unused deposit addresses")
+		assert.Contains(t, grpcError.Message(), fmt.Sprintf("maximum %d", DefaultMaxUnusedDepositAddresses))
+	})
+
+	t.Run("allows generation when unused address exists on different network", func(t *testing.T) {
+		ctx, _ := db.NewTestSQLiteContext(t)
+		rng := rand.NewChaCha8([32]byte{2})
+		tx, err := ent.GetDbFromContext(ctx)
+		require.NoError(t, err)
+
+		diffNetIdentityKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+		diffNetSigningKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+		secretShare := keys.MustGeneratePrivateKeyFromRand(rng)
+
+		// Create a signing keyshare
+		signingKeyshare, err := tx.SigningKeyshare.Create().
+			SetStatus(st.KeyshareStatusAvailable).
+			SetSecretShare(secretShare).
+			SetPublicShares(map[string]keys.Public{"test": secretShare.Public()}).
+			SetPublicKey(secretShare.Public()).
+			SetMinSigners(2).
+			SetCoordinatorIndex(0).
+			Save(ctx)
+		require.NoError(t, err)
+
+		// Create an unused non-static deposit address on REGTEST
+		_, err = tx.DepositAddress.Create().
+			SetAddress("bcrt1p_regtest_address").
+			SetOwnerIdentityPubkey(diffNetIdentityKey).
+			SetOwnerSigningPubkey(diffNetSigningKey).
+			SetSigningKeyshare(signingKeyshare).
+			SetNetwork(btcnetwork.Regtest).
+			SetIsStatic(false).
+			Save(ctx)
+		require.NoError(t, err)
+
+		// Try to generate a new non-static deposit address on MAINNET (should proceed)
+		// Note: This test verifies the query filters by network
+		isStatic := false
+		req := &pb.GenerateDepositAddressRequest{
+			SigningPublicKey:  diffNetSigningKey.Serialize(),
+			IdentityPublicKey: diffNetIdentityKey.Serialize(),
+			Network:           pb.Network_MAINNET,
+			IsStatic:          &isStatic,
+		}
+
+		// The test will fail at keyshare allocation, but importantly NOT at the unused address check
+		_, err = handler.GenerateDepositAddress(ctx, config, req)
+		// Should proceed past the unused check and fail later (no keyshares available)
+		require.Error(t, err)
+		// Verify it's NOT the "unused address" error
+		assert.NotContains(t, err.Error(), "already has an unused deposit address")
+	})
+
+	t.Run("allows generation when existing address has tree (is used)", func(t *testing.T) {
+		ctx, _ := db.NewTestSQLiteContext(t)
+		rng := rand.NewChaCha8([32]byte{3})
+		tx, err := ent.GetDbFromContext(ctx)
+		require.NoError(t, err)
+
+		usedAddrIdentityKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+		usedAddrSigningKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+		secretShare := keys.MustGeneratePrivateKeyFromRand(rng)
+
+		// Create a signing keyshare
+		signingKeyshare, err := tx.SigningKeyshare.Create().
+			SetStatus(st.KeyshareStatusAvailable).
+			SetSecretShare(secretShare).
+			SetPublicShares(map[string]keys.Public{"test": secretShare.Public()}).
+			SetPublicKey(secretShare.Public()).
+			SetMinSigners(2).
+			SetCoordinatorIndex(0).
+			Save(ctx)
+		require.NoError(t, err)
+
+		// Create a deposit address that has a tree associated (is used)
+		usedAddress, err := tx.DepositAddress.Create().
+			SetAddress("bcrt1p_used_address").
+			SetOwnerIdentityPubkey(usedAddrIdentityKey).
+			SetOwnerSigningPubkey(usedAddrSigningKey).
+			SetSigningKeyshare(signingKeyshare).
+			SetNetwork(btcnetwork.Regtest).
+			SetIsStatic(false).
+			Save(ctx)
+		require.NoError(t, err)
+
+		// Create a tree for this deposit address (marks it as used)
+		_, err = tx.Tree.Create().
+			SetOwnerIdentityPubkey(usedAddrIdentityKey).
+			SetNetwork(btcnetwork.Regtest).
+			SetBaseTxid(st.NewRandomTxIDForTesting(t)).
+			SetVout(0).
+			SetStatus(st.TreeStatusPending).
+			SetDepositAddress(usedAddress).
+			Save(ctx)
+		require.NoError(t, err)
+
+		// Try to generate a new non-static deposit address (should proceed past unused check)
+		isStatic := false
+		req := &pb.GenerateDepositAddressRequest{
+			SigningPublicKey:  usedAddrSigningKey.Serialize(),
+			IdentityPublicKey: usedAddrIdentityKey.Serialize(),
+			Network:           pb.Network_REGTEST,
+			IsStatic:          &isStatic,
+		}
+
+		_, err = handler.GenerateDepositAddress(ctx, config, req)
+		// Should proceed past the unused check and fail later (no keyshares available)
+		require.Error(t, err)
+		// Verify it's NOT the "unused address" error
+		assert.NotContains(t, err.Error(), "already has an unused deposit address")
 	})
 }
 
@@ -505,6 +946,56 @@ func TestGetUtxosFromAddress(t *testing.T) {
 		assert.Equal(t, confirmationTxid, hex.EncodeToString(response.Utxos[0].Txid))
 	})
 
+	t.Run("non-static deposit address with confirmation txid and UTXO record returns actual vout", func(t *testing.T) {
+		// This test verifies that when a UTXO record exists for a non-static deposit,
+		// the actual vout from the UTXO table is returned instead of hardcoded 0.
+		nonStaticAddress := "bcrt1p_nonstatic_with_utxo_record"
+		confirmationTxid := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+		confirmationTxidBytes, err := hex.DecodeString(confirmationTxid)
+		require.NoError(t, err)
+
+		rng := rand.NewChaCha8([32]byte{10})
+		nsIdentityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+		nsSigningPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+
+		depositAddress, err := tx.DepositAddress.Create().
+			SetAddress(nonStaticAddress).
+			SetOwnerIdentityPubkey(nsIdentityPubKey).
+			SetOwnerSigningPubkey(nsSigningPubKey).
+			SetSigningKeyshare(signingKeyshare).
+			SetIsStatic(false).
+			SetConfirmationTxid(confirmationTxid).
+			SetConfirmationHeight(190).
+			SetNetwork(btcnetwork.Regtest).
+			Save(ctx)
+		require.NoError(t, err)
+
+		// Create a UTXO record linked to this deposit address with vout=2
+		_, err = tx.Utxo.Create().
+			SetNetwork(btcnetwork.Regtest).
+			SetTxid(confirmationTxidBytes).
+			SetVout(2).
+			SetBlockHeight(190).
+			SetAmount(5000).
+			SetPkScript([]byte("test_script_nonstatic")).
+			SetDepositAddress(depositAddress).
+			Save(ctx)
+		require.NoError(t, err)
+
+		req := &pb.GetUtxosForAddressRequest{
+			Address: nonStaticAddress,
+			Network: pb.Network_REGTEST,
+			Offset:  0,
+			Limit:   10,
+		}
+
+		response, err := handler.GetUtxosForAddress(ctx, req)
+		require.NoError(t, err)
+		require.Len(t, response.Utxos, 1)
+		assert.Equal(t, confirmationTxid, hex.EncodeToString(response.Utxos[0].Txid))
+		assert.Equal(t, uint32(2), response.Utxos[0].Vout)
+	})
+
 	t.Run("non-static deposit address without confirmation txid", func(t *testing.T) {
 		// Create non-static deposit address without confirmation txid
 		nonStaticAddress := "bcrt1p52zf7gf7pvhvpsje2z0uzcr8nhdd79lund68qaea54kprnxcsdqqt2jz6e4"
@@ -559,14 +1050,14 @@ func TestGetUtxosFromAddress(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create multiple UTXOs with sufficient confirmations
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			_, err := tx.Utxo.Create().
 				SetNetwork(btcnetwork.Regtest).
-				SetTxid([]byte(fmt.Sprintf("test_txid_%d", i))).
+				SetTxid(fmt.Appendf(nil, "test_txid_%d", i)).
 				SetVout(uint32(i)).
 				SetBlockHeight(int64(100 + i)).
 				SetAmount(uint64(1000 + i*100)).
-				SetPkScript([]byte(fmt.Sprintf("test_script_%d", i))).
+				SetPkScript(fmt.Appendf(nil, "test_script_%d", i)).
 				SetDepositAddress(depositAddress).
 				Save(ctx)
 			require.NoError(t, err)
@@ -886,6 +1377,7 @@ func TestGetUtxosFromAddress(t *testing.T) {
 			SetRequestType(st.UtxoSwapRequestTypeFixedAmount).
 			SetCoordinatorIdentityPublicKey(keys.MustGeneratePrivateKeyFromRand(rng).Public()).
 			SetUtxo(utxo1).
+			SetUtxoValueSats(utxo1.Amount).
 			Save(ctx)
 		require.NoError(t, err)
 
@@ -895,6 +1387,7 @@ func TestGetUtxosFromAddress(t *testing.T) {
 			SetRequestType(st.UtxoSwapRequestTypeFixedAmount).
 			SetCoordinatorIdentityPublicKey(keys.MustGeneratePrivateKeyFromRand(rng).Public()).
 			SetUtxo(utxo2).
+			SetUtxoValueSats(utxo2.Amount).
 			Save(ctx)
 		require.NoError(t, err)
 
@@ -937,6 +1430,377 @@ func TestGetUtxosFromAddress(t *testing.T) {
 		response, err = handler.GetUtxosForAddress(ctx, req)
 		require.NoError(t, err)
 		require.Len(t, response.Utxos, 3)
+	})
+}
+
+func TestGetUtxosForAddresses(t *testing.T) {
+	type testEnv struct {
+		ctx                    context.Context
+		handler                *DepositHandler
+		staticAddress1         string
+		staticAddress2         string
+		staticAddress3         string
+		nonStaticAddress       string
+		confirmedUtxo          *ent.Utxo
+		claimedConfirmedUtxo   *ent.Utxo
+		cancelledSwapUtxo      *ent.Utxo
+		pendingUtxo            *ent.Utxo
+		pendingClaimedUtxo     *ent.Utxo
+		thresholdConfirmedUtxo *ent.Utxo
+		oneConfUtxo            *ent.Utxo
+	}
+
+	newTestEnv := func(t *testing.T) *testEnv {
+		t.Helper()
+
+		ctx, _ := db.NewTestSQLiteContext(t)
+		tx, err := ent.GetDbFromContext(ctx)
+		require.NoError(t, err)
+
+		rng := rand.NewChaCha8([32]byte{9})
+
+		_, err = tx.BlockHeight.Create().
+			SetNetwork(btcnetwork.Regtest).
+			SetHeight(200).
+			Save(ctx)
+		require.NoError(t, err)
+
+		secretShare := keys.MustGeneratePrivateKeyFromRand(rng)
+		signingKeyshare, err := tx.SigningKeyshare.Create().
+			SetStatus(st.KeyshareStatusAvailable).
+			SetSecretShare(secretShare).
+			SetPublicShares(map[string]keys.Public{"test": secretShare.Public()}).
+			SetPublicKey(secretShare.Public()).
+			SetMinSigners(2).
+			SetCoordinatorIndex(0).
+			Save(ctx)
+		require.NoError(t, err)
+
+		newAddress := func(address string, isStatic bool) *ent.DepositAddress {
+			identityPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+			signingPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+			depositAddress, createErr := tx.DepositAddress.Create().
+				SetAddress(address).
+				SetOwnerIdentityPubkey(identityPubKey).
+				SetOwnerSigningPubkey(signingPubKey).
+				SetSigningKeyshare(signingKeyshare).
+				SetIsStatic(isStatic).
+				SetNetwork(btcnetwork.Regtest).
+				Save(ctx)
+			require.NoError(t, createErr)
+			return depositAddress
+		}
+
+		staticAddress1 := "bcrt1p52zf7gf7pvhvpsje2z0uzcr8nhdd79lund68qaea54kprnxcsdq9z6abc"
+		staticAddress2 := "bcrt1p52zf7gf7pvhvpsje2z0uzcr8nhdd79lund68qaea54kprnxcsdq9z6abd"
+		staticAddress3 := "bcrt1p52zf7gf7pvhvpsje2z0uzcr8nhdd79lund68qaea54kprnxcsdq9z6abf"
+		nonStaticAddress := "bcrt1p52zf7gf7pvhvpsje2z0uzcr8nhdd79lund68qaea54kprnxcsdq9z6abe"
+
+		depositAddress1 := newAddress(staticAddress1, true)
+		depositAddress2 := newAddress(staticAddress2, true)
+		_ = newAddress(staticAddress3, true)
+		nonStaticDepositAddress := newAddress(nonStaticAddress, false)
+
+		createUtxo := func(addr *ent.DepositAddress, txid string, vout uint32, blockHeight int64) *ent.Utxo {
+			utxo, createErr := tx.Utxo.Create().
+				SetNetwork(btcnetwork.Regtest).
+				SetTxid([]byte(txid)).
+				SetVout(vout).
+				SetBlockHeight(blockHeight).
+				SetAmount(1000).
+				SetPkScript([]byte("script")).
+				SetDepositAddress(addr).
+				Save(ctx)
+			require.NoError(t, createErr)
+			return utxo
+		}
+
+		createSwap := func(utxo *ent.Utxo, status st.UtxoSwapStatus) {
+			_, createErr := tx.UtxoSwap.Create().
+				SetStatus(status).
+				SetRequestType(st.UtxoSwapRequestTypeFixedAmount).
+				SetCoordinatorIdentityPublicKey(keys.MustGeneratePrivateKeyFromRand(rng).Public()).
+				SetUtxo(utxo).
+				SetUtxoValueSats(utxo.Amount).
+				Save(ctx)
+			require.NoError(t, createErr)
+		}
+
+		confirmedUtxo := createUtxo(depositAddress1, "confirmed_txid_1", 0, 100)
+		claimedConfirmedUtxo := createUtxo(depositAddress1, "claimed_confirmed_txid", 1, 101)
+		cancelledSwapUtxo := createUtxo(depositAddress2, "cancelled_swap_txid", 2, 102)
+		pendingUtxo := createUtxo(depositAddress2, "pending_txid", 3, 199)
+		pendingClaimedUtxo := createUtxo(depositAddress1, "pending_claimed_txid", 4, 200)
+		thresholdConfirmedUtxo := createUtxo(depositAddress2, "threshold_confirmed_txid", 5, 198)
+		oneConfUtxo := createUtxo(depositAddress2, "one_conf_txid", 6, 200)
+		_ = createUtxo(nonStaticDepositAddress, "non_static_txid", 7, 103)
+
+		createSwap(claimedConfirmedUtxo, st.UtxoSwapStatusCreated)
+		createSwap(cancelledSwapUtxo, st.UtxoSwapStatusCancelled)
+		createSwap(pendingClaimedUtxo, st.UtxoSwapStatusCreated)
+
+		handler := NewDepositHandler(&so.Config{
+			BitcoindConfigs: map[string]so.BitcoindConfig{
+				"regtest": {
+					DepositConfirmationThreshold: 3,
+				},
+			},
+			FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
+		})
+
+		return &testEnv{
+			ctx:                    ctx,
+			handler:                handler,
+			staticAddress1:         staticAddress1,
+			staticAddress2:         staticAddress2,
+			staticAddress3:         staticAddress3,
+			nonStaticAddress:       nonStaticAddress,
+			confirmedUtxo:          confirmedUtxo,
+			claimedConfirmedUtxo:   claimedConfirmedUtxo,
+			cancelledSwapUtxo:      cancelledSwapUtxo,
+			pendingUtxo:            pendingUtxo,
+			pendingClaimedUtxo:     pendingClaimedUtxo,
+			thresholdConfirmedUtxo: thresholdConfirmedUtxo,
+			oneConfUtxo:            oneConfUtxo,
+		}
+	}
+
+	t.Run("default behavior returns only confirmed static utxos", func(t *testing.T) {
+		env := newTestEnv(t)
+		req := &pb.GetUtxosForAddressesRequest{
+			Addresses: []string{env.staticAddress1, env.staticAddress2, env.nonStaticAddress, env.staticAddress1},
+			Network:   pb.Network_REGTEST,
+			Page: &pb.PageRequest{
+				PageSize: 2,
+			},
+		}
+
+		page1, err := env.handler.GetUtxosForAddresses(env.ctx, req)
+		require.NoError(t, err)
+		require.Len(t, page1.Utxos, 2)
+		require.True(t, page1.Page.HasNextPage)
+		require.False(t, page1.Page.HasPreviousPage)
+
+		req.Page.Cursor = page1.Page.NextCursor
+		page2, err := env.handler.GetUtxosForAddresses(env.ctx, req)
+		require.NoError(t, err)
+		require.Len(t, page2.Utxos, 2)
+		require.False(t, page2.Page.HasNextPage)
+		require.True(t, page2.Page.HasPreviousPage)
+
+		allResults := append(page1.Utxos, page2.Utxos...)
+		require.Len(t, allResults, 4)
+
+		gotTxids := make([]string, 0, len(allResults))
+		gotAddresses := make(map[string]bool, len(allResults))
+		for _, utxo := range allResults {
+			require.NotNil(t, utxo.Utxo)
+			require.True(t, utxo.IsConfirmed)
+			gotTxids = append(gotTxids, string(utxo.Utxo.Txid))
+			gotAddresses[utxo.Address] = true
+		}
+
+		require.Equal(t, []string{
+			string(env.thresholdConfirmedUtxo.Txid),
+			string(env.cancelledSwapUtxo.Txid),
+			string(env.claimedConfirmedUtxo.Txid),
+			string(env.confirmedUtxo.Txid),
+		}, gotTxids)
+		require.NotContains(t, gotAddresses, env.nonStaticAddress)
+		require.NotContains(t, gotTxids, string(env.pendingUtxo.Txid))
+		require.NotContains(t, gotTxids, string(env.pendingClaimedUtxo.Txid))
+		require.NotContains(t, gotTxids, string(env.oneConfUtxo.Txid))
+	})
+
+	t.Run("include_pending returns mixed utxos and marks confirmed status", func(t *testing.T) {
+		env := newTestEnv(t)
+		response, err := env.handler.GetUtxosForAddresses(env.ctx, &pb.GetUtxosForAddressesRequest{
+			Addresses:      []string{env.staticAddress1, env.staticAddress2},
+			Network:        pb.Network_REGTEST,
+			IncludePending: true,
+			Page: &pb.PageRequest{
+				PageSize: 10,
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, response.Utxos, 7)
+
+		type gotUtxo struct {
+			txid        string
+			isConfirmed bool
+		}
+
+		got := make([]gotUtxo, 0, len(response.Utxos))
+		for _, utxo := range response.Utxos {
+			require.NotNil(t, utxo.Utxo)
+			got = append(got, gotUtxo{
+				txid:        string(utxo.Utxo.Txid),
+				isConfirmed: utxo.IsConfirmed,
+			})
+		}
+
+		require.Equal(t, []gotUtxo{
+			{txid: string(env.oneConfUtxo.Txid), isConfirmed: false},
+			{txid: string(env.pendingClaimedUtxo.Txid), isConfirmed: false},
+			{txid: string(env.pendingUtxo.Txid), isConfirmed: false},
+			{txid: string(env.thresholdConfirmedUtxo.Txid), isConfirmed: true},
+			{txid: string(env.cancelledSwapUtxo.Txid), isConfirmed: true},
+			{txid: string(env.claimedConfirmedUtxo.Txid), isConfirmed: true},
+			{txid: string(env.confirmedUtxo.Txid), isConfirmed: true},
+		}, got)
+	})
+
+	t.Run("include_pending paginates deterministically across mixed results", func(t *testing.T) {
+		env := newTestEnv(t)
+		req := &pb.GetUtxosForAddressesRequest{
+			Addresses:      []string{env.staticAddress1, env.staticAddress2},
+			Network:        pb.Network_REGTEST,
+			IncludePending: true,
+			Page: &pb.PageRequest{
+				PageSize: 2,
+			},
+		}
+
+		var got []string
+		seen := make(map[string]bool)
+		pageNumber := 0
+		for {
+			pageNumber++
+			response, err := env.handler.GetUtxosForAddresses(env.ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, response.Page)
+			if pageNumber == 1 {
+				require.False(t, response.Page.HasPreviousPage)
+			} else {
+				require.True(t, response.Page.HasPreviousPage)
+			}
+
+			for _, utxo := range response.Utxos {
+				require.NotNil(t, utxo.Utxo)
+				txid := string(utxo.Utxo.Txid)
+				require.False(t, seen[txid], "duplicate txid %s returned across pages", txid)
+				seen[txid] = true
+				got = append(got, txid)
+			}
+
+			if !response.Page.HasNextPage {
+				break
+			}
+			req.Page.Cursor = response.Page.NextCursor
+		}
+
+		require.Equal(t, []string{
+			string(env.oneConfUtxo.Txid),
+			string(env.pendingClaimedUtxo.Txid),
+			string(env.pendingUtxo.Txid),
+			string(env.thresholdConfirmedUtxo.Txid),
+			string(env.cancelledSwapUtxo.Txid),
+			string(env.claimedConfirmedUtxo.Txid),
+			string(env.confirmedUtxo.Txid),
+		}, got)
+	})
+
+	t.Run("exclude_claimed applies to both pending and confirmed utxos", func(t *testing.T) {
+		env := newTestEnv(t)
+		response, err := env.handler.GetUtxosForAddresses(env.ctx, &pb.GetUtxosForAddressesRequest{
+			Addresses:      []string{env.staticAddress1, env.staticAddress2},
+			Network:        pb.Network_REGTEST,
+			ExcludeClaimed: true,
+			IncludePending: true,
+			Page: &pb.PageRequest{
+				PageSize: 10,
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, response.Utxos, 5)
+
+		require.Equal(t, []struct {
+			txid        string
+			isConfirmed bool
+		}{
+			{txid: string(env.oneConfUtxo.Txid), isConfirmed: false},
+			{txid: string(env.pendingUtxo.Txid), isConfirmed: false},
+			{txid: string(env.thresholdConfirmedUtxo.Txid), isConfirmed: true},
+			{txid: string(env.cancelledSwapUtxo.Txid), isConfirmed: true},
+			{txid: string(env.confirmedUtxo.Txid), isConfirmed: true},
+		}, []struct {
+			txid        string
+			isConfirmed bool
+		}{
+			{txid: string(response.Utxos[0].Utxo.Txid), isConfirmed: response.Utxos[0].IsConfirmed},
+			{txid: string(response.Utxos[1].Utxo.Txid), isConfirmed: response.Utxos[1].IsConfirmed},
+			{txid: string(response.Utxos[2].Utxo.Txid), isConfirmed: response.Utxos[2].IsConfirmed},
+			{txid: string(response.Utxos[3].Utxo.Txid), isConfirmed: response.Utxos[3].IsConfirmed},
+			{txid: string(response.Utxos[4].Utxo.Txid), isConfirmed: response.Utxos[4].IsConfirmed},
+		})
+	})
+
+	t.Run("invalid requests are rejected", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		_, err := env.handler.GetUtxosForAddresses(env.ctx, &pb.GetUtxosForAddressesRequest{
+			Addresses: nil,
+			Network:   pb.Network_REGTEST,
+		})
+		require.ErrorContains(t, err, "addresses is required")
+
+		_, err = env.handler.GetUtxosForAddresses(env.ctx, &pb.GetUtxosForAddressesRequest{
+			Addresses: []string{env.staticAddress1},
+			Network:   pb.Network_REGTEST,
+			Page: &pb.PageRequest{
+				Direction: pb.Direction_PREVIOUS,
+			},
+		})
+		require.ErrorContains(t, err, "backward pagination")
+
+		_, err = env.handler.GetUtxosForAddresses(env.ctx, &pb.GetUtxosForAddressesRequest{
+			Addresses: []string{env.staticAddress1},
+			Network:   pb.Network_REGTEST,
+			Page: &pb.PageRequest{
+				Cursor: "not-a-cursor",
+			},
+		})
+		require.ErrorContains(t, err, "invalid cursor")
+
+		_, err = env.handler.GetUtxosForAddresses(env.ctx, &pb.GetUtxosForAddressesRequest{
+			Addresses: []string{"zz-invalid-address"},
+			Network:   pb.Network_REGTEST,
+		})
+		require.ErrorContains(t, err, "not aligned with the requested network")
+
+		_, err = env.handler.GetUtxosForAddresses(env.ctx, &pb.GetUtxosForAddressesRequest{
+			Addresses: []string{"bc1qmainnetaddress"},
+			Network:   pb.Network_REGTEST,
+		})
+		require.ErrorContains(t, err, "not aligned with the requested network")
+
+		tooManyAddresses := make([]string, MaxGetUtxosForAddressesCount+1)
+		for i := range tooManyAddresses {
+			tooManyAddresses[i] = fmt.Sprintf("address_%d", i)
+		}
+		_, err = env.handler.GetUtxosForAddresses(env.ctx, &pb.GetUtxosForAddressesRequest{
+			Addresses: tooManyAddresses,
+			Network:   pb.Network_REGTEST,
+		})
+		require.ErrorContains(t, err, "too many addresses")
+
+		_, err = env.handler.GetUtxosForAddresses(env.ctx, &pb.GetUtxosForAddressesRequest{
+			Addresses: []string{env.staticAddress1},
+			Network:   pb.Network_REGTEST,
+			Page: &pb.PageRequest{
+				PageSize: MaxGetUtxosForAddressesPageSize + 1,
+			},
+		})
+		require.ErrorContains(t, err, "requested page size exceeds max supported size")
+
+		_, err = env.handler.GetUtxosForAddresses(env.ctx, &pb.GetUtxosForAddressesRequest{
+			Addresses: []string{env.staticAddress1},
+			Network:   pb.Network_REGTEST,
+			Page: &pb.PageRequest{
+				UnsafePageSize: int32(MaxGetUtxosForAddressesPageSize + 1),
+			},
+		})
+		require.ErrorContains(t, err, "requested page size exceeds max supported size")
 	})
 }
 

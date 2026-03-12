@@ -5,6 +5,7 @@ package entexample
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -112,6 +113,7 @@ type CooperativeExitExample struct {
 	// Fields - use pointers to distinguish between "not set" and "set to zero value"
 	ExitTxid           *schematype.TxID
 	ConfirmationHeight *int64
+	KeyTweakedHeight   *int64
 
 	// Edges - if set, use the provided entity; if nil, create a default one
 	Transfer *ent.Transfer
@@ -137,6 +139,12 @@ func (ce *CooperativeExitExample) SetConfirmationHeight(v int64) *CooperativeExi
 	return ce
 }
 
+// SetKeyTweakedHeight sets the key_tweaked_height field.
+func (ce *CooperativeExitExample) SetKeyTweakedHeight(v int64) *CooperativeExitExample {
+	ce.KeyTweakedHeight = &v
+	return ce
+}
+
 // SetTransfer sets the transfer edge.
 func (ce *CooperativeExitExample) SetTransfer(v *ent.Transfer) *CooperativeExitExample {
 	ce.Transfer = v
@@ -157,6 +165,10 @@ func (ce *CooperativeExitExample) MustExec(ctx context.Context) *ent.Cooperative
 	}
 	if ce.ConfirmationHeight != nil {
 		create.SetConfirmationHeight(*ce.ConfirmationHeight)
+	} else {
+	}
+	if ce.KeyTweakedHeight != nil {
+		create.SetKeyTweakedHeight(*ce.KeyTweakedHeight)
 	} else {
 	}
 
@@ -195,6 +207,10 @@ func (ce *CooperativeExitExample) Exec(ctx context.Context) (*ent.CooperativeExi
 		create.SetConfirmationHeight(*ce.ConfirmationHeight)
 	} else {
 	}
+	if ce.KeyTweakedHeight != nil {
+		create.SetKeyTweakedHeight(*ce.KeyTweakedHeight)
+	} else {
+	}
 
 	// Handle edges
 	if ce.Transfer != nil {
@@ -218,15 +234,17 @@ type DepositAddressExample struct {
 	t      *testing.T
 
 	// Fields - use pointers to distinguish between "not set" and "set to zero value"
-	Address             *string
-	Network             *btcnetwork.Network
-	OwnerIdentityPubkey *keys.Public
-	OwnerSigningPubkey  *keys.Public
-	ConfirmationHeight  *int64
-	ConfirmationTxid    *string
-	AddressSignatures   *map[string][]uint8
-	PossessionSignature *[]byte
-	NodeID              *uuid.UUID
+	Address                 *string
+	Network                 *btcnetwork.Network
+	OwnerIdentityPubkey     *keys.Public
+	OwnerSigningPubkey      *keys.Public
+	ConfirmationHeight      *int64
+	ConfirmationTxid        *string
+	AvailabilityConfirmedAt *time.Time
+	AddressSignatures       *map[string][]uint8
+	PossessionSignature     *[]byte
+	PossessionSignatureV2   *[]byte
+	NodeID                  *uuid.UUID
 
 	// Edges - if set, use the provided entity; if nil, create a default one
 	SigningKeyshare *ent.SigningKeyshare
@@ -279,6 +297,12 @@ func (da *DepositAddressExample) SetConfirmationTxid(v string) *DepositAddressEx
 	return da
 }
 
+// SetAvailabilityConfirmedAt sets the availability_confirmed_at field.
+func (da *DepositAddressExample) SetAvailabilityConfirmedAt(v time.Time) *DepositAddressExample {
+	da.AvailabilityConfirmedAt = &v
+	return da
+}
+
 // SetAddressSignatures sets the address_signatures field.
 func (da *DepositAddressExample) SetAddressSignatures(v map[string][]uint8) *DepositAddressExample {
 	da.AddressSignatures = &v
@@ -288,6 +312,12 @@ func (da *DepositAddressExample) SetAddressSignatures(v map[string][]uint8) *Dep
 // SetPossessionSignature sets the possession_signature field.
 func (da *DepositAddressExample) SetPossessionSignature(v []byte) *DepositAddressExample {
 	da.PossessionSignature = &v
+	return da
+}
+
+// SetPossessionSignatureV2 sets the possession_signature_v2 field.
+func (da *DepositAddressExample) SetPossessionSignatureV2(v []byte) *DepositAddressExample {
+	da.PossessionSignatureV2 = &v
 	return da
 }
 
@@ -375,6 +405,10 @@ func (da *DepositAddressExample) MustExec(ctx context.Context) *ent.DepositAddre
 		// Use default from annotation
 		create.SetConfirmationTxid("6afc6ebd5ce104a3d03a927e48b05ee5b9ba52ec28dea2e4b79776e2f95de2d4")
 	}
+	if da.AvailabilityConfirmedAt != nil {
+		create.SetAvailabilityConfirmedAt(*da.AvailabilityConfirmedAt)
+	} else {
+	}
 	if da.AddressSignatures != nil {
 		create.SetAddressSignatures(*da.AddressSignatures)
 	} else {
@@ -395,6 +429,15 @@ func (da *DepositAddressExample) MustExec(ctx context.Context) *ent.DepositAddre
 	} else {
 		// Use default from annotation
 		create.SetPossessionSignature(func() []byte {
+			b, _ := hex.DecodeString("14bc648e78ec4ae6376b6752c35b1bd3f7a3c60a4caf3b107f9a08891bde9565006afe542e056da2726baf0915c61cbf6ec07b84b6fbcba4b82b6e5db953b1db")
+			return b
+		}())
+	}
+	if da.PossessionSignatureV2 != nil {
+		create.SetPossessionSignatureV2(*da.PossessionSignatureV2)
+	} else {
+		// Use default from annotation
+		create.SetPossessionSignatureV2(func() []byte {
 			b, _ := hex.DecodeString("14bc648e78ec4ae6376b6752c35b1bd3f7a3c60a4caf3b107f9a08891bde9565006afe542e056da2726baf0915c61cbf6ec07b84b6fbcba4b82b6e5db953b1db")
 			return b
 		}())
@@ -476,6 +519,10 @@ func (da *DepositAddressExample) Exec(ctx context.Context) (*ent.DepositAddress,
 		// Use default from annotation
 		create.SetConfirmationTxid("6afc6ebd5ce104a3d03a927e48b05ee5b9ba52ec28dea2e4b79776e2f95de2d4")
 	}
+	if da.AvailabilityConfirmedAt != nil {
+		create.SetAvailabilityConfirmedAt(*da.AvailabilityConfirmedAt)
+	} else {
+	}
 	if da.AddressSignatures != nil {
 		create.SetAddressSignatures(*da.AddressSignatures)
 	} else {
@@ -496,6 +543,15 @@ func (da *DepositAddressExample) Exec(ctx context.Context) (*ent.DepositAddress,
 	} else {
 		// Use default from annotation
 		create.SetPossessionSignature(func() []byte {
+			b, _ := hex.DecodeString("14bc648e78ec4ae6376b6752c35b1bd3f7a3c60a4caf3b107f9a08891bde9565006afe542e056da2726baf0915c61cbf6ec07b84b6fbcba4b82b6e5db953b1db")
+			return b
+		}())
+	}
+	if da.PossessionSignatureV2 != nil {
+		create.SetPossessionSignatureV2(*da.PossessionSignatureV2)
+	} else {
+		// Use default from annotation
+		create.SetPossessionSignatureV2(func() []byte {
 			b, _ := hex.DecodeString("14bc648e78ec4ae6376b6752c35b1bd3f7a3c60a4caf3b107f9a08891bde9565006afe542e056da2726baf0915c61cbf6ec07b84b6fbcba4b82b6e5db953b1db")
 			return b
 		}())
@@ -797,6 +853,107 @@ func (_go *GossipExample) Exec(ctx context.Context) (*ent.Gossip, error) {
 	return create.Save(ctx)
 }
 
+// IdempotencyKeyExample is a test fixture builder for IdempotencyKey.
+type IdempotencyKeyExample struct {
+	client *ent.Client
+	t      *testing.T
+
+	// Fields - use pointers to distinguish between "not set" and "set to zero value"
+	IdempotencyKey *string
+	MethodName     *string
+	Response       *json.RawMessage
+
+	// Edges - if set, use the provided entity; if nil, create a default one
+}
+
+// NewIdempotencyKeyExample creates a new IdempotencyKeyExample for testing.
+func NewIdempotencyKeyExample(t *testing.T, client *ent.Client) *IdempotencyKeyExample {
+	return &IdempotencyKeyExample{
+		client: client,
+		t:      t,
+	}
+}
+
+// SetIdempotencyKey sets the idempotency_key field.
+func (ik *IdempotencyKeyExample) SetIdempotencyKey(v string) *IdempotencyKeyExample {
+	ik.IdempotencyKey = &v
+	return ik
+}
+
+// SetMethodName sets the method_name field.
+func (ik *IdempotencyKeyExample) SetMethodName(v string) *IdempotencyKeyExample {
+	ik.MethodName = &v
+	return ik
+}
+
+// SetResponse sets the response field.
+func (ik *IdempotencyKeyExample) SetResponse(v json.RawMessage) *IdempotencyKeyExample {
+	ik.Response = &v
+	return ik
+}
+
+// MustExec builds and saves the IdempotencyKey entity to the database.
+// It panics if the save fails.
+func (ik *IdempotencyKeyExample) MustExec(ctx context.Context) *ent.IdempotencyKey {
+	create := ik.client.IdempotencyKey.Create()
+
+	// Set fields
+	if ik.IdempotencyKey != nil {
+		create.SetIdempotencyKey(*ik.IdempotencyKey)
+	} else {
+		// Use default from annotation
+		create.SetIdempotencyKey("my_super_cool_idempotency_key_1337")
+	}
+	if ik.MethodName != nil {
+		create.SetMethodName(*ik.MethodName)
+	} else {
+		// Use default from annotation
+		create.SetMethodName("/spark.SparkService/start_transfer_v2")
+	}
+	if ik.Response != nil {
+		create.SetResponse(*ik.Response)
+	} else {
+	}
+
+	// Handle edges
+
+	entity, err := create.Save(ctx)
+	if err != nil {
+		ik.t.Helper()
+		ik.t.Fatalf("failed to create IdempotencyKey: %v", err)
+	}
+
+	return entity
+}
+
+// Exec builds and saves the IdempotencyKey entity to the database.
+// It returns an error if the save fails.
+func (ik *IdempotencyKeyExample) Exec(ctx context.Context) (*ent.IdempotencyKey, error) {
+	create := ik.client.IdempotencyKey.Create()
+
+	// Set fields
+	if ik.IdempotencyKey != nil {
+		create.SetIdempotencyKey(*ik.IdempotencyKey)
+	} else {
+		// Use default from annotation
+		create.SetIdempotencyKey("my_super_cool_idempotency_key_1337")
+	}
+	if ik.MethodName != nil {
+		create.SetMethodName(*ik.MethodName)
+	} else {
+		// Use default from annotation
+		create.SetMethodName("/spark.SparkService/start_transfer_v2")
+	}
+	if ik.Response != nil {
+		create.SetResponse(*ik.Response)
+	} else {
+	}
+
+	// Handle edges
+
+	return create.Save(ctx)
+}
+
 // L1TokenCreateExample is a test fixture builder for L1TokenCreate.
 type L1TokenCreateExample struct {
 	client *ent.Client
@@ -1033,6 +1190,737 @@ func (lc *L1TokenCreateExample) Exec(ctx context.Context) (*ent.L1TokenCreate, e
 	}
 
 	// Handle edges
+
+	return create.Save(ctx)
+}
+
+// L1TokenJusticeTransactionExample is a test fixture builder for L1TokenJusticeTransaction.
+type L1TokenJusticeTransactionExample struct {
+	client *ent.Client
+	t      *testing.T
+
+	// Fields - use pointers to distinguish between "not set" and "set to zero value"
+	JusticeTxHash *schematype.TxID
+	BroadcastAt   *time.Time
+	AmountSats    *uint64
+	TxCostSats    *uint64
+
+	// Edges - if set, use the provided entity; if nil, create a default one
+	TokenOutput             *ent.TokenOutput
+	L1TokenOutputWithdrawal *ent.L1TokenOutputWithdrawal
+}
+
+// NewL1TokenJusticeTransactionExample creates a new L1TokenJusticeTransactionExample for testing.
+func NewL1TokenJusticeTransactionExample(t *testing.T, client *ent.Client) *L1TokenJusticeTransactionExample {
+	return &L1TokenJusticeTransactionExample{
+		client: client,
+		t:      t,
+	}
+}
+
+// SetJusticeTxHash sets the justice_tx_hash field.
+func (ljt *L1TokenJusticeTransactionExample) SetJusticeTxHash(v schematype.TxID) *L1TokenJusticeTransactionExample {
+	ljt.JusticeTxHash = &v
+	return ljt
+}
+
+// SetBroadcastAt sets the broadcast_at field.
+func (ljt *L1TokenJusticeTransactionExample) SetBroadcastAt(v time.Time) *L1TokenJusticeTransactionExample {
+	ljt.BroadcastAt = &v
+	return ljt
+}
+
+// SetAmountSats sets the amount_sats field.
+func (ljt *L1TokenJusticeTransactionExample) SetAmountSats(v uint64) *L1TokenJusticeTransactionExample {
+	ljt.AmountSats = &v
+	return ljt
+}
+
+// SetTxCostSats sets the tx_cost_sats field.
+func (ljt *L1TokenJusticeTransactionExample) SetTxCostSats(v uint64) *L1TokenJusticeTransactionExample {
+	ljt.TxCostSats = &v
+	return ljt
+}
+
+// SetTokenOutput sets the token_output edge.
+func (ljt *L1TokenJusticeTransactionExample) SetTokenOutput(v *ent.TokenOutput) *L1TokenJusticeTransactionExample {
+	ljt.TokenOutput = v
+	return ljt
+}
+
+// SetL1TokenOutputWithdrawal sets the l1_token_output_withdrawal edge.
+func (ljt *L1TokenJusticeTransactionExample) SetL1TokenOutputWithdrawal(v *ent.L1TokenOutputWithdrawal) *L1TokenJusticeTransactionExample {
+	ljt.L1TokenOutputWithdrawal = v
+	return ljt
+}
+
+// MustExec builds and saves the L1TokenJusticeTransaction entity to the database.
+// It panics if the save fails.
+func (ljt *L1TokenJusticeTransactionExample) MustExec(ctx context.Context) *ent.L1TokenJusticeTransaction {
+	create := ljt.client.L1TokenJusticeTransaction.Create()
+
+	// Set fields
+	if ljt.JusticeTxHash != nil {
+		create.SetJusticeTxHash(*ljt.JusticeTxHash)
+	} else {
+		// Use default from annotation
+		create.SetJusticeTxHash(schematype.MustParseTxID("6afc6ebd5ce104a3d03a927e48b05ee5b9ba52ec28dea2e4b79776e2f95de2d4"))
+	}
+	if ljt.BroadcastAt != nil {
+		create.SetBroadcastAt(*ljt.BroadcastAt)
+	} else {
+		// Use default from annotation
+		create.SetBroadcastAt(func() time.Time { t, _ := time.Parse(time.RFC3339, "1970-01-01T00:00:00Z"); return t }())
+	}
+	if ljt.AmountSats != nil {
+		create.SetAmountSats(*ljt.AmountSats)
+	} else {
+		// Use default from annotation
+		create.SetAmountSats(uint64(10000))
+	}
+	if ljt.TxCostSats != nil {
+		create.SetTxCostSats(*ljt.TxCostSats)
+	} else {
+		// Use default from annotation
+		create.SetTxCostSats(uint64(1000))
+	}
+
+	// Handle edges
+	if ljt.TokenOutput != nil {
+		create.SetTokenOutput(ljt.TokenOutput)
+	} else {
+		// Auto-create required edge
+		ljt.t.Helper()
+		ljt.TokenOutput = NewTokenOutputExample(ljt.t, ljt.client).MustExec(ctx)
+		create.SetTokenOutput(ljt.TokenOutput)
+	}
+	if ljt.L1TokenOutputWithdrawal != nil {
+		create.SetL1TokenOutputWithdrawal(ljt.L1TokenOutputWithdrawal)
+	} else {
+		// Auto-create required edge
+		ljt.t.Helper()
+		ljt.L1TokenOutputWithdrawal = NewL1TokenOutputWithdrawalExample(ljt.t, ljt.client).MustExec(ctx)
+		create.SetL1TokenOutputWithdrawal(ljt.L1TokenOutputWithdrawal)
+	}
+
+	entity, err := create.Save(ctx)
+	if err != nil {
+		ljt.t.Helper()
+		ljt.t.Fatalf("failed to create L1TokenJusticeTransaction: %v", err)
+	}
+
+	return entity
+}
+
+// Exec builds and saves the L1TokenJusticeTransaction entity to the database.
+// It returns an error if the save fails.
+func (ljt *L1TokenJusticeTransactionExample) Exec(ctx context.Context) (*ent.L1TokenJusticeTransaction, error) {
+	create := ljt.client.L1TokenJusticeTransaction.Create()
+
+	// Set fields
+	if ljt.JusticeTxHash != nil {
+		create.SetJusticeTxHash(*ljt.JusticeTxHash)
+	} else {
+		// Use default from annotation
+		create.SetJusticeTxHash(schematype.MustParseTxID("6afc6ebd5ce104a3d03a927e48b05ee5b9ba52ec28dea2e4b79776e2f95de2d4"))
+	}
+	if ljt.BroadcastAt != nil {
+		create.SetBroadcastAt(*ljt.BroadcastAt)
+	} else {
+		// Use default from annotation
+		create.SetBroadcastAt(func() time.Time { t, _ := time.Parse(time.RFC3339, "1970-01-01T00:00:00Z"); return t }())
+	}
+	if ljt.AmountSats != nil {
+		create.SetAmountSats(*ljt.AmountSats)
+	} else {
+		// Use default from annotation
+		create.SetAmountSats(uint64(10000))
+	}
+	if ljt.TxCostSats != nil {
+		create.SetTxCostSats(*ljt.TxCostSats)
+	} else {
+		// Use default from annotation
+		create.SetTxCostSats(uint64(1000))
+	}
+
+	// Handle edges
+	if ljt.TokenOutput != nil {
+		create.SetTokenOutput(ljt.TokenOutput)
+	} else {
+		// Auto-create required edge
+		var err error
+		ljt.TokenOutput, err = NewTokenOutputExample(ljt.t, ljt.client).Exec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create token_output: %w", err)
+		}
+		create.SetTokenOutput(ljt.TokenOutput)
+	}
+	if ljt.L1TokenOutputWithdrawal != nil {
+		create.SetL1TokenOutputWithdrawal(ljt.L1TokenOutputWithdrawal)
+	} else {
+		// Auto-create required edge
+		var err error
+		ljt.L1TokenOutputWithdrawal, err = NewL1TokenOutputWithdrawalExample(ljt.t, ljt.client).Exec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create l1_token_output_withdrawal: %w", err)
+		}
+		create.SetL1TokenOutputWithdrawal(ljt.L1TokenOutputWithdrawal)
+	}
+
+	return create.Save(ctx)
+}
+
+// L1TokenOutputWithdrawalExample is a test fixture builder for L1TokenOutputWithdrawal.
+type L1TokenOutputWithdrawalExample struct {
+	client *ent.Client
+	t      *testing.T
+
+	// Fields - use pointers to distinguish between "not set" and "set to zero value"
+	BitcoinVout *uint16
+
+	// Edges - if set, use the provided entity; if nil, create a default one
+	TokenOutput             *ent.TokenOutput
+	L1WithdrawalTransaction *ent.L1WithdrawalTransaction
+	JusticeTx               *ent.L1TokenJusticeTransaction
+}
+
+// NewL1TokenOutputWithdrawalExample creates a new L1TokenOutputWithdrawalExample for testing.
+func NewL1TokenOutputWithdrawalExample(t *testing.T, client *ent.Client) *L1TokenOutputWithdrawalExample {
+	return &L1TokenOutputWithdrawalExample{
+		client: client,
+		t:      t,
+	}
+}
+
+// SetBitcoinVout sets the bitcoin_vout field.
+func (low *L1TokenOutputWithdrawalExample) SetBitcoinVout(v uint16) *L1TokenOutputWithdrawalExample {
+	low.BitcoinVout = &v
+	return low
+}
+
+// SetTokenOutput sets the token_output edge.
+func (low *L1TokenOutputWithdrawalExample) SetTokenOutput(v *ent.TokenOutput) *L1TokenOutputWithdrawalExample {
+	low.TokenOutput = v
+	return low
+}
+
+// SetL1WithdrawalTransaction sets the l1_withdrawal_transaction edge.
+func (low *L1TokenOutputWithdrawalExample) SetL1WithdrawalTransaction(v *ent.L1WithdrawalTransaction) *L1TokenOutputWithdrawalExample {
+	low.L1WithdrawalTransaction = v
+	return low
+}
+
+// SetJusticeTx sets the justice_tx edge.
+func (low *L1TokenOutputWithdrawalExample) SetJusticeTx(v *ent.L1TokenJusticeTransaction) *L1TokenOutputWithdrawalExample {
+	low.JusticeTx = v
+	return low
+}
+
+// MustExec builds and saves the L1TokenOutputWithdrawal entity to the database.
+// It panics if the save fails.
+func (low *L1TokenOutputWithdrawalExample) MustExec(ctx context.Context) *ent.L1TokenOutputWithdrawal {
+	create := low.client.L1TokenOutputWithdrawal.Create()
+
+	// Set fields
+	if low.BitcoinVout != nil {
+		create.SetBitcoinVout(*low.BitcoinVout)
+	} else {
+		// Use default from annotation
+		create.SetBitcoinVout(uint16(0))
+	}
+
+	// Handle edges
+	if low.TokenOutput != nil {
+		create.SetTokenOutput(low.TokenOutput)
+	} else {
+		// Auto-create required edge
+		low.t.Helper()
+		low.TokenOutput = NewTokenOutputExample(low.t, low.client).MustExec(ctx)
+		create.SetTokenOutput(low.TokenOutput)
+	}
+	if low.L1WithdrawalTransaction != nil {
+		create.SetL1WithdrawalTransaction(low.L1WithdrawalTransaction)
+	} else {
+		// Auto-create required edge
+		low.t.Helper()
+		low.L1WithdrawalTransaction = NewL1WithdrawalTransactionExample(low.t, low.client).MustExec(ctx)
+		create.SetL1WithdrawalTransaction(low.L1WithdrawalTransaction)
+	}
+	if low.JusticeTx != nil {
+		create.SetJusticeTx(low.JusticeTx)
+	}
+
+	entity, err := create.Save(ctx)
+	if err != nil {
+		low.t.Helper()
+		low.t.Fatalf("failed to create L1TokenOutputWithdrawal: %v", err)
+	}
+
+	return entity
+}
+
+// Exec builds and saves the L1TokenOutputWithdrawal entity to the database.
+// It returns an error if the save fails.
+func (low *L1TokenOutputWithdrawalExample) Exec(ctx context.Context) (*ent.L1TokenOutputWithdrawal, error) {
+	create := low.client.L1TokenOutputWithdrawal.Create()
+
+	// Set fields
+	if low.BitcoinVout != nil {
+		create.SetBitcoinVout(*low.BitcoinVout)
+	} else {
+		// Use default from annotation
+		create.SetBitcoinVout(uint16(0))
+	}
+
+	// Handle edges
+	if low.TokenOutput != nil {
+		create.SetTokenOutput(low.TokenOutput)
+	} else {
+		// Auto-create required edge
+		var err error
+		low.TokenOutput, err = NewTokenOutputExample(low.t, low.client).Exec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create token_output: %w", err)
+		}
+		create.SetTokenOutput(low.TokenOutput)
+	}
+	if low.L1WithdrawalTransaction != nil {
+		create.SetL1WithdrawalTransaction(low.L1WithdrawalTransaction)
+	} else {
+		// Auto-create required edge
+		var err error
+		low.L1WithdrawalTransaction, err = NewL1WithdrawalTransactionExample(low.t, low.client).Exec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create l1_withdrawal_transaction: %w", err)
+		}
+		create.SetL1WithdrawalTransaction(low.L1WithdrawalTransaction)
+	}
+	if low.JusticeTx != nil {
+		create.SetJusticeTx(low.JusticeTx)
+	}
+
+	return create.Save(ctx)
+}
+
+// L1WithdrawalTransactionExample is a test fixture builder for L1WithdrawalTransaction.
+type L1WithdrawalTransactionExample struct {
+	client *ent.Client
+	t      *testing.T
+
+	// Fields - use pointers to distinguish between "not set" and "set to zero value"
+	ConfirmationTxid      *schematype.TxID
+	ConfirmationBlockHash *[]byte
+	ConfirmationHeight    *uint64
+	DetectedAt            *time.Time
+	OwnerSignature        *[]byte
+
+	// Edges - if set, use the provided entity; if nil, create a default one
+	Withdrawals []*ent.L1TokenOutputWithdrawal
+	SeEntity    *ent.EntityDkgKey
+}
+
+// NewL1WithdrawalTransactionExample creates a new L1WithdrawalTransactionExample for testing.
+func NewL1WithdrawalTransactionExample(t *testing.T, client *ent.Client) *L1WithdrawalTransactionExample {
+	return &L1WithdrawalTransactionExample{
+		client: client,
+		t:      t,
+	}
+}
+
+// SetConfirmationTxid sets the confirmation_txid field.
+func (lt *L1WithdrawalTransactionExample) SetConfirmationTxid(v schematype.TxID) *L1WithdrawalTransactionExample {
+	lt.ConfirmationTxid = &v
+	return lt
+}
+
+// SetConfirmationBlockHash sets the confirmation_block_hash field.
+func (lt *L1WithdrawalTransactionExample) SetConfirmationBlockHash(v []byte) *L1WithdrawalTransactionExample {
+	lt.ConfirmationBlockHash = &v
+	return lt
+}
+
+// SetConfirmationHeight sets the confirmation_height field.
+func (lt *L1WithdrawalTransactionExample) SetConfirmationHeight(v uint64) *L1WithdrawalTransactionExample {
+	lt.ConfirmationHeight = &v
+	return lt
+}
+
+// SetDetectedAt sets the detected_at field.
+func (lt *L1WithdrawalTransactionExample) SetDetectedAt(v time.Time) *L1WithdrawalTransactionExample {
+	lt.DetectedAt = &v
+	return lt
+}
+
+// SetOwnerSignature sets the owner_signature field.
+func (lt *L1WithdrawalTransactionExample) SetOwnerSignature(v []byte) *L1WithdrawalTransactionExample {
+	lt.OwnerSignature = &v
+	return lt
+}
+
+// AddWithdrawal adds a L1TokenOutputWithdrawal to the withdrawals edge.
+func (lt *L1WithdrawalTransactionExample) AddWithdrawal(v *ent.L1TokenOutputWithdrawal) *L1WithdrawalTransactionExample {
+	lt.Withdrawals = append(lt.Withdrawals, v)
+	return lt
+}
+
+// SetWithdrawals sets the withdrawals edge.
+func (lt *L1WithdrawalTransactionExample) SetWithdrawals(v []*ent.L1TokenOutputWithdrawal) *L1WithdrawalTransactionExample {
+	lt.Withdrawals = v
+	return lt
+}
+
+// SetSeEntity sets the se_entity edge.
+func (lt *L1WithdrawalTransactionExample) SetSeEntity(v *ent.EntityDkgKey) *L1WithdrawalTransactionExample {
+	lt.SeEntity = v
+	return lt
+}
+
+// MustExec builds and saves the L1WithdrawalTransaction entity to the database.
+// It panics if the save fails.
+func (lt *L1WithdrawalTransactionExample) MustExec(ctx context.Context) *ent.L1WithdrawalTransaction {
+	create := lt.client.L1WithdrawalTransaction.Create()
+
+	// Set fields
+	if lt.ConfirmationTxid != nil {
+		create.SetConfirmationTxid(*lt.ConfirmationTxid)
+	} else {
+		// Use default from annotation
+		create.SetConfirmationTxid(schematype.MustParseTxID("6afc6ebd5ce104a3d03a927e48b05ee5b9ba52ec28dea2e4b79776e2f95de2d4"))
+	}
+	if lt.ConfirmationBlockHash != nil {
+		create.SetConfirmationBlockHash(*lt.ConfirmationBlockHash)
+	} else {
+		// Use default from annotation
+		create.SetConfirmationBlockHash(func() []byte {
+			b, _ := hex.DecodeString("0000000000000000000026a904803d445d297a4f32a4b2099f9291059af54a25")
+			return b
+		}())
+	}
+	if lt.ConfirmationHeight != nil {
+		create.SetConfirmationHeight(*lt.ConfirmationHeight)
+	} else {
+		// Use default from annotation
+		create.SetConfirmationHeight(uint64(0))
+	}
+	if lt.DetectedAt != nil {
+		create.SetDetectedAt(*lt.DetectedAt)
+	} else {
+		// Use default from annotation
+		create.SetDetectedAt(func() time.Time { t, _ := time.Parse(time.RFC3339, "1970-01-01T00:00:00Z"); return t }())
+	}
+	if lt.OwnerSignature != nil {
+		create.SetOwnerSignature(*lt.OwnerSignature)
+	} else {
+		// Use default from annotation
+		create.SetOwnerSignature(func() []byte {
+			b, _ := hex.DecodeString("14bc648e78ec4ae6376b6752c35b1bd3f7a3c60a4caf3b107f9a08891bde9565006afe542e056da2726baf0915c61cbf6ec07b84b6fbcba4b82b6e5db953b1db")
+			return b
+		}())
+	}
+
+	// Handle edges
+	if len(lt.Withdrawals) > 0 {
+		create.AddWithdrawals(lt.Withdrawals...)
+	}
+	if lt.SeEntity != nil {
+		create.SetSeEntity(lt.SeEntity)
+	} else {
+		// Auto-create required edge
+		lt.t.Helper()
+		lt.SeEntity = NewEntityDkgKeyExample(lt.t, lt.client).MustExec(ctx)
+		create.SetSeEntity(lt.SeEntity)
+	}
+
+	entity, err := create.Save(ctx)
+	if err != nil {
+		lt.t.Helper()
+		lt.t.Fatalf("failed to create L1WithdrawalTransaction: %v", err)
+	}
+
+	return entity
+}
+
+// Exec builds and saves the L1WithdrawalTransaction entity to the database.
+// It returns an error if the save fails.
+func (lt *L1WithdrawalTransactionExample) Exec(ctx context.Context) (*ent.L1WithdrawalTransaction, error) {
+	create := lt.client.L1WithdrawalTransaction.Create()
+
+	// Set fields
+	if lt.ConfirmationTxid != nil {
+		create.SetConfirmationTxid(*lt.ConfirmationTxid)
+	} else {
+		// Use default from annotation
+		create.SetConfirmationTxid(schematype.MustParseTxID("6afc6ebd5ce104a3d03a927e48b05ee5b9ba52ec28dea2e4b79776e2f95de2d4"))
+	}
+	if lt.ConfirmationBlockHash != nil {
+		create.SetConfirmationBlockHash(*lt.ConfirmationBlockHash)
+	} else {
+		// Use default from annotation
+		create.SetConfirmationBlockHash(func() []byte {
+			b, _ := hex.DecodeString("0000000000000000000026a904803d445d297a4f32a4b2099f9291059af54a25")
+			return b
+		}())
+	}
+	if lt.ConfirmationHeight != nil {
+		create.SetConfirmationHeight(*lt.ConfirmationHeight)
+	} else {
+		// Use default from annotation
+		create.SetConfirmationHeight(uint64(0))
+	}
+	if lt.DetectedAt != nil {
+		create.SetDetectedAt(*lt.DetectedAt)
+	} else {
+		// Use default from annotation
+		create.SetDetectedAt(func() time.Time { t, _ := time.Parse(time.RFC3339, "1970-01-01T00:00:00Z"); return t }())
+	}
+	if lt.OwnerSignature != nil {
+		create.SetOwnerSignature(*lt.OwnerSignature)
+	} else {
+		// Use default from annotation
+		create.SetOwnerSignature(func() []byte {
+			b, _ := hex.DecodeString("14bc648e78ec4ae6376b6752c35b1bd3f7a3c60a4caf3b107f9a08891bde9565006afe542e056da2726baf0915c61cbf6ec07b84b6fbcba4b82b6e5db953b1db")
+			return b
+		}())
+	}
+
+	// Handle edges
+	if len(lt.Withdrawals) > 0 {
+		create.AddWithdrawals(lt.Withdrawals...)
+	}
+	if lt.SeEntity != nil {
+		create.SetSeEntity(lt.SeEntity)
+	} else {
+		// Auto-create required edge
+		var err error
+		lt.SeEntity, err = NewEntityDkgKeyExample(lt.t, lt.client).Exec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create se_entity: %w", err)
+		}
+		create.SetSeEntity(lt.SeEntity)
+	}
+
+	return create.Save(ctx)
+}
+
+// MultisigConfigExample is a test fixture builder for MultisigConfig.
+type MultisigConfigExample struct {
+	client *ent.Client
+	t      *testing.T
+
+	// Fields - use pointers to distinguish between "not set" and "set to zero value"
+	MultisigIdentifier  *[]byte
+	NumSignersThreshold *uint32
+	NumSignersTotal     *uint32
+
+	// Edges - if set, use the provided entity; if nil, create a default one
+	Members []*ent.MultisigMember
+}
+
+// NewMultisigConfigExample creates a new MultisigConfigExample for testing.
+func NewMultisigConfigExample(t *testing.T, client *ent.Client) *MultisigConfigExample {
+	return &MultisigConfigExample{
+		client: client,
+		t:      t,
+	}
+}
+
+// SetMultisigIdentifier sets the multisig_identifier field.
+func (mc *MultisigConfigExample) SetMultisigIdentifier(v []byte) *MultisigConfigExample {
+	mc.MultisigIdentifier = &v
+	return mc
+}
+
+// SetNumSignersThreshold sets the num_signers_threshold field.
+func (mc *MultisigConfigExample) SetNumSignersThreshold(v uint32) *MultisigConfigExample {
+	mc.NumSignersThreshold = &v
+	return mc
+}
+
+// SetNumSignersTotal sets the num_signers_total field.
+func (mc *MultisigConfigExample) SetNumSignersTotal(v uint32) *MultisigConfigExample {
+	mc.NumSignersTotal = &v
+	return mc
+}
+
+// AddMember adds a MultisigMember to the members edge.
+func (mc *MultisigConfigExample) AddMember(v *ent.MultisigMember) *MultisigConfigExample {
+	mc.Members = append(mc.Members, v)
+	return mc
+}
+
+// SetMembers sets the members edge.
+func (mc *MultisigConfigExample) SetMembers(v []*ent.MultisigMember) *MultisigConfigExample {
+	mc.Members = v
+	return mc
+}
+
+// MustExec builds and saves the MultisigConfig entity to the database.
+// It panics if the save fails.
+func (mc *MultisigConfigExample) MustExec(ctx context.Context) *ent.MultisigConfig {
+	create := mc.client.MultisigConfig.Create()
+
+	// Set fields
+	if mc.MultisigIdentifier != nil {
+		create.SetMultisigIdentifier(*mc.MultisigIdentifier)
+	} else {
+		// Use default from annotation
+		create.SetMultisigIdentifier(func() []byte {
+			b, _ := hex.DecodeString("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+			return b
+		}())
+	}
+	if mc.NumSignersThreshold != nil {
+		create.SetNumSignersThreshold(*mc.NumSignersThreshold)
+	} else {
+		// Use default from annotation
+		create.SetNumSignersThreshold(uint32(2))
+	}
+	if mc.NumSignersTotal != nil {
+		create.SetNumSignersTotal(*mc.NumSignersTotal)
+	} else {
+		// Use default from annotation
+		create.SetNumSignersTotal(uint32(3))
+	}
+
+	// Handle edges
+	if len(mc.Members) > 0 {
+		create.AddMembers(mc.Members...)
+	}
+
+	entity, err := create.Save(ctx)
+	if err != nil {
+		mc.t.Helper()
+		mc.t.Fatalf("failed to create MultisigConfig: %v", err)
+	}
+
+	return entity
+}
+
+// Exec builds and saves the MultisigConfig entity to the database.
+// It returns an error if the save fails.
+func (mc *MultisigConfigExample) Exec(ctx context.Context) (*ent.MultisigConfig, error) {
+	create := mc.client.MultisigConfig.Create()
+
+	// Set fields
+	if mc.MultisigIdentifier != nil {
+		create.SetMultisigIdentifier(*mc.MultisigIdentifier)
+	} else {
+		// Use default from annotation
+		create.SetMultisigIdentifier(func() []byte {
+			b, _ := hex.DecodeString("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+			return b
+		}())
+	}
+	if mc.NumSignersThreshold != nil {
+		create.SetNumSignersThreshold(*mc.NumSignersThreshold)
+	} else {
+		// Use default from annotation
+		create.SetNumSignersThreshold(uint32(2))
+	}
+	if mc.NumSignersTotal != nil {
+		create.SetNumSignersTotal(*mc.NumSignersTotal)
+	} else {
+		// Use default from annotation
+		create.SetNumSignersTotal(uint32(3))
+	}
+
+	// Handle edges
+	if len(mc.Members) > 0 {
+		create.AddMembers(mc.Members...)
+	}
+
+	return create.Save(ctx)
+}
+
+// MultisigMemberExample is a test fixture builder for MultisigMember.
+type MultisigMemberExample struct {
+	client *ent.Client
+	t      *testing.T
+
+	// Fields - use pointers to distinguish between "not set" and "set to zero value"
+	PublicKey *keys.Public
+
+	// Edges - if set, use the provided entity; if nil, create a default one
+	Config *ent.MultisigConfig
+}
+
+// NewMultisigMemberExample creates a new MultisigMemberExample for testing.
+func NewMultisigMemberExample(t *testing.T, client *ent.Client) *MultisigMemberExample {
+	return &MultisigMemberExample{
+		client: client,
+		t:      t,
+	}
+}
+
+// SetPublicKey sets the public_key field.
+func (mm *MultisigMemberExample) SetPublicKey(v keys.Public) *MultisigMemberExample {
+	mm.PublicKey = &v
+	return mm
+}
+
+// SetConfig sets the config edge.
+func (mm *MultisigMemberExample) SetConfig(v *ent.MultisigConfig) *MultisigMemberExample {
+	mm.Config = v
+	return mm
+}
+
+// MustExec builds and saves the MultisigMember entity to the database.
+// It panics if the save fails.
+func (mm *MultisigMemberExample) MustExec(ctx context.Context) *ent.MultisigMember {
+	create := mm.client.MultisigMember.Create()
+
+	// Set fields
+	if mm.PublicKey != nil {
+		create.SetPublicKey(*mm.PublicKey)
+	} else {
+		// Use default from annotation
+		create.SetPublicKey(keys.MustParsePublicKeyHex("0350f07ffc21bfd59d31e0a7a600e2995273938444447cb9bc4c75b8a895dbb853"))
+	}
+
+	// Handle edges
+	if mm.Config != nil {
+		create.SetConfig(mm.Config)
+	} else {
+		// Auto-create required edge
+		mm.t.Helper()
+		mm.Config = NewMultisigConfigExample(mm.t, mm.client).MustExec(ctx)
+		create.SetConfig(mm.Config)
+	}
+
+	entity, err := create.Save(ctx)
+	if err != nil {
+		mm.t.Helper()
+		mm.t.Fatalf("failed to create MultisigMember: %v", err)
+	}
+
+	return entity
+}
+
+// Exec builds and saves the MultisigMember entity to the database.
+// It returns an error if the save fails.
+func (mm *MultisigMemberExample) Exec(ctx context.Context) (*ent.MultisigMember, error) {
+	create := mm.client.MultisigMember.Create()
+
+	// Set fields
+	if mm.PublicKey != nil {
+		create.SetPublicKey(*mm.PublicKey)
+	} else {
+		// Use default from annotation
+		create.SetPublicKey(keys.MustParsePublicKeyHex("0350f07ffc21bfd59d31e0a7a600e2995273938444447cb9bc4c75b8a895dbb853"))
+	}
+
+	// Handle edges
+	if mm.Config != nil {
+		create.SetConfig(mm.Config)
+	} else {
+		// Auto-create required edge
+		var err error
+		mm.Config, err = NewMultisigConfigExample(mm.t, mm.client).Exec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create config: %w", err)
+		}
+		create.SetConfig(mm.Config)
+	}
 
 	return create.Save(ctx)
 }
@@ -1852,7 +2740,6 @@ type SigningNonceExample struct {
 	// Fields - use pointers to distinguish between "not set" and "set to zero value"
 	Nonce            *frost.SigningNonce
 	NonceCommitment  *frost.SigningCommitment
-	Message          *[]byte
 	RetryFingerprint *[]byte
 
 	// Edges - if set, use the provided entity; if nil, create a default one
@@ -1875,12 +2762,6 @@ func (sn *SigningNonceExample) SetNonce(v frost.SigningNonce) *SigningNonceExamp
 // SetNonceCommitment sets the nonce_commitment field.
 func (sn *SigningNonceExample) SetNonceCommitment(v frost.SigningCommitment) *SigningNonceExample {
 	sn.NonceCommitment = &v
-	return sn
-}
-
-// SetMessage sets the message field.
-func (sn *SigningNonceExample) SetMessage(v []byte) *SigningNonceExample {
-	sn.Message = &v
 	return sn
 }
 
@@ -1907,10 +2788,6 @@ func (sn *SigningNonceExample) MustExec(ctx context.Context) *ent.SigningNonce {
 	} else {
 		// Use default from annotation
 		create.SetNonceCommitment(frost.MustParseSigningCommitment("02b1da9d3de7774d492150db96dea151050a7c9e4459e35020d4b768c4b4044e8103f694a39e78d4804c985ff637d6e3a56052b5a122d2edd1cf75e385f6b69297dd"))
-	}
-	if sn.Message != nil {
-		create.SetMessage(*sn.Message)
-	} else {
 	}
 	if sn.RetryFingerprint != nil {
 		create.SetRetryFingerprint(*sn.RetryFingerprint)
@@ -1950,10 +2827,6 @@ func (sn *SigningNonceExample) Exec(ctx context.Context) (*ent.SigningNonce, err
 	} else {
 		// Use default from annotation
 		create.SetNonceCommitment(frost.MustParseSigningCommitment("02b1da9d3de7774d492150db96dea151050a7c9e4459e35020d4b768c4b4044e8103f694a39e78d4804c985ff637d6e3a56052b5a122d2edd1cf75e385f6b69297dd"))
-	}
-	if sn.Message != nil {
-		create.SetMessage(*sn.Message)
-	} else {
 	}
 	if sn.RetryFingerprint != nil {
 		create.SetRetryFingerprint(*sn.RetryFingerprint)
@@ -2873,11 +3746,12 @@ type TokenOutputExample struct {
 	Amount                                  *uint128.Uint128
 	CreatedTransactionOutputVout            *int32
 	CreatedTransactionFinalizedHash         *[]byte
+	SeFinalizationAdaptorSig                *[]byte
+	SeWithdrawalSignature                   *[]byte
 	SpentOwnershipSignature                 *[]byte
 	SpentOperatorSpecificOwnershipSignature *[]byte
 	SpentTransactionInputVout               *int32
 	SpentRevocationSecret                   *keys.Private
-	ConfirmedWithdrawBlockHash              *[]byte
 	Network                                 *btcnetwork.Network
 	TokenIdentifier                         *[]byte
 	TokenCreateID                           *uuid.UUID
@@ -2889,6 +3763,8 @@ type TokenOutputExample struct {
 	OutputSpentStartedTokenTransactions []*ent.TokenTransaction
 	TokenPartialRevocationSecretShares  []*ent.TokenPartialRevocationSecretShare
 	TokenCreate                         *ent.TokenCreate
+	Withdrawal                          *ent.L1TokenOutputWithdrawal
+	JusticeTx                           *ent.L1TokenJusticeTransaction
 }
 
 // NewTokenOutputExample creates a new TokenOutputExample for testing.
@@ -2959,6 +3835,18 @@ func (to *TokenOutputExample) SetCreatedTransactionFinalizedHash(v []byte) *Toke
 	return to
 }
 
+// SetSeFinalizationAdaptorSig sets the se_finalization_adaptor_sig field.
+func (to *TokenOutputExample) SetSeFinalizationAdaptorSig(v []byte) *TokenOutputExample {
+	to.SeFinalizationAdaptorSig = &v
+	return to
+}
+
+// SetSeWithdrawalSignature sets the se_withdrawal_signature field.
+func (to *TokenOutputExample) SetSeWithdrawalSignature(v []byte) *TokenOutputExample {
+	to.SeWithdrawalSignature = &v
+	return to
+}
+
 // SetSpentOwnershipSignature sets the spent_ownership_signature field.
 func (to *TokenOutputExample) SetSpentOwnershipSignature(v []byte) *TokenOutputExample {
 	to.SpentOwnershipSignature = &v
@@ -2980,12 +3868,6 @@ func (to *TokenOutputExample) SetSpentTransactionInputVout(v int32) *TokenOutput
 // SetSpentRevocationSecret sets the spent_revocation_secret field.
 func (to *TokenOutputExample) SetSpentRevocationSecret(v keys.Private) *TokenOutputExample {
 	to.SpentRevocationSecret = &v
-	return to
-}
-
-// SetConfirmedWithdrawBlockHash sets the confirmed_withdraw_block_hash field.
-func (to *TokenOutputExample) SetConfirmedWithdrawBlockHash(v []byte) *TokenOutputExample {
-	to.ConfirmedWithdrawBlockHash = &v
 	return to
 }
 
@@ -3052,6 +3934,18 @@ func (to *TokenOutputExample) SetTokenPartialRevocationSecretShares(v []*ent.Tok
 // SetTokenCreate sets the token_create edge.
 func (to *TokenOutputExample) SetTokenCreate(v *ent.TokenCreate) *TokenOutputExample {
 	to.TokenCreate = v
+	return to
+}
+
+// SetWithdrawal sets the withdrawal edge.
+func (to *TokenOutputExample) SetWithdrawal(v *ent.L1TokenOutputWithdrawal) *TokenOutputExample {
+	to.Withdrawal = v
+	return to
+}
+
+// SetJusticeTx sets the justice_tx edge.
+func (to *TokenOutputExample) SetJusticeTx(v *ent.L1TokenJusticeTransaction) *TokenOutputExample {
+	to.JusticeTx = v
 	return to
 }
 
@@ -3127,6 +4021,24 @@ func (to *TokenOutputExample) MustExec(ctx context.Context) *ent.TokenOutput {
 			return b
 		}())
 	}
+	if to.SeFinalizationAdaptorSig != nil {
+		create.SetSeFinalizationAdaptorSig(*to.SeFinalizationAdaptorSig)
+	} else {
+		// Use default from annotation
+		create.SetSeFinalizationAdaptorSig(func() []byte {
+			b, _ := hex.DecodeString("c4d0f7f4ed725175ea7f93e3c3864a4fe8f386c5652964b736c7ab7752c939c84d40affa0876733deb843a466c74662e82c94857324e07bcb597097034b3c949")
+			return b
+		}())
+	}
+	if to.SeWithdrawalSignature != nil {
+		create.SetSeWithdrawalSignature(*to.SeWithdrawalSignature)
+	} else {
+		// Use default from annotation
+		create.SetSeWithdrawalSignature(func() []byte {
+			b, _ := hex.DecodeString("c4d0f7f4ed725175ea7f93e3c3864a4fe8f386c5652964b736c7ab7752c939c84d40affa0876733deb843a466c74662e82c94857324e07bcb597097034b3c949")
+			return b
+		}())
+	}
 	if to.SpentOwnershipSignature != nil {
 		create.SetSpentOwnershipSignature(*to.SpentOwnershipSignature)
 	} else {
@@ -3141,10 +4053,6 @@ func (to *TokenOutputExample) MustExec(ctx context.Context) *ent.TokenOutput {
 	}
 	if to.SpentRevocationSecret != nil {
 		create.SetSpentRevocationSecret(*to.SpentRevocationSecret)
-	} else {
-	}
-	if to.ConfirmedWithdrawBlockHash != nil {
-		create.SetConfirmedWithdrawBlockHash(*to.ConfirmedWithdrawBlockHash)
 	} else {
 	}
 	if to.Network != nil {
@@ -3202,6 +4110,12 @@ func (to *TokenOutputExample) MustExec(ctx context.Context) *ent.TokenOutput {
 		to.t.Helper()
 		to.TokenCreate = NewTokenCreateExample(to.t, to.client).MustExec(ctx)
 		create.SetTokenCreate(to.TokenCreate)
+	}
+	if to.Withdrawal != nil {
+		create.SetWithdrawal(to.Withdrawal)
+	}
+	if to.JusticeTx != nil {
+		create.SetJusticeTx(to.JusticeTx)
 	}
 
 	entity, err := create.Save(ctx)
@@ -3285,6 +4199,24 @@ func (to *TokenOutputExample) Exec(ctx context.Context) (*ent.TokenOutput, error
 			return b
 		}())
 	}
+	if to.SeFinalizationAdaptorSig != nil {
+		create.SetSeFinalizationAdaptorSig(*to.SeFinalizationAdaptorSig)
+	} else {
+		// Use default from annotation
+		create.SetSeFinalizationAdaptorSig(func() []byte {
+			b, _ := hex.DecodeString("c4d0f7f4ed725175ea7f93e3c3864a4fe8f386c5652964b736c7ab7752c939c84d40affa0876733deb843a466c74662e82c94857324e07bcb597097034b3c949")
+			return b
+		}())
+	}
+	if to.SeWithdrawalSignature != nil {
+		create.SetSeWithdrawalSignature(*to.SeWithdrawalSignature)
+	} else {
+		// Use default from annotation
+		create.SetSeWithdrawalSignature(func() []byte {
+			b, _ := hex.DecodeString("c4d0f7f4ed725175ea7f93e3c3864a4fe8f386c5652964b736c7ab7752c939c84d40affa0876733deb843a466c74662e82c94857324e07bcb597097034b3c949")
+			return b
+		}())
+	}
 	if to.SpentOwnershipSignature != nil {
 		create.SetSpentOwnershipSignature(*to.SpentOwnershipSignature)
 	} else {
@@ -3299,10 +4231,6 @@ func (to *TokenOutputExample) Exec(ctx context.Context) (*ent.TokenOutput, error
 	}
 	if to.SpentRevocationSecret != nil {
 		create.SetSpentRevocationSecret(*to.SpentRevocationSecret)
-	} else {
-	}
-	if to.ConfirmedWithdrawBlockHash != nil {
-		create.SetConfirmedWithdrawBlockHash(*to.ConfirmedWithdrawBlockHash)
 	} else {
 	}
 	if to.Network != nil {
@@ -3369,6 +4297,12 @@ func (to *TokenOutputExample) Exec(ctx context.Context) (*ent.TokenOutput, error
 			return nil, fmt.Errorf("failed to create token_create: %w", err)
 		}
 		create.SetTokenCreate(to.TokenCreate)
+	}
+	if to.Withdrawal != nil {
+		create.SetWithdrawal(to.Withdrawal)
+	}
+	if to.JusticeTx != nil {
+		create.SetJusticeTx(to.JusticeTx)
 	}
 
 	return create.Save(ctx)
@@ -3966,6 +4900,8 @@ type TransferExample struct {
 	SparkInvoice        *ent.SparkInvoice
 	CounterSwapTransfer []*ent.Transfer
 	PrimarySwapTransfer *ent.Transfer
+	TransferSenders     []*ent.TransferSender
+	TransferReceivers   []*ent.TransferReceiver
 }
 
 // NewTransferExample creates a new TransferExample for testing.
@@ -4072,6 +5008,30 @@ func (t *TransferExample) SetPrimarySwapTransfer(v *ent.Transfer) *TransferExamp
 	return t
 }
 
+// AddTransferSender adds a TransferSender to the transfer_senders edge.
+func (t *TransferExample) AddTransferSender(v *ent.TransferSender) *TransferExample {
+	t.TransferSenders = append(t.TransferSenders, v)
+	return t
+}
+
+// SetTransferSenders sets the transfer_senders edge.
+func (t *TransferExample) SetTransferSenders(v []*ent.TransferSender) *TransferExample {
+	t.TransferSenders = v
+	return t
+}
+
+// AddTransferReceiver adds a TransferReceiver to the transfer_receivers edge.
+func (t *TransferExample) AddTransferReceiver(v *ent.TransferReceiver) *TransferExample {
+	t.TransferReceivers = append(t.TransferReceivers, v)
+	return t
+}
+
+// SetTransferReceivers sets the transfer_receivers edge.
+func (t *TransferExample) SetTransferReceivers(v []*ent.TransferReceiver) *TransferExample {
+	t.TransferReceivers = v
+	return t
+}
+
 // MustExec builds and saves the Transfer entity to the database.
 // It panics if the save fails.
 func (t *TransferExample) MustExec(ctx context.Context) *ent.Transfer {
@@ -4144,6 +5104,12 @@ func (t *TransferExample) MustExec(ctx context.Context) *ent.Transfer {
 	}
 	if t.PrimarySwapTransfer != nil {
 		create.SetPrimarySwapTransfer(t.PrimarySwapTransfer)
+	}
+	if len(t.TransferSenders) > 0 {
+		create.AddTransferSenders(t.TransferSenders...)
+	}
+	if len(t.TransferReceivers) > 0 {
+		create.AddTransferReceivers(t.TransferReceivers...)
 	}
 
 	entity, err := create.Save(ctx)
@@ -4228,6 +5194,12 @@ func (t *TransferExample) Exec(ctx context.Context) (*ent.Transfer, error) {
 	if t.PrimarySwapTransfer != nil {
 		create.SetPrimarySwapTransfer(t.PrimarySwapTransfer)
 	}
+	if len(t.TransferSenders) > 0 {
+		create.AddTransferSenders(t.TransferSenders...)
+	}
+	if len(t.TransferReceivers) > 0 {
+		create.AddTransferReceivers(t.TransferReceivers...)
+	}
 
 	return create.Save(ctx)
 }
@@ -4255,10 +5227,14 @@ type TransferLeafExample struct {
 	KeyTweak                                 *[]byte
 	SenderKeyTweakProof                      *[]byte
 	ReceiverKeyTweak                         *[]byte
+	TransferReceiverID                       *uuid.UUID
+	TransferSenderID                         *uuid.UUID
 
 	// Edges - if set, use the provided entity; if nil, create a default one
-	Transfer *ent.Transfer
-	Leaf     *ent.TreeNode
+	Transfer         *ent.Transfer
+	Leaf             *ent.TreeNode
+	TransferReceiver *ent.TransferReceiver
+	TransferSender   *ent.TransferSender
 }
 
 // NewTransferLeafExample creates a new TransferLeafExample for testing.
@@ -4371,6 +5347,18 @@ func (tl *TransferLeafExample) SetReceiverKeyTweak(v []byte) *TransferLeafExampl
 	return tl
 }
 
+// SetTransferReceiverID sets the transfer_receiver_id field.
+func (tl *TransferLeafExample) SetTransferReceiverID(v uuid.UUID) *TransferLeafExample {
+	tl.TransferReceiverID = &v
+	return tl
+}
+
+// SetTransferSenderID sets the transfer_sender_id field.
+func (tl *TransferLeafExample) SetTransferSenderID(v uuid.UUID) *TransferLeafExample {
+	tl.TransferSenderID = &v
+	return tl
+}
+
 // SetTransfer sets the transfer edge.
 func (tl *TransferLeafExample) SetTransfer(v *ent.Transfer) *TransferLeafExample {
 	tl.Transfer = v
@@ -4380,6 +5368,18 @@ func (tl *TransferLeafExample) SetTransfer(v *ent.Transfer) *TransferLeafExample
 // SetLeaf sets the leaf edge.
 func (tl *TransferLeafExample) SetLeaf(v *ent.TreeNode) *TransferLeafExample {
 	tl.Leaf = v
+	return tl
+}
+
+// SetTransferReceiver sets the transfer_receiver edge.
+func (tl *TransferLeafExample) SetTransferReceiver(v *ent.TransferReceiver) *TransferLeafExample {
+	tl.TransferReceiver = v
+	return tl
+}
+
+// SetTransferSender sets the transfer_sender edge.
+func (tl *TransferLeafExample) SetTransferSender(v *ent.TransferSender) *TransferLeafExample {
+	tl.TransferSender = v
 	return tl
 }
 
@@ -4504,6 +5504,14 @@ func (tl *TransferLeafExample) MustExec(ctx context.Context) *ent.TransferLeaf {
 		create.SetReceiverKeyTweak(*tl.ReceiverKeyTweak)
 	} else {
 	}
+	if tl.TransferReceiverID != nil {
+		create.SetTransferReceiverID(*tl.TransferReceiverID)
+	} else {
+	}
+	if tl.TransferSenderID != nil {
+		create.SetTransferSenderID(*tl.TransferSenderID)
+	} else {
+	}
 
 	// Handle edges
 	if tl.Transfer != nil {
@@ -4521,6 +5529,12 @@ func (tl *TransferLeafExample) MustExec(ctx context.Context) *ent.TransferLeaf {
 		tl.t.Helper()
 		tl.Leaf = NewTreeNodeExample(tl.t, tl.client).MustExec(ctx)
 		create.SetLeaf(tl.Leaf)
+	}
+	if tl.TransferReceiver != nil {
+		create.SetTransferReceiver(tl.TransferReceiver)
+	}
+	if tl.TransferSender != nil {
+		create.SetTransferSender(tl.TransferSender)
 	}
 
 	entity, err := create.Save(ctx)
@@ -4653,6 +5667,14 @@ func (tl *TransferLeafExample) Exec(ctx context.Context) (*ent.TransferLeaf, err
 		create.SetReceiverKeyTweak(*tl.ReceiverKeyTweak)
 	} else {
 	}
+	if tl.TransferReceiverID != nil {
+		create.SetTransferReceiverID(*tl.TransferReceiverID)
+	} else {
+	}
+	if tl.TransferSenderID != nil {
+		create.SetTransferSenderID(*tl.TransferSenderID)
+	} else {
+	}
 
 	// Handle edges
 	if tl.Transfer != nil {
@@ -4677,6 +5699,270 @@ func (tl *TransferLeafExample) Exec(ctx context.Context) (*ent.TransferLeaf, err
 		}
 		create.SetLeaf(tl.Leaf)
 	}
+	if tl.TransferReceiver != nil {
+		create.SetTransferReceiver(tl.TransferReceiver)
+	}
+	if tl.TransferSender != nil {
+		create.SetTransferSender(tl.TransferSender)
+	}
+
+	return create.Save(ctx)
+}
+
+// TransferReceiverExample is a test fixture builder for TransferReceiver.
+type TransferReceiverExample struct {
+	client *ent.Client
+	t      *testing.T
+
+	// Fields - use pointers to distinguish between "not set" and "set to zero value"
+	TransferID     *uuid.UUID
+	IdentityPubkey *keys.Public
+	Status         *schematype.TransferReceiverStatus
+	CompletionTime *time.Time
+
+	// Edges - if set, use the provided entity; if nil, create a default one
+	Transfer *ent.Transfer
+}
+
+// NewTransferReceiverExample creates a new TransferReceiverExample for testing.
+func NewTransferReceiverExample(t *testing.T, client *ent.Client) *TransferReceiverExample {
+	return &TransferReceiverExample{
+		client: client,
+		t:      t,
+	}
+}
+
+// SetTransferID sets the transfer_id field.
+func (tr *TransferReceiverExample) SetTransferID(v uuid.UUID) *TransferReceiverExample {
+	tr.TransferID = &v
+	return tr
+}
+
+// SetIdentityPubkey sets the identity_pubkey field.
+func (tr *TransferReceiverExample) SetIdentityPubkey(v keys.Public) *TransferReceiverExample {
+	tr.IdentityPubkey = &v
+	return tr
+}
+
+// SetStatus sets the status field.
+func (tr *TransferReceiverExample) SetStatus(v schematype.TransferReceiverStatus) *TransferReceiverExample {
+	tr.Status = &v
+	return tr
+}
+
+// SetCompletionTime sets the completion_time field.
+func (tr *TransferReceiverExample) SetCompletionTime(v time.Time) *TransferReceiverExample {
+	tr.CompletionTime = &v
+	return tr
+}
+
+// SetTransfer sets the transfer edge.
+func (tr *TransferReceiverExample) SetTransfer(v *ent.Transfer) *TransferReceiverExample {
+	tr.Transfer = v
+	return tr
+}
+
+// MustExec builds and saves the TransferReceiver entity to the database.
+// It panics if the save fails.
+func (tr *TransferReceiverExample) MustExec(ctx context.Context) *ent.TransferReceiver {
+	create := tr.client.TransferReceiver.Create()
+
+	// Set fields
+	if tr.TransferID != nil {
+		create.SetTransferID(*tr.TransferID)
+	} else {
+		// Use default from annotation
+		create.SetTransferID(uuid.MustParse("cbafb67d-09dc-45ee-ade4-00df51ba2722"))
+	}
+	if tr.IdentityPubkey != nil {
+		create.SetIdentityPubkey(*tr.IdentityPubkey)
+	} else {
+		// Use default from annotation
+		create.SetIdentityPubkey(keys.MustParsePublicKeyHex("02112b5bc18676433c593f8b02127354b9db8de6070088c1646a3cd58a60b90be3"))
+	}
+	if tr.Status != nil {
+		create.SetStatus(*tr.Status)
+	} else {
+		// Use default from annotation
+		create.SetStatus("COMPLETED")
+	}
+	if tr.CompletionTime != nil {
+		create.SetCompletionTime(*tr.CompletionTime)
+	} else {
+	}
+
+	// Handle edges
+	if tr.Transfer != nil {
+		create.SetTransfer(tr.Transfer)
+	} else {
+		// Auto-create required edge
+		tr.t.Helper()
+		tr.Transfer = NewTransferExample(tr.t, tr.client).MustExec(ctx)
+		create.SetTransfer(tr.Transfer)
+	}
+
+	entity, err := create.Save(ctx)
+	if err != nil {
+		tr.t.Helper()
+		tr.t.Fatalf("failed to create TransferReceiver: %v", err)
+	}
+
+	return entity
+}
+
+// Exec builds and saves the TransferReceiver entity to the database.
+// It returns an error if the save fails.
+func (tr *TransferReceiverExample) Exec(ctx context.Context) (*ent.TransferReceiver, error) {
+	create := tr.client.TransferReceiver.Create()
+
+	// Set fields
+	if tr.TransferID != nil {
+		create.SetTransferID(*tr.TransferID)
+	} else {
+		// Use default from annotation
+		create.SetTransferID(uuid.MustParse("cbafb67d-09dc-45ee-ade4-00df51ba2722"))
+	}
+	if tr.IdentityPubkey != nil {
+		create.SetIdentityPubkey(*tr.IdentityPubkey)
+	} else {
+		// Use default from annotation
+		create.SetIdentityPubkey(keys.MustParsePublicKeyHex("02112b5bc18676433c593f8b02127354b9db8de6070088c1646a3cd58a60b90be3"))
+	}
+	if tr.Status != nil {
+		create.SetStatus(*tr.Status)
+	} else {
+		// Use default from annotation
+		create.SetStatus("COMPLETED")
+	}
+	if tr.CompletionTime != nil {
+		create.SetCompletionTime(*tr.CompletionTime)
+	} else {
+	}
+
+	// Handle edges
+	if tr.Transfer != nil {
+		create.SetTransfer(tr.Transfer)
+	} else {
+		// Auto-create required edge
+		var err error
+		tr.Transfer, err = NewTransferExample(tr.t, tr.client).Exec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create transfer: %w", err)
+		}
+		create.SetTransfer(tr.Transfer)
+	}
+
+	return create.Save(ctx)
+}
+
+// TransferSenderExample is a test fixture builder for TransferSender.
+type TransferSenderExample struct {
+	client *ent.Client
+	t      *testing.T
+
+	// Fields - use pointers to distinguish between "not set" and "set to zero value"
+	TransferID     *uuid.UUID
+	IdentityPubkey *keys.Public
+
+	// Edges - if set, use the provided entity; if nil, create a default one
+	Transfer *ent.Transfer
+}
+
+// NewTransferSenderExample creates a new TransferSenderExample for testing.
+func NewTransferSenderExample(t *testing.T, client *ent.Client) *TransferSenderExample {
+	return &TransferSenderExample{
+		client: client,
+		t:      t,
+	}
+}
+
+// SetTransferID sets the transfer_id field.
+func (ts *TransferSenderExample) SetTransferID(v uuid.UUID) *TransferSenderExample {
+	ts.TransferID = &v
+	return ts
+}
+
+// SetIdentityPubkey sets the identity_pubkey field.
+func (ts *TransferSenderExample) SetIdentityPubkey(v keys.Public) *TransferSenderExample {
+	ts.IdentityPubkey = &v
+	return ts
+}
+
+// SetTransfer sets the transfer edge.
+func (ts *TransferSenderExample) SetTransfer(v *ent.Transfer) *TransferSenderExample {
+	ts.Transfer = v
+	return ts
+}
+
+// MustExec builds and saves the TransferSender entity to the database.
+// It panics if the save fails.
+func (ts *TransferSenderExample) MustExec(ctx context.Context) *ent.TransferSender {
+	create := ts.client.TransferSender.Create()
+
+	// Set fields
+	if ts.TransferID != nil {
+		create.SetTransferID(*ts.TransferID)
+	} else {
+		// Use default from annotation
+		create.SetTransferID(uuid.MustParse("cbafb67d-09dc-45ee-ade4-00df51ba2722"))
+	}
+	if ts.IdentityPubkey != nil {
+		create.SetIdentityPubkey(*ts.IdentityPubkey)
+	} else {
+		// Use default from annotation
+		create.SetIdentityPubkey(keys.MustParsePublicKeyHex("02112b5bc18676433c593f8b02127354b9db8de6070088c1646a3cd58a60b90be3"))
+	}
+
+	// Handle edges
+	if ts.Transfer != nil {
+		create.SetTransfer(ts.Transfer)
+	} else {
+		// Auto-create required edge
+		ts.t.Helper()
+		ts.Transfer = NewTransferExample(ts.t, ts.client).MustExec(ctx)
+		create.SetTransfer(ts.Transfer)
+	}
+
+	entity, err := create.Save(ctx)
+	if err != nil {
+		ts.t.Helper()
+		ts.t.Fatalf("failed to create TransferSender: %v", err)
+	}
+
+	return entity
+}
+
+// Exec builds and saves the TransferSender entity to the database.
+// It returns an error if the save fails.
+func (ts *TransferSenderExample) Exec(ctx context.Context) (*ent.TransferSender, error) {
+	create := ts.client.TransferSender.Create()
+
+	// Set fields
+	if ts.TransferID != nil {
+		create.SetTransferID(*ts.TransferID)
+	} else {
+		// Use default from annotation
+		create.SetTransferID(uuid.MustParse("cbafb67d-09dc-45ee-ade4-00df51ba2722"))
+	}
+	if ts.IdentityPubkey != nil {
+		create.SetIdentityPubkey(*ts.IdentityPubkey)
+	} else {
+		// Use default from annotation
+		create.SetIdentityPubkey(keys.MustParsePublicKeyHex("02112b5bc18676433c593f8b02127354b9db8de6070088c1646a3cd58a60b90be3"))
+	}
+
+	// Handle edges
+	if ts.Transfer != nil {
+		create.SetTransfer(ts.Transfer)
+	} else {
+		// Auto-create required edge
+		var err error
+		ts.Transfer, err = NewTransferExample(ts.t, ts.client).Exec(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create transfer: %w", err)
+		}
+		create.SetTransfer(ts.Transfer)
+	}
 
 	return create.Save(ctx)
 }
@@ -4695,6 +5981,7 @@ type TreeExample struct {
 
 	// Edges - if set, use the provided entity; if nil, create a default one
 	Root           *ent.TreeNode
+	Utxos          []*ent.Utxo
 	Nodes          []*ent.TreeNode
 	DepositAddress *ent.DepositAddress
 }
@@ -4740,6 +6027,18 @@ func (t *TreeExample) SetVout(v int16) *TreeExample {
 // SetRoot sets the root edge.
 func (t *TreeExample) SetRoot(v *ent.TreeNode) *TreeExample {
 	t.Root = v
+	return t
+}
+
+// AddUtxo adds a Utxo to the utxos edge.
+func (t *TreeExample) AddUtxo(v *ent.Utxo) *TreeExample {
+	t.Utxos = append(t.Utxos, v)
+	return t
+}
+
+// SetUtxos sets the utxos edge.
+func (t *TreeExample) SetUtxos(v []*ent.Utxo) *TreeExample {
+	t.Utxos = v
 	return t
 }
 
@@ -4802,6 +6101,9 @@ func (t *TreeExample) MustExec(ctx context.Context) *ent.Tree {
 	if t.Root != nil {
 		create.SetRoot(t.Root)
 	}
+	if len(t.Utxos) > 0 {
+		create.AddUtxos(t.Utxos...)
+	}
 	if len(t.Nodes) > 0 {
 		create.AddNodes(t.Nodes...)
 	}
@@ -4858,6 +6160,9 @@ func (t *TreeExample) Exec(ctx context.Context) (*ent.Tree, error) {
 	// Handle edges
 	if t.Root != nil {
 		create.SetRoot(t.Root)
+	}
+	if len(t.Utxos) > 0 {
+		create.AddUtxos(t.Utxos...)
 	}
 	if len(t.Nodes) > 0 {
 		create.AddNodes(t.Nodes...)
@@ -5590,15 +6895,17 @@ type UtxoExample struct {
 	t      *testing.T
 
 	// Fields - use pointers to distinguish between "not set" and "set to zero value"
-	BlockHeight *int64
-	Txid        *[]byte
-	Vout        *uint32
-	Amount      *uint64
-	Network     *btcnetwork.Network
-	PkScript    *[]byte
+	BlockHeight             *int64
+	Txid                    *[]byte
+	Vout                    *uint32
+	Amount                  *uint64
+	Network                 *btcnetwork.Network
+	PkScript                *[]byte
+	AvailabilityConfirmedAt *time.Time
 
 	// Edges - if set, use the provided entity; if nil, create a default one
 	DepositAddress *ent.DepositAddress
+	Tree           *ent.Tree
 }
 
 // NewUtxoExample creates a new UtxoExample for testing.
@@ -5645,9 +6952,21 @@ func (u *UtxoExample) SetPkScript(v []byte) *UtxoExample {
 	return u
 }
 
+// SetAvailabilityConfirmedAt sets the availability_confirmed_at field.
+func (u *UtxoExample) SetAvailabilityConfirmedAt(v time.Time) *UtxoExample {
+	u.AvailabilityConfirmedAt = &v
+	return u
+}
+
 // SetDepositAddress sets the deposit_address edge.
 func (u *UtxoExample) SetDepositAddress(v *ent.DepositAddress) *UtxoExample {
 	u.DepositAddress = v
+	return u
+}
+
+// SetTree sets the tree edge.
+func (u *UtxoExample) SetTree(v *ent.Tree) *UtxoExample {
+	u.Tree = v
 	return u
 }
 
@@ -5699,6 +7018,10 @@ func (u *UtxoExample) MustExec(ctx context.Context) *ent.Utxo {
 			return b
 		}())
 	}
+	if u.AvailabilityConfirmedAt != nil {
+		create.SetAvailabilityConfirmedAt(*u.AvailabilityConfirmedAt)
+	} else {
+	}
 
 	// Handle edges
 	if u.DepositAddress != nil {
@@ -5708,6 +7031,9 @@ func (u *UtxoExample) MustExec(ctx context.Context) *ent.Utxo {
 		u.t.Helper()
 		u.DepositAddress = NewDepositAddressExample(u.t, u.client).MustExec(ctx)
 		create.SetDepositAddress(u.DepositAddress)
+	}
+	if u.Tree != nil {
+		create.SetTree(u.Tree)
 	}
 
 	entity, err := create.Save(ctx)
@@ -5767,6 +7093,10 @@ func (u *UtxoExample) Exec(ctx context.Context) (*ent.Utxo, error) {
 			return b
 		}())
 	}
+	if u.AvailabilityConfirmedAt != nil {
+		create.SetAvailabilityConfirmedAt(*u.AvailabilityConfirmedAt)
+	} else {
+	}
 
 	// Handle edges
 	if u.DepositAddress != nil {
@@ -5779,6 +7109,9 @@ func (u *UtxoExample) Exec(ctx context.Context) (*ent.Utxo, error) {
 			return nil, fmt.Errorf("failed to create deposit_address: %w", err)
 		}
 		create.SetDepositAddress(u.DepositAddress)
+	}
+	if u.Tree != nil {
+		create.SetTree(u.Tree)
 	}
 
 	return create.Save(ctx)
@@ -5793,6 +7126,7 @@ type UtxoSwapExample struct {
 	Status                       *schematype.UtxoSwapStatus
 	RequestType                  *schematype.UtxoSwapRequestType
 	CreditAmountSats             *uint64
+	SecondaryCreditAmountSats    *uint64
 	MaxFeeSats                   *uint64
 	SspSignature                 *[]byte
 	SspIdentityPublicKey         *keys.Public
@@ -5800,11 +7134,15 @@ type UtxoSwapExample struct {
 	UserIdentityPublicKey        *keys.Public
 	CoordinatorIdentityPublicKey *keys.Public
 	RequestedTransferID          *uuid.UUID
+	RequestedSecondaryTransferID *uuid.UUID
 	SpendTxSigningResult         *[]byte
+	ExpiryTime                   *time.Time
+	UtxoValueSats                *uint64
 
 	// Edges - if set, use the provided entity; if nil, create a default one
-	Utxo     *ent.Utxo
-	Transfer *ent.Transfer
+	Utxo              *ent.Utxo
+	Transfer          *ent.Transfer
+	SecondaryTransfer *ent.Transfer
 }
 
 // NewUtxoSwapExample creates a new UtxoSwapExample for testing.
@@ -5830,6 +7168,12 @@ func (us *UtxoSwapExample) SetRequestType(v schematype.UtxoSwapRequestType) *Utx
 // SetCreditAmountSats sets the credit_amount_sats field.
 func (us *UtxoSwapExample) SetCreditAmountSats(v uint64) *UtxoSwapExample {
 	us.CreditAmountSats = &v
+	return us
+}
+
+// SetSecondaryCreditAmountSats sets the secondary_credit_amount_sats field.
+func (us *UtxoSwapExample) SetSecondaryCreditAmountSats(v uint64) *UtxoSwapExample {
+	us.SecondaryCreditAmountSats = &v
 	return us
 }
 
@@ -5875,9 +7219,27 @@ func (us *UtxoSwapExample) SetRequestedTransferID(v uuid.UUID) *UtxoSwapExample 
 	return us
 }
 
+// SetRequestedSecondaryTransferID sets the requested_secondary_transfer_id field.
+func (us *UtxoSwapExample) SetRequestedSecondaryTransferID(v uuid.UUID) *UtxoSwapExample {
+	us.RequestedSecondaryTransferID = &v
+	return us
+}
+
 // SetSpendTxSigningResult sets the spend_tx_signing_result field.
 func (us *UtxoSwapExample) SetSpendTxSigningResult(v []byte) *UtxoSwapExample {
 	us.SpendTxSigningResult = &v
+	return us
+}
+
+// SetExpiryTime sets the expiry_time field.
+func (us *UtxoSwapExample) SetExpiryTime(v time.Time) *UtxoSwapExample {
+	us.ExpiryTime = &v
+	return us
+}
+
+// SetUtxoValueSats sets the utxo_value_sats field.
+func (us *UtxoSwapExample) SetUtxoValueSats(v uint64) *UtxoSwapExample {
+	us.UtxoValueSats = &v
 	return us
 }
 
@@ -5890,6 +7252,12 @@ func (us *UtxoSwapExample) SetUtxo(v *ent.Utxo) *UtxoSwapExample {
 // SetTransfer sets the transfer edge.
 func (us *UtxoSwapExample) SetTransfer(v *ent.Transfer) *UtxoSwapExample {
 	us.Transfer = v
+	return us
+}
+
+// SetSecondaryTransfer sets the secondary_transfer edge.
+func (us *UtxoSwapExample) SetSecondaryTransfer(v *ent.Transfer) *UtxoSwapExample {
+	us.SecondaryTransfer = v
 	return us
 }
 
@@ -5916,6 +7284,12 @@ func (us *UtxoSwapExample) MustExec(ctx context.Context) *ent.UtxoSwap {
 	} else {
 		// Use default from annotation
 		create.SetCreditAmountSats(uint64(19901))
+	}
+	if us.SecondaryCreditAmountSats != nil {
+		create.SetSecondaryCreditAmountSats(*us.SecondaryCreditAmountSats)
+	} else {
+		// Use default from annotation
+		create.SetSecondaryCreditAmountSats(uint64(5000))
 	}
 	if us.MaxFeeSats != nil {
 		create.SetMaxFeeSats(*us.MaxFeeSats)
@@ -5963,22 +7337,36 @@ func (us *UtxoSwapExample) MustExec(ctx context.Context) *ent.UtxoSwap {
 		// Use default from annotation
 		create.SetRequestedTransferID(uuid.MustParse("019a0ef8-5794-7677-af5f-d3948d691114"))
 	}
+	if us.RequestedSecondaryTransferID != nil {
+		create.SetRequestedSecondaryTransferID(*us.RequestedSecondaryTransferID)
+	} else {
+		// Use default from annotation
+		create.SetRequestedSecondaryTransferID(uuid.MustParse("019a0ef8-5794-7677-af5f-d3948d691114"))
+	}
 	if us.SpendTxSigningResult != nil {
 		create.SetSpendTxSigningResult(*us.SpendTxSigningResult)
 	} else {
+	}
+	if us.ExpiryTime != nil {
+		create.SetExpiryTime(*us.ExpiryTime)
+	} else {
+	}
+	if us.UtxoValueSats != nil {
+		create.SetUtxoValueSats(*us.UtxoValueSats)
+	} else {
+		// Use default from annotation
+		create.SetUtxoValueSats(uint64(10000))
 	}
 
 	// Handle edges
 	if us.Utxo != nil {
 		create.SetUtxo(us.Utxo)
-	} else {
-		// Auto-create required edge
-		us.t.Helper()
-		us.Utxo = NewUtxoExample(us.t, us.client).MustExec(ctx)
-		create.SetUtxo(us.Utxo)
 	}
 	if us.Transfer != nil {
 		create.SetTransfer(us.Transfer)
+	}
+	if us.SecondaryTransfer != nil {
+		create.SetSecondaryTransfer(us.SecondaryTransfer)
 	}
 
 	entity, err := create.Save(ctx)
@@ -6014,6 +7402,12 @@ func (us *UtxoSwapExample) Exec(ctx context.Context) (*ent.UtxoSwap, error) {
 		// Use default from annotation
 		create.SetCreditAmountSats(uint64(19901))
 	}
+	if us.SecondaryCreditAmountSats != nil {
+		create.SetSecondaryCreditAmountSats(*us.SecondaryCreditAmountSats)
+	} else {
+		// Use default from annotation
+		create.SetSecondaryCreditAmountSats(uint64(5000))
+	}
 	if us.MaxFeeSats != nil {
 		create.SetMaxFeeSats(*us.MaxFeeSats)
 	} else {
@@ -6060,25 +7454,36 @@ func (us *UtxoSwapExample) Exec(ctx context.Context) (*ent.UtxoSwap, error) {
 		// Use default from annotation
 		create.SetRequestedTransferID(uuid.MustParse("019a0ef8-5794-7677-af5f-d3948d691114"))
 	}
+	if us.RequestedSecondaryTransferID != nil {
+		create.SetRequestedSecondaryTransferID(*us.RequestedSecondaryTransferID)
+	} else {
+		// Use default from annotation
+		create.SetRequestedSecondaryTransferID(uuid.MustParse("019a0ef8-5794-7677-af5f-d3948d691114"))
+	}
 	if us.SpendTxSigningResult != nil {
 		create.SetSpendTxSigningResult(*us.SpendTxSigningResult)
 	} else {
+	}
+	if us.ExpiryTime != nil {
+		create.SetExpiryTime(*us.ExpiryTime)
+	} else {
+	}
+	if us.UtxoValueSats != nil {
+		create.SetUtxoValueSats(*us.UtxoValueSats)
+	} else {
+		// Use default from annotation
+		create.SetUtxoValueSats(uint64(10000))
 	}
 
 	// Handle edges
 	if us.Utxo != nil {
 		create.SetUtxo(us.Utxo)
-	} else {
-		// Auto-create required edge
-		var err error
-		us.Utxo, err = NewUtxoExample(us.t, us.client).Exec(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create utxo: %w", err)
-		}
-		create.SetUtxo(us.Utxo)
 	}
 	if us.Transfer != nil {
 		create.SetTransfer(us.Transfer)
+	}
+	if us.SecondaryTransfer != nil {
+		create.SetSecondaryTransfer(us.SecondaryTransfer)
 	}
 
 	return create.Save(ctx)

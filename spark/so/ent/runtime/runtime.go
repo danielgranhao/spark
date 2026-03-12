@@ -12,7 +12,13 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/entitydkgkey"
 	"github.com/lightsparkdev/spark/so/ent/eventmessage"
 	"github.com/lightsparkdev/spark/so/ent/gossip"
+	"github.com/lightsparkdev/spark/so/ent/idempotencykey"
 	"github.com/lightsparkdev/spark/so/ent/l1tokencreate"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenjusticetransaction"
+	"github.com/lightsparkdev/spark/so/ent/l1tokenoutputwithdrawal"
+	"github.com/lightsparkdev/spark/so/ent/l1withdrawaltransaction"
+	"github.com/lightsparkdev/spark/so/ent/multisigconfig"
+	"github.com/lightsparkdev/spark/so/ent/multisigmember"
 	"github.com/lightsparkdev/spark/so/ent/paymentintent"
 	"github.com/lightsparkdev/spark/so/ent/pendingsendtransfer"
 	"github.com/lightsparkdev/spark/so/ent/preimagerequest"
@@ -32,6 +38,8 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/tokentransactionpeersignature"
 	"github.com/lightsparkdev/spark/so/ent/transfer"
 	"github.com/lightsparkdev/spark/so/ent/transferleaf"
+	"github.com/lightsparkdev/spark/so/ent/transferreceiver"
+	"github.com/lightsparkdev/spark/so/ent/transfersender"
 	"github.com/lightsparkdev/spark/so/ent/tree"
 	"github.com/lightsparkdev/spark/so/ent/treenode"
 	"github.com/lightsparkdev/spark/so/ent/usersignedtransaction"
@@ -104,11 +112,11 @@ func init() {
 	// depositaddress.AddressValidator is a validator for the "address" field. It is called by the builders before save.
 	depositaddress.AddressValidator = depositaddressDescAddress.Validators[0].(func(string) error)
 	// depositaddressDescIsStatic is the schema descriptor for is_static field.
-	depositaddressDescIsStatic := depositaddressFields[9].Descriptor()
+	depositaddressDescIsStatic := depositaddressFields[11].Descriptor()
 	// depositaddress.DefaultIsStatic holds the default value on creation for the is_static field.
 	depositaddress.DefaultIsStatic = depositaddressDescIsStatic.Default.(bool)
 	// depositaddressDescIsDefault is the schema descriptor for is_default field.
-	depositaddressDescIsDefault := depositaddressFields[10].Descriptor()
+	depositaddressDescIsDefault := depositaddressFields[12].Descriptor()
 	// depositaddress.DefaultIsDefault holds the default value on creation for the is_default field.
 	depositaddress.DefaultIsDefault = depositaddressDescIsDefault.Default.(bool)
 	// depositaddressDescID is the schema descriptor for id field.
@@ -188,6 +196,33 @@ func init() {
 	gossipDescID := gossipMixinFields0[0].Descriptor()
 	// gossip.DefaultID holds the default value on creation for the id field.
 	gossip.DefaultID = gossipDescID.Default.(func() uuid.UUID)
+	idempotencykeyMixin := schema.IdempotencyKey{}.Mixin()
+	idempotencykeyMixinFields0 := idempotencykeyMixin[0].Fields()
+	_ = idempotencykeyMixinFields0
+	idempotencykeyFields := schema.IdempotencyKey{}.Fields()
+	_ = idempotencykeyFields
+	// idempotencykeyDescCreateTime is the schema descriptor for create_time field.
+	idempotencykeyDescCreateTime := idempotencykeyMixinFields0[1].Descriptor()
+	// idempotencykey.DefaultCreateTime holds the default value on creation for the create_time field.
+	idempotencykey.DefaultCreateTime = idempotencykeyDescCreateTime.Default.(func() time.Time)
+	// idempotencykeyDescUpdateTime is the schema descriptor for update_time field.
+	idempotencykeyDescUpdateTime := idempotencykeyMixinFields0[2].Descriptor()
+	// idempotencykey.DefaultUpdateTime holds the default value on creation for the update_time field.
+	idempotencykey.DefaultUpdateTime = idempotencykeyDescUpdateTime.Default.(func() time.Time)
+	// idempotencykey.UpdateDefaultUpdateTime holds the default value on update for the update_time field.
+	idempotencykey.UpdateDefaultUpdateTime = idempotencykeyDescUpdateTime.UpdateDefault.(func() time.Time)
+	// idempotencykeyDescIdempotencyKey is the schema descriptor for idempotency_key field.
+	idempotencykeyDescIdempotencyKey := idempotencykeyFields[0].Descriptor()
+	// idempotencykey.IdempotencyKeyValidator is a validator for the "idempotency_key" field. It is called by the builders before save.
+	idempotencykey.IdempotencyKeyValidator = idempotencykeyDescIdempotencyKey.Validators[0].(func(string) error)
+	// idempotencykeyDescMethodName is the schema descriptor for method_name field.
+	idempotencykeyDescMethodName := idempotencykeyFields[1].Descriptor()
+	// idempotencykey.MethodNameValidator is a validator for the "method_name" field. It is called by the builders before save.
+	idempotencykey.MethodNameValidator = idempotencykeyDescMethodName.Validators[0].(func(string) error)
+	// idempotencykeyDescID is the schema descriptor for id field.
+	idempotencykeyDescID := idempotencykeyMixinFields0[0].Descriptor()
+	// idempotencykey.DefaultID holds the default value on creation for the id field.
+	idempotencykey.DefaultID = idempotencykeyDescID.Default.(func() uuid.UUID)
 	l1tokencreateMixin := schema.L1TokenCreate{}.Mixin()
 	l1tokencreateMixinFields0 := l1tokencreateMixin[0].Fields()
 	_ = l1tokencreateMixinFields0
@@ -225,6 +260,117 @@ func init() {
 	l1tokencreateDescID := l1tokencreateMixinFields0[0].Descriptor()
 	// l1tokencreate.DefaultID holds the default value on creation for the id field.
 	l1tokencreate.DefaultID = l1tokencreateDescID.Default.(func() uuid.UUID)
+	l1tokenjusticetransactionMixin := schema.L1TokenJusticeTransaction{}.Mixin()
+	l1tokenjusticetransactionMixinFields0 := l1tokenjusticetransactionMixin[0].Fields()
+	_ = l1tokenjusticetransactionMixinFields0
+	l1tokenjusticetransactionFields := schema.L1TokenJusticeTransaction{}.Fields()
+	_ = l1tokenjusticetransactionFields
+	// l1tokenjusticetransactionDescCreateTime is the schema descriptor for create_time field.
+	l1tokenjusticetransactionDescCreateTime := l1tokenjusticetransactionMixinFields0[1].Descriptor()
+	// l1tokenjusticetransaction.DefaultCreateTime holds the default value on creation for the create_time field.
+	l1tokenjusticetransaction.DefaultCreateTime = l1tokenjusticetransactionDescCreateTime.Default.(func() time.Time)
+	// l1tokenjusticetransactionDescUpdateTime is the schema descriptor for update_time field.
+	l1tokenjusticetransactionDescUpdateTime := l1tokenjusticetransactionMixinFields0[2].Descriptor()
+	// l1tokenjusticetransaction.DefaultUpdateTime holds the default value on creation for the update_time field.
+	l1tokenjusticetransaction.DefaultUpdateTime = l1tokenjusticetransactionDescUpdateTime.Default.(func() time.Time)
+	// l1tokenjusticetransaction.UpdateDefaultUpdateTime holds the default value on update for the update_time field.
+	l1tokenjusticetransaction.UpdateDefaultUpdateTime = l1tokenjusticetransactionDescUpdateTime.UpdateDefault.(func() time.Time)
+	// l1tokenjusticetransactionDescID is the schema descriptor for id field.
+	l1tokenjusticetransactionDescID := l1tokenjusticetransactionMixinFields0[0].Descriptor()
+	// l1tokenjusticetransaction.DefaultID holds the default value on creation for the id field.
+	l1tokenjusticetransaction.DefaultID = l1tokenjusticetransactionDescID.Default.(func() uuid.UUID)
+	l1tokenoutputwithdrawalMixin := schema.L1TokenOutputWithdrawal{}.Mixin()
+	l1tokenoutputwithdrawalMixinFields0 := l1tokenoutputwithdrawalMixin[0].Fields()
+	_ = l1tokenoutputwithdrawalMixinFields0
+	l1tokenoutputwithdrawalFields := schema.L1TokenOutputWithdrawal{}.Fields()
+	_ = l1tokenoutputwithdrawalFields
+	// l1tokenoutputwithdrawalDescCreateTime is the schema descriptor for create_time field.
+	l1tokenoutputwithdrawalDescCreateTime := l1tokenoutputwithdrawalMixinFields0[1].Descriptor()
+	// l1tokenoutputwithdrawal.DefaultCreateTime holds the default value on creation for the create_time field.
+	l1tokenoutputwithdrawal.DefaultCreateTime = l1tokenoutputwithdrawalDescCreateTime.Default.(func() time.Time)
+	// l1tokenoutputwithdrawalDescUpdateTime is the schema descriptor for update_time field.
+	l1tokenoutputwithdrawalDescUpdateTime := l1tokenoutputwithdrawalMixinFields0[2].Descriptor()
+	// l1tokenoutputwithdrawal.DefaultUpdateTime holds the default value on creation for the update_time field.
+	l1tokenoutputwithdrawal.DefaultUpdateTime = l1tokenoutputwithdrawalDescUpdateTime.Default.(func() time.Time)
+	// l1tokenoutputwithdrawal.UpdateDefaultUpdateTime holds the default value on update for the update_time field.
+	l1tokenoutputwithdrawal.UpdateDefaultUpdateTime = l1tokenoutputwithdrawalDescUpdateTime.UpdateDefault.(func() time.Time)
+	// l1tokenoutputwithdrawalDescID is the schema descriptor for id field.
+	l1tokenoutputwithdrawalDescID := l1tokenoutputwithdrawalMixinFields0[0].Descriptor()
+	// l1tokenoutputwithdrawal.DefaultID holds the default value on creation for the id field.
+	l1tokenoutputwithdrawal.DefaultID = l1tokenoutputwithdrawalDescID.Default.(func() uuid.UUID)
+	l1withdrawaltransactionMixin := schema.L1WithdrawalTransaction{}.Mixin()
+	l1withdrawaltransactionMixinFields0 := l1withdrawaltransactionMixin[0].Fields()
+	_ = l1withdrawaltransactionMixinFields0
+	l1withdrawaltransactionFields := schema.L1WithdrawalTransaction{}.Fields()
+	_ = l1withdrawaltransactionFields
+	// l1withdrawaltransactionDescCreateTime is the schema descriptor for create_time field.
+	l1withdrawaltransactionDescCreateTime := l1withdrawaltransactionMixinFields0[1].Descriptor()
+	// l1withdrawaltransaction.DefaultCreateTime holds the default value on creation for the create_time field.
+	l1withdrawaltransaction.DefaultCreateTime = l1withdrawaltransactionDescCreateTime.Default.(func() time.Time)
+	// l1withdrawaltransactionDescUpdateTime is the schema descriptor for update_time field.
+	l1withdrawaltransactionDescUpdateTime := l1withdrawaltransactionMixinFields0[2].Descriptor()
+	// l1withdrawaltransaction.DefaultUpdateTime holds the default value on creation for the update_time field.
+	l1withdrawaltransaction.DefaultUpdateTime = l1withdrawaltransactionDescUpdateTime.Default.(func() time.Time)
+	// l1withdrawaltransaction.UpdateDefaultUpdateTime holds the default value on update for the update_time field.
+	l1withdrawaltransaction.UpdateDefaultUpdateTime = l1withdrawaltransactionDescUpdateTime.UpdateDefault.(func() time.Time)
+	// l1withdrawaltransactionDescID is the schema descriptor for id field.
+	l1withdrawaltransactionDescID := l1withdrawaltransactionMixinFields0[0].Descriptor()
+	// l1withdrawaltransaction.DefaultID holds the default value on creation for the id field.
+	l1withdrawaltransaction.DefaultID = l1withdrawaltransactionDescID.Default.(func() uuid.UUID)
+	multisigconfigMixin := schema.MultisigConfig{}.Mixin()
+	multisigconfigHooks := schema.MultisigConfig{}.Hooks()
+	multisigconfig.Hooks[0] = multisigconfigHooks[0]
+	multisigconfigMixinFields0 := multisigconfigMixin[0].Fields()
+	_ = multisigconfigMixinFields0
+	multisigconfigFields := schema.MultisigConfig{}.Fields()
+	_ = multisigconfigFields
+	// multisigconfigDescCreateTime is the schema descriptor for create_time field.
+	multisigconfigDescCreateTime := multisigconfigMixinFields0[1].Descriptor()
+	// multisigconfig.DefaultCreateTime holds the default value on creation for the create_time field.
+	multisigconfig.DefaultCreateTime = multisigconfigDescCreateTime.Default.(func() time.Time)
+	// multisigconfigDescUpdateTime is the schema descriptor for update_time field.
+	multisigconfigDescUpdateTime := multisigconfigMixinFields0[2].Descriptor()
+	// multisigconfig.DefaultUpdateTime holds the default value on creation for the update_time field.
+	multisigconfig.DefaultUpdateTime = multisigconfigDescUpdateTime.Default.(func() time.Time)
+	// multisigconfig.UpdateDefaultUpdateTime holds the default value on update for the update_time field.
+	multisigconfig.UpdateDefaultUpdateTime = multisigconfigDescUpdateTime.UpdateDefault.(func() time.Time)
+	// multisigconfigDescMultisigIdentifier is the schema descriptor for multisig_identifier field.
+	multisigconfigDescMultisigIdentifier := multisigconfigFields[0].Descriptor()
+	// multisigconfig.MultisigIdentifierValidator is a validator for the "multisig_identifier" field. It is called by the builders before save.
+	multisigconfig.MultisigIdentifierValidator = multisigconfigDescMultisigIdentifier.Validators[0].(func([]byte) error)
+	// multisigconfigDescNumSignersThreshold is the schema descriptor for num_signers_threshold field.
+	multisigconfigDescNumSignersThreshold := multisigconfigFields[1].Descriptor()
+	// multisigconfig.NumSignersThresholdValidator is a validator for the "num_signers_threshold" field. It is called by the builders before save.
+	multisigconfig.NumSignersThresholdValidator = multisigconfigDescNumSignersThreshold.Validators[0].(func(uint32) error)
+	// multisigconfigDescNumSignersTotal is the schema descriptor for num_signers_total field.
+	multisigconfigDescNumSignersTotal := multisigconfigFields[2].Descriptor()
+	// multisigconfig.NumSignersTotalValidator is a validator for the "num_signers_total" field. It is called by the builders before save.
+	multisigconfig.NumSignersTotalValidator = multisigconfigDescNumSignersTotal.Validators[0].(func(uint32) error)
+	// multisigconfigDescID is the schema descriptor for id field.
+	multisigconfigDescID := multisigconfigMixinFields0[0].Descriptor()
+	// multisigconfig.DefaultID holds the default value on creation for the id field.
+	multisigconfig.DefaultID = multisigconfigDescID.Default.(func() uuid.UUID)
+	multisigmemberMixin := schema.MultisigMember{}.Mixin()
+	multisigmemberHooks := schema.MultisigMember{}.Hooks()
+	multisigmember.Hooks[0] = multisigmemberHooks[0]
+	multisigmemberMixinFields0 := multisigmemberMixin[0].Fields()
+	_ = multisigmemberMixinFields0
+	multisigmemberFields := schema.MultisigMember{}.Fields()
+	_ = multisigmemberFields
+	// multisigmemberDescCreateTime is the schema descriptor for create_time field.
+	multisigmemberDescCreateTime := multisigmemberMixinFields0[1].Descriptor()
+	// multisigmember.DefaultCreateTime holds the default value on creation for the create_time field.
+	multisigmember.DefaultCreateTime = multisigmemberDescCreateTime.Default.(func() time.Time)
+	// multisigmemberDescUpdateTime is the schema descriptor for update_time field.
+	multisigmemberDescUpdateTime := multisigmemberMixinFields0[2].Descriptor()
+	// multisigmember.DefaultUpdateTime holds the default value on creation for the update_time field.
+	multisigmember.DefaultUpdateTime = multisigmemberDescUpdateTime.Default.(func() time.Time)
+	// multisigmember.UpdateDefaultUpdateTime holds the default value on update for the update_time field.
+	multisigmember.UpdateDefaultUpdateTime = multisigmemberDescUpdateTime.UpdateDefault.(func() time.Time)
+	// multisigmemberDescID is the schema descriptor for id field.
+	multisigmemberDescID := multisigmemberMixinFields0[0].Descriptor()
+	// multisigmember.DefaultID holds the default value on creation for the id field.
+	multisigmember.DefaultID = multisigmemberDescID.Default.(func() uuid.UUID)
 	paymentintentMixin := schema.PaymentIntent{}.Mixin()
 	paymentintentHooks := schema.PaymentIntent{}.Hooks()
 	paymentintent.Hooks[0] = paymentintentHooks[0]
@@ -645,6 +791,46 @@ func init() {
 	transferleafDescID := transferleafMixinFields0[0].Descriptor()
 	// transferleaf.DefaultID holds the default value on creation for the id field.
 	transferleaf.DefaultID = transferleafDescID.Default.(func() uuid.UUID)
+	transferreceiverMixin := schema.TransferReceiver{}.Mixin()
+	transferreceiverMixinHooks1 := transferreceiverMixin[1].Hooks()
+	transferreceiver.Hooks[0] = transferreceiverMixinHooks1[0]
+	transferreceiverMixinFields0 := transferreceiverMixin[0].Fields()
+	_ = transferreceiverMixinFields0
+	transferreceiverFields := schema.TransferReceiver{}.Fields()
+	_ = transferreceiverFields
+	// transferreceiverDescCreateTime is the schema descriptor for create_time field.
+	transferreceiverDescCreateTime := transferreceiverMixinFields0[1].Descriptor()
+	// transferreceiver.DefaultCreateTime holds the default value on creation for the create_time field.
+	transferreceiver.DefaultCreateTime = transferreceiverDescCreateTime.Default.(func() time.Time)
+	// transferreceiverDescUpdateTime is the schema descriptor for update_time field.
+	transferreceiverDescUpdateTime := transferreceiverMixinFields0[2].Descriptor()
+	// transferreceiver.DefaultUpdateTime holds the default value on creation for the update_time field.
+	transferreceiver.DefaultUpdateTime = transferreceiverDescUpdateTime.Default.(func() time.Time)
+	// transferreceiver.UpdateDefaultUpdateTime holds the default value on update for the update_time field.
+	transferreceiver.UpdateDefaultUpdateTime = transferreceiverDescUpdateTime.UpdateDefault.(func() time.Time)
+	// transferreceiverDescID is the schema descriptor for id field.
+	transferreceiverDescID := transferreceiverMixinFields0[0].Descriptor()
+	// transferreceiver.DefaultID holds the default value on creation for the id field.
+	transferreceiver.DefaultID = transferreceiverDescID.Default.(func() uuid.UUID)
+	transfersenderMixin := schema.TransferSender{}.Mixin()
+	transfersenderMixinFields0 := transfersenderMixin[0].Fields()
+	_ = transfersenderMixinFields0
+	transfersenderFields := schema.TransferSender{}.Fields()
+	_ = transfersenderFields
+	// transfersenderDescCreateTime is the schema descriptor for create_time field.
+	transfersenderDescCreateTime := transfersenderMixinFields0[1].Descriptor()
+	// transfersender.DefaultCreateTime holds the default value on creation for the create_time field.
+	transfersender.DefaultCreateTime = transfersenderDescCreateTime.Default.(func() time.Time)
+	// transfersenderDescUpdateTime is the schema descriptor for update_time field.
+	transfersenderDescUpdateTime := transfersenderMixinFields0[2].Descriptor()
+	// transfersender.DefaultUpdateTime holds the default value on creation for the update_time field.
+	transfersender.DefaultUpdateTime = transfersenderDescUpdateTime.Default.(func() time.Time)
+	// transfersender.UpdateDefaultUpdateTime holds the default value on update for the update_time field.
+	transfersender.UpdateDefaultUpdateTime = transfersenderDescUpdateTime.UpdateDefault.(func() time.Time)
+	// transfersenderDescID is the schema descriptor for id field.
+	transfersenderDescID := transfersenderMixinFields0[0].Descriptor()
+	// transfersender.DefaultID holds the default value on creation for the id field.
+	transfersender.DefaultID = transfersenderDescID.Default.(func() uuid.UUID)
 	treeMixin := schema.Tree{}.Mixin()
 	treeMixinFields0 := treeMixin[0].Fields()
 	_ = treeMixinFields0
@@ -754,6 +940,8 @@ func init() {
 	// utxo.DefaultID holds the default value on creation for the id field.
 	utxo.DefaultID = utxoDescID.Default.(func() uuid.UUID)
 	utxoswapMixin := schema.UtxoSwap{}.Mixin()
+	utxoswapHooks := schema.UtxoSwap{}.Hooks()
+	utxoswap.Hooks[0] = utxoswapHooks[0]
 	utxoswapMixinFields0 := utxoswapMixin[0].Fields()
 	_ = utxoswapMixinFields0
 	utxoswapFields := schema.UtxoSwap{}.Fields()

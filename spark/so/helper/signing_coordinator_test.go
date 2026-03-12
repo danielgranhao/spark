@@ -191,6 +191,7 @@ func (m *mockSparkServiceFrostSigner) CallFrostRound2(_ context.Context, _ *so.S
 }
 
 func TestSignFrostInternal(t *testing.T) {
+	jobID := uuid.New()
 	t.Run("SignFrost", func(t *testing.T) {
 		config := sparktesting.TestConfig(t)
 
@@ -202,7 +203,7 @@ func TestSignFrostInternal(t *testing.T) {
 
 		keyshareID := uuid.New()
 		job := &helper.SigningJob{
-			JobID:             "test-job-id",
+			JobID:             jobID,
 			SigningKeyshareID: keyshareID,
 			Message:           []byte("test message to sign"),
 			VerifyingKey:      &pubKey,
@@ -216,7 +217,7 @@ func TestSignFrostInternal(t *testing.T) {
 			},
 			frostRound2Response: &pbinternal.FrostRound2Response{
 				Results: map[string]*pbcommon.SigningResult{
-					"test-job-id": {
+					jobID.String(): {
 						SignatureShare: []byte("test-signature-share"),
 					},
 				},
@@ -275,7 +276,7 @@ func TestSignFrostInternal(t *testing.T) {
 			}
 
 			job := &helper.SigningJob{
-				JobID:             "test-job-id",
+				JobID:             jobID,
 				SigningKeyshareID: uuid.New(),
 				Message:           []byte("test message"),
 				VerifyingKey:      &pubKey,
@@ -298,7 +299,7 @@ func TestSignFrostInternal(t *testing.T) {
 			}
 
 			job := &helper.SigningJob{
-				JobID:             "test-job-id",
+				JobID:             jobID,
 				SigningKeyshareID: keyshareID,
 				Message:           []byte("test message"),
 				VerifyingKey:      &pubKey,
@@ -319,7 +320,7 @@ func TestSignFrostInternal(t *testing.T) {
 			}
 
 			job := &helper.SigningJob{
-				JobID:             "test-job-id",
+				JobID:             jobID,
 				SigningKeyshareID: keyshareID,
 				Message:           []byte("test message"),
 				VerifyingKey:      &pubKey,
@@ -350,7 +351,7 @@ func TestSignFrostInternal(t *testing.T) {
 			config.SigningOperatorMap["operator1"] = &so.SigningOperator{Identifier: "operator1"}
 
 			job := &helper.SigningJob{
-				JobID:             "test-job-id",
+				JobID:             jobID,
 				SigningKeyshareID: keyshareID,
 				Message:           []byte("test message"),
 				VerifyingKey:      &pubKey,
@@ -385,16 +386,18 @@ func TestSignFrostInternal(t *testing.T) {
 				return result, nil
 			}
 
+			jobID1 := uuid.New()
+			jobID2 := uuid.New()
 			frostSigner := &mockSparkServiceFrostSigner{
 				frostRound1Response: &pbinternal.FrostRound1Response{
 					SigningCommitments: []*pbcommon.SigningCommitment{commitmentProto, commitmentProto},
 				},
 				frostRound2Response: &pbinternal.FrostRound2Response{
 					Results: map[string]*pbcommon.SigningResult{
-						"job-1": {
+						jobID1.String(): {
 							SignatureShare: []byte("signature-share-1"),
 						},
-						"job-2": {
+						jobID2.String(): {
 							SignatureShare: []byte("signature-share-2"),
 						},
 					},
@@ -407,14 +410,14 @@ func TestSignFrostInternal(t *testing.T) {
 
 			jobs := []*helper.SigningJob{
 				{
-					JobID:             "job-1",
+					JobID:             jobID1,
 					SigningKeyshareID: keyshareID1,
 					Message:           []byte("message 1"),
 					VerifyingKey:      &pubKey,
 					UserCommitment:    &commitment,
 				},
 				{
-					JobID:             "job-2",
+					JobID:             jobID2,
 					SigningKeyshareID: keyshareID2,
 					Message:           []byte("message 2"),
 					VerifyingKey:      &pubKey,
@@ -426,8 +429,8 @@ func TestSignFrostInternal(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, results, 2)
 
-			assert.Equal(t, "job-1", results[0].JobID)
-			assert.Equal(t, "job-2", results[1].JobID)
+			assert.Equal(t, jobID1, results[0].JobID)
+			assert.Equal(t, jobID2, results[1].JobID)
 		})
 
 		t.Run("NilUserCommitment", func(t *testing.T) {
@@ -439,7 +442,7 @@ func TestSignFrostInternal(t *testing.T) {
 				},
 				frostRound2Response: &pbinternal.FrostRound2Response{
 					Results: map[string]*pbcommon.SigningResult{
-						"test-job-id": {
+						jobID.String(): {
 							SignatureShare: []byte("test-signature-share"),
 						},
 					},
@@ -449,7 +452,7 @@ func TestSignFrostInternal(t *testing.T) {
 			frostSignerFactory := &mockSparkServiceFrostSignerFactory{conn: frostSigner}
 
 			job := &helper.SigningJob{
-				JobID:             "test-job-id",
+				JobID:             jobID,
 				SigningKeyshareID: keyshareID,
 				Message:           []byte("test message"),
 				VerifyingKey:      &pubKey,
@@ -470,7 +473,7 @@ func TestSignFrostInternal(t *testing.T) {
 				},
 				frostRound2Response: &pbinternal.FrostRound2Response{
 					Results: map[string]*pbcommon.SigningResult{
-						"test-job-id": {
+						jobID.String(): {
 							SignatureShare: []byte("test-signature-share"),
 						},
 					},
@@ -480,7 +483,7 @@ func TestSignFrostInternal(t *testing.T) {
 			frostSignerFactory := &mockSparkServiceFrostSignerFactory{conn: frostSigner}
 
 			job := &helper.SigningJob{
-				JobID:             "test-job-id",
+				JobID:             jobID,
 				SigningKeyshareID: keyshareID,
 				Message:           []byte("test message"),
 				VerifyingKey:      &pubKey,
@@ -509,7 +512,7 @@ func TestSignFrostInternal(t *testing.T) {
 				},
 				frostRound2Response: &pbinternal.FrostRound2Response{
 					Results: map[string]*pbcommon.SigningResult{
-						"test-job-id": {
+						jobID.String(): {
 							SignatureShare: []byte("test-signature-share"),
 						},
 					},
@@ -519,7 +522,7 @@ func TestSignFrostInternal(t *testing.T) {
 			frostSignerFactory := &mockSparkServiceFrostSignerFactory{conn: frostSigner}
 
 			job := &helper.SigningJob{
-				JobID:             "test-job-id",
+				JobID:             jobID,
 				SigningKeyshareID: keyshareID,
 				Message:           []byte("test message"),
 				VerifyingKey:      &pubKey,
@@ -563,7 +566,7 @@ func TestSignFrostInternal(t *testing.T) {
 		}
 
 		job := &helper.SigningJob{
-			JobID:             "test-job-id",
+			JobID:             jobID,
 			SigningKeyshareID: keyshareID,
 			Message:           []byte("test message"),
 			VerifyingKey:      &pubKey,
@@ -593,6 +596,8 @@ func mockGetKeyPackages(_ context.Context, _ *so.Config, keyshareIDs []uuid.UUID
 
 // Test SignFrostWithPregeneratedNonce tests the SignFrostWithPregeneratedNonce function
 func TestSignFrostWithPregeneratedNonce(t *testing.T) {
+	jobID := uuid.New()
+
 	t.Run("BasicFunctionality", func(t *testing.T) {
 		config := sparktesting.TestConfig(t)
 
@@ -606,7 +611,7 @@ func TestSignFrostWithPregeneratedNonce(t *testing.T) {
 		keyshareID := uuid.New()
 		job := &helper.SigningJobWithPregeneratedNonce{
 			SigningJob: helper.SigningJob{
-				JobID:             "test-job-id",
+				JobID:             jobID,
 				SigningKeyshareID: keyshareID,
 				Message:           []byte("test message"),
 				VerifyingKey:      &pubKey,
@@ -624,7 +629,7 @@ func TestSignFrostWithPregeneratedNonce(t *testing.T) {
 			},
 			frostRound2Response: &pbinternal.FrostRound2Response{
 				Results: map[string]*pbcommon.SigningResult{
-					"test-job-id": {
+					jobID.String(): {
 						SignatureShare: []byte("test-signature-share"),
 					},
 				},
@@ -636,7 +641,7 @@ func TestSignFrostWithPregeneratedNonce(t *testing.T) {
 		results, err := helper.SignFrostWithPregeneratedNonceInternal(t.Context(), config, []*helper.SigningJobWithPregeneratedNonce{job}, mockGetKeyPackages, frostSignerFactory)
 		require.NoError(t, err)
 		require.Len(t, results, 1)
-		assert.Equal(t, "test-job-id", results[0].JobID)
+		assert.Equal(t, jobID, results[0].JobID)
 	})
 
 	t.Run("ErrorCases", func(t *testing.T) {
@@ -659,7 +664,7 @@ func TestSignFrostWithPregeneratedNonce(t *testing.T) {
 
 			job := &helper.SigningJobWithPregeneratedNonce{
 				SigningJob: helper.SigningJob{
-					JobID:             "test-job-id",
+					JobID:             jobID,
 					SigningKeyshareID: uuid.New(),
 					Message:           []byte("test message"),
 					VerifyingKey:      &pubKey,
@@ -683,7 +688,7 @@ func TestSignFrostWithPregeneratedNonce(t *testing.T) {
 
 			job := &helper.SigningJobWithPregeneratedNonce{
 				SigningJob: helper.SigningJob{
-					JobID:             "test-job-id",
+					JobID:             jobID,
 					SigningKeyshareID: uuid.New(),
 					Message:           []byte("test message"),
 					VerifyingKey:      &pubKey,
@@ -714,12 +719,36 @@ func TestGetSigningCommitments(t *testing.T) {
 
 		frostSignerFactory := &mockSparkServiceFrostSignerFactory{conn: frostSigner}
 
-		_, err := helper.GetSigningCommitmentsInternal(t.Context(), config, keyshareIDs, 1, frostSignerFactory)
+		_, err := helper.GetSigningCommitmentsInternal(t.Context(), config, uint32(len(keyshareIDs)), 1, frostSignerFactory)
 		require.NoError(t, err)
 	})
 
 	t.Run("ErrorCases", func(t *testing.T) {
 		config := sparktesting.TestConfig(t)
+
+		t.Run("ZeroKeyshareIDcount", func(t *testing.T) {
+			frostSignerFactory := &mockSparkServiceFrostSignerFactory{
+				conn: &mockSparkServiceFrostSigner{},
+			}
+			_, err := helper.GetSigningCommitmentsInternal(t.Context(), config, 0, 1, frostSignerFactory)
+			require.ErrorContains(t, err, "keyshareIDcount cannot be 0")
+		})
+
+		t.Run("ZeroCount", func(t *testing.T) {
+			frostSignerFactory := &mockSparkServiceFrostSignerFactory{
+				conn: &mockSparkServiceFrostSigner{},
+			}
+			_, err := helper.GetSigningCommitmentsInternal(t.Context(), config, 1, 0, frostSignerFactory)
+			require.ErrorContains(t, err, "count cannot be 0")
+		})
+
+		t.Run("Uint32Overflow", func(t *testing.T) {
+			frostSignerFactory := &mockSparkServiceFrostSignerFactory{
+				conn: &mockSparkServiceFrostSigner{},
+			}
+			_, err := helper.GetSigningCommitmentsInternal(t.Context(), config, math.MaxUint32, 2, frostSignerFactory)
+			require.ErrorContains(t, err, "overflows uint32")
+		})
 
 		t.Run("FrostRound1Error", func(t *testing.T) {
 			frostSignerFactory := &mockSparkServiceFrostSignerFactory{
@@ -730,18 +759,17 @@ func TestGetSigningCommitments(t *testing.T) {
 
 			keyshareIDs := []uuid.UUID{uuid.New()}
 
-			_, err := helper.GetSigningCommitmentsInternal(t.Context(), config, keyshareIDs, 1, frostSignerFactory)
+			_, err := helper.GetSigningCommitmentsInternal(t.Context(), config, uint32(len(keyshareIDs)), 1, frostSignerFactory)
 			require.ErrorContains(t, err, "frost round 1 failed")
 		})
 
-		// Test with getKeyPackages error
 		t.Run("GetKeyPackagesError", func(t *testing.T) {
 			frostSignerFactory := &mockSparkServiceFrostSignerFactory{
 				conn: &mockSparkServiceFrostSigner{frostRound1Error: errors.New("database connection failed")},
 			}
 			keyshareIDs := []uuid.UUID{uuid.New()}
 
-			_, err := helper.GetSigningCommitmentsInternal(t.Context(), config, keyshareIDs, 1, frostSignerFactory)
+			_, err := helper.GetSigningCommitmentsInternal(t.Context(), config, uint32(len(keyshareIDs)), 1, frostSignerFactory)
 			require.ErrorContains(t, err, "database connection failed")
 		})
 	})

@@ -51,24 +51,13 @@ func TestFreezeAndUnfreezeTokens(t *testing.T) {
 			finalIssueTokenTransactionHash, err := utils.HashTokenTransaction(finalIssueTokenTransaction, false)
 			require.NoError(t, err, "failed to hash final transfer token transaction")
 
-			// V3 transactions don't return the output ID, so we query it to verify the freeze response.
-			// We verify the output matches our transaction hash and vout 0.
-			outputs, err := wallet.QueryTokenOutputs(t.Context(), config, []keys.Public{userOutput1PrivKey.Public()}, nil)
-			require.NoError(t, err, "failed to query token outputs for expected ID")
-			require.Len(t, outputs.OutputsWithPreviousTransactionData, 1, "expected 1 output for userOutput1PrivKey")
-
-			outputData := outputs.OutputsWithPreviousTransactionData[0]
-			require.Equal(t, finalIssueTokenTransactionHash, outputData.PreviousTransactionHash, "queried output hash mismatch")
-			require.Equal(t, uint32(0), outputData.PreviousTransactionVout, "queried output vout mismatch")
-			require.NotNil(t, outputData.Output.Id, "expected non-nil output ID from query")
-
-			expectedOutputID := *outputData.Output.Id
-
 			require.Equal(t, expectedAmount, frozenAmount,
 				"frozen amount %s does not match expected amount %s", frozenAmount.String(), expectedAmount.String())
-			require.Len(t, freezeResponse.ImpactedOutputIds, 1, "expected 1 impacted output ID")
-			require.Equal(t, expectedOutputID, freezeResponse.ImpactedOutputIds[0],
-				"frozen output ID %s does not match expected output ID %s", freezeResponse.ImpactedOutputIds[0], expectedOutputID)
+			require.Len(t, freezeResponse.ImpactedTokenOutputs, 1, "expected 1 impacted token output")
+			require.Equal(t, finalIssueTokenTransactionHash, freezeResponse.ImpactedTokenOutputs[0].TransactionHash,
+				"freeze response transaction hash mismatch")
+			require.Equal(t, uint32(0), freezeResponse.ImpactedTokenOutputs[0].Vout,
+				"freeze response vout mismatch")
 
 			transferTokenTransaction, _, err := createTestTokenTransferTransactionTokenPb(
 				t, config, finalIssueTokenTransactionHash, tokenPrivKey.Public(), tokenIdentifier,
@@ -92,9 +81,11 @@ func TestFreezeAndUnfreezeTokens(t *testing.T) {
 
 			require.Equal(t, expectedAmount, thawedAmount,
 				"thawed amount %s does not match expected amount %s", thawedAmount.String(), expectedAmount.String())
-			require.Len(t, unfreezeResponse.ImpactedOutputIds, 1, "expected 1 impacted output ID")
-			require.Equal(t, expectedOutputID, unfreezeResponse.ImpactedOutputIds[0],
-				"thawed output ID %s does not match expected output ID %s", unfreezeResponse.ImpactedOutputIds[0], expectedOutputID)
+			require.Len(t, unfreezeResponse.ImpactedTokenOutputs, 1, "expected 1 impacted token output")
+			require.Equal(t, finalIssueTokenTransactionHash, unfreezeResponse.ImpactedTokenOutputs[0].TransactionHash,
+				"unfreeze response transaction hash mismatch")
+			require.Equal(t, uint32(0), unfreezeResponse.ImpactedTokenOutputs[0].Vout,
+				"unfreeze response vout mismatch")
 
 			transferTokenTransactionPostThaw, _, err := createTestTokenTransferTransactionTokenPb(
 				t, config, finalIssueTokenTransactionHash, tokenPrivKey.Public(), tokenIdentifier,
@@ -110,6 +101,98 @@ func TestFreezeAndUnfreezeTokens(t *testing.T) {
 			)
 			require.NoError(t, err, "failed to broadcast thawed token transaction")
 			require.NotNil(t, transferTokenTransactionResponse, "expected non-nil response when transferring thawed tokens")
+		})
+	}
+}
+
+func TestGlobalPauseBlocksTransferAndMint(t *testing.T) {
+	for _, tc := range signatureTypeTestCases {
+		t.Run(tc.name+" ["+currentBroadcastRunLabel()+"]", func(t *testing.T) {
+			config := wallet.NewTestWalletConfigWithIdentityKey(t, staticLocalIssuerKey.IdentityPrivateKey())
+			config.UseTokenTransactionSchnorrSignatures = tc.useSchnorrSignatures
+
+			tokenPrivKey := config.IdentityPrivateKey
+			tokenIdentifier := queryTokenIdentifierOrFail(t, config, tokenPrivKey.Public())
+
+			issueTokenTransaction, userOutput1PrivKey, userOutput2PrivKey, err := createTestTokenMintTransactionTokenPb(t, config, tokenPrivKey.Public(), tokenIdentifier)
+			require.NoError(t, err, "failed to create test token issuance transaction")
+
+			finalIssueTokenTransaction, err := broadcastTokenTransaction(
+				t,
+				t.Context(),
+				config,
+				issueTokenTransaction,
+				[]keys.Private{tokenPrivKey},
+			)
+			require.NoError(t, err, "failed to broadcast issuance token transaction")
+
+			finalIssueTokenTransactionHash, err := utils.HashTokenTransaction(finalIssueTokenTransaction, false)
+			require.NoError(t, err)
+
+			pauseResp, err := wallet.GlobalPauseTokens(t.Context(), config, tokenIdentifier, false)
+			require.NoError(t, err, "failed to global pause token")
+			require.NotNil(t, pauseResp)
+
+			transferTokenTransaction, _, err := createTestTokenTransferTransactionTokenPb(
+				t, config, finalIssueTokenTransactionHash, tokenPrivKey.Public(), tokenIdentifier,
+			)
+			require.NoError(t, err)
+
+			transferResp, err := broadcastTokenTransaction(
+				t,
+				t.Context(),
+				config,
+				transferTokenTransaction,
+				[]keys.Private{userOutput1PrivKey, userOutput2PrivKey},
+			)
+			require.Error(t, err, "expected error when transferring globally paused tokens")
+			require.Nil(t, transferResp)
+
+			mintTx, _, _, err := createTestTokenMintTransactionTokenPb(t, config, tokenPrivKey.Public(), tokenIdentifier)
+			require.NoError(t, err)
+
+			mintResp, err := broadcastTokenTransaction(
+				t,
+				t.Context(),
+				config,
+				mintTx,
+				[]keys.Private{tokenPrivKey},
+			)
+			require.Error(t, err, "expected error when minting globally paused tokens")
+			require.Nil(t, mintResp)
+
+			unpauseResp, err := wallet.GlobalPauseTokens(t.Context(), config, tokenIdentifier, true)
+			require.NoError(t, err, "failed to unpause token")
+			require.NotNil(t, unpauseResp)
+
+			// Transfer should now succeed
+			transferTokenTransactionPostUnpause, _, err := createTestTokenTransferTransactionTokenPb(
+				t, config, finalIssueTokenTransactionHash, tokenPrivKey.Public(), tokenIdentifier,
+			)
+			require.NoError(t, err)
+
+			transferRespPostUnpause, err := broadcastTokenTransaction(
+				t,
+				t.Context(),
+				config,
+				transferTokenTransactionPostUnpause,
+				[]keys.Private{userOutput1PrivKey, userOutput2PrivKey},
+			)
+			require.NoError(t, err, "failed to transfer after unpause")
+			require.NotNil(t, transferRespPostUnpause)
+
+			mintTxPostUnpause, _, _, err := createTestTokenMintTransactionTokenPb(t, config, tokenPrivKey.Public(), tokenIdentifier)
+			require.NoError(t, err)
+
+			mintRespPostUnpause, err := broadcastTokenTransaction(
+				t,
+				t.Context(),
+				config,
+				mintTxPostUnpause,
+				[]keys.Private{tokenPrivKey},
+			)
+			require.NoError(t, err, "failed to mint after unpause")
+			require.NotNil(t, mintRespPostUnpause)
 		})
 	}
 }

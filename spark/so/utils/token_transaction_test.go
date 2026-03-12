@@ -20,6 +20,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	pb "github.com/lightsparkdev/spark/proto/spark"
 	tokenpb "github.com/lightsparkdev/spark/proto/spark_token"
+	legacypb "github.com/lightsparkdev/spark/proto/spark_token_legacy"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -101,7 +102,7 @@ var testData = testTokenTransactionData{
 	},
 }
 
-func createTestTransactions() (*tokenpb.TokenTransaction, *pb.TokenTransaction) {
+func createTestTransactions() (*tokenpb.TokenTransaction, *legacypb.TokenTransaction) {
 	tokenTx := &tokenpb.TokenTransaction{
 		TokenInputs: &tokenpb.TokenTransaction_MintInput{
 			MintInput: &tokenpb.TokenMintInput{
@@ -125,14 +126,14 @@ func createTestTransactions() (*tokenpb.TokenTransaction, *pb.TokenTransaction) 
 		ClientCreatedTimestamp:          timestamppb.New(time.UnixMilli(100)),
 	}
 
-	sparkTx := &pb.TokenTransaction{
-		TokenInputs: &pb.TokenTransaction_MintInput{
-			MintInput: &pb.TokenMintInput{
+	sparkTx := &legacypb.TokenTransaction{
+		TokenInputs: &legacypb.TokenTransaction_MintInput{
+			MintInput: &legacypb.TokenMintInput{
 				IssuerPublicKey:         testData.tokenPublicKey.Serialize(),
 				IssuerProvidedTimestamp: 100,
 			},
 		},
-		TokenOutputs: []*pb.TokenOutput{
+		TokenOutputs: []*legacypb.TokenOutput{
 			{
 				Id:                            &testData.leafID,
 				OwnerPublicKey:                testData.identityPubKey.Serialize(),
@@ -166,14 +167,14 @@ func TestHashTokenTransactionV0MintLegacyVector(t *testing.T) {
 	locktime := uint64(100)
 
 	// Create the token transaction matching the JavaScript object
-	partialTokenTransaction := &pb.TokenTransaction{
-		TokenInputs: &pb.TokenTransaction_MintInput{
-			MintInput: &pb.TokenMintInput{
+	partialTokenTransaction := &legacypb.TokenTransaction{
+		TokenInputs: &legacypb.TokenTransaction_MintInput{
+			MintInput: &legacypb.TokenMintInput{
 				IssuerPublicKey:         tokenPublicKey,
 				IssuerProvidedTimestamp: 100,
 			},
 		},
-		TokenOutputs: []*pb.TokenOutput{
+		TokenOutputs: []*legacypb.TokenOutput{
 			{
 				Id:                            &leafID,
 				OwnerPublicKey:                identityPubKey,
@@ -203,14 +204,14 @@ func TestHashTokenTransactionV0MintLegacyVector(t *testing.T) {
 }
 
 func TestHashTokenTransactionMintV0(t *testing.T) {
-	partialTokenTransaction := &pb.TokenTransaction{
-		TokenInputs: &pb.TokenTransaction_MintInput{
-			MintInput: &pb.TokenMintInput{
+	partialTokenTransaction := &legacypb.TokenTransaction{
+		TokenInputs: &legacypb.TokenTransaction_MintInput{
+			MintInput: &legacypb.TokenMintInput{
 				IssuerPublicKey:         testTokenPublicKey.Serialize(),
 				IssuerProvidedTimestamp: testData.issuerTimestamp,
 			},
 		},
-		TokenOutputs: []*pb.TokenOutput{
+		TokenOutputs: []*legacypb.TokenOutput{
 			{
 				Id:                            &testData.leafID,
 				OwnerPublicKey:                testIdentityPubKey.Serialize(),
@@ -240,9 +241,9 @@ func TestHashTokenTransactionMintV0(t *testing.T) {
 }
 
 func TestHashTokenTransactionCreateV0(t *testing.T) {
-	createTransaction := &pb.TokenTransaction{
-		TokenInputs: &pb.TokenTransaction_CreateInput{
-			CreateInput: &pb.TokenCreateInput{
+	createTransaction := &legacypb.TokenTransaction{
+		TokenInputs: &legacypb.TokenTransaction_CreateInput{
+			CreateInput: &legacypb.TokenCreateInput{
 				IssuerPublicKey: testTokenPublicKey.Serialize(),
 				TokenName:       testData.tokenName,
 				TokenTicker:     testData.tokenTicker,
@@ -251,7 +252,7 @@ func TestHashTokenTransactionCreateV0(t *testing.T) {
 				IsFreezable:     false,
 			},
 		},
-		TokenOutputs:                    []*pb.TokenOutput{},
+		TokenOutputs:                    []*legacypb.TokenOutput{},
 		SparkOperatorIdentityPublicKeys: [][]byte{testSparkOperatorPubKey.Serialize()},
 		Network:                         pb.Network_REGTEST,
 	}
@@ -273,10 +274,10 @@ func TestHashTokenTransactionCreateV0(t *testing.T) {
 
 func TestHashTokenTransactionTransferV0(t *testing.T) {
 	// Create V0 transfer transaction
-	transferTransaction := &pb.TokenTransaction{
-		TokenInputs: &pb.TokenTransaction_TransferInput{
-			TransferInput: &pb.TokenTransferInput{
-				OutputsToSpend: []*pb.TokenOutputToSpend{
+	transferTransaction := &legacypb.TokenTransaction{
+		TokenInputs: &legacypb.TokenTransaction_TransferInput{
+			TransferInput: &legacypb.TokenTransferInput{
+				OutputsToSpend: []*legacypb.TokenOutputToSpend{
 					{
 						PrevTokenTransactionHash: testData.prevTxHash[:],
 						PrevTokenTransactionVout: 0,
@@ -284,7 +285,7 @@ func TestHashTokenTransactionTransferV0(t *testing.T) {
 				},
 			},
 		},
-		TokenOutputs: []*pb.TokenOutput{
+		TokenOutputs: []*legacypb.TokenOutput{
 			{
 				Id:                            &testData.leafID,
 				OwnerPublicKey:                testIdentityPubKey.Serialize(),
@@ -324,9 +325,9 @@ func TestHashTokenTransactionV0Nil(t *testing.T) {
 
 // TestHashTokenTransactionV0Empty checks that hashing an empty transaction does not produce an error.
 func TestHashTokenTransactionV0Empty(t *testing.T) {
-	tx := &pb.TokenTransaction{
-		TokenInputs:                     &pb.TokenTransaction_MintInput{},
-		TokenOutputs:                    []*pb.TokenOutput{},
+	tx := &legacypb.TokenTransaction{
+		TokenInputs:                     &legacypb.TokenTransaction_MintInput{},
+		TokenOutputs:                    []*legacypb.TokenOutput{},
 		SparkOperatorIdentityPublicKeys: [][]byte{},
 	}
 	_, err := HashTokenTransactionV0(tx, false)
@@ -342,13 +343,13 @@ func TestHashTokenTransactionV0UniqueHash(t *testing.T) {
 		bytes.Repeat([]byte{0x06}, 32),
 	}
 
-	partialMintTokenTransaction := &pb.TokenTransaction{
-		TokenInputs: &pb.TokenTransaction_MintInput{
-			MintInput: &pb.TokenMintInput{
+	partialMintTokenTransaction := &legacypb.TokenTransaction{
+		TokenInputs: &legacypb.TokenTransaction_MintInput{
+			MintInput: &legacypb.TokenMintInput{
 				IssuerPublicKey: bytes.Repeat([]byte{0x01}, 32),
 			},
 		},
-		TokenOutputs: []*pb.TokenOutput{
+		TokenOutputs: []*legacypb.TokenOutput{
 			{
 				OwnerPublicKey: bytes.Repeat([]byte{0x01}, 32),
 				TokenPublicKey: bytes.Repeat([]byte{0x02}, 32),
@@ -358,10 +359,10 @@ func TestHashTokenTransactionV0UniqueHash(t *testing.T) {
 		SparkOperatorIdentityPublicKeys: operatorKeys,
 	}
 
-	partialTransferTokenTransaction := &pb.TokenTransaction{
-		TokenInputs: &pb.TokenTransaction_TransferInput{
-			TransferInput: &pb.TokenTransferInput{
-				OutputsToSpend: []*pb.TokenOutputToSpend{
+	partialTransferTokenTransaction := &legacypb.TokenTransaction{
+		TokenInputs: &legacypb.TokenTransaction_TransferInput{
+			TransferInput: &legacypb.TokenTransferInput{
+				OutputsToSpend: []*legacypb.TokenOutputToSpend{
 					{
 						PrevTokenTransactionHash: bytes.Repeat([]byte{0x01}, 32),
 						PrevTokenTransactionVout: 1,
@@ -369,7 +370,7 @@ func TestHashTokenTransactionV0UniqueHash(t *testing.T) {
 				},
 			},
 		},
-		TokenOutputs: []*pb.TokenOutput{
+		TokenOutputs: []*legacypb.TokenOutput{
 			{
 				OwnerPublicKey: bytes.Repeat([]byte{0x01}, 32),
 				TokenPublicKey: bytes.Repeat([]byte{0x02}, 32),
@@ -1547,7 +1548,6 @@ func TestHashFreezeTokensPayloadErrors(t *testing.T) {
 	ownerPubKey := keys.GeneratePrivateKey().Public()
 	tokenPubKey := keys.GeneratePrivateKey().Public()
 	operatorPubKey := keys.GeneratePrivateKey().Public()
-	tokenIdentifier := []byte("test_token_identifier_32bytes___")
 
 	tests := []struct {
 		name    string
@@ -1607,18 +1607,7 @@ func TestHashFreezeTokensPayloadErrors(t *testing.T) {
 			},
 			wantErr: "operator identity public key cannot be empty",
 		},
-		{
-			name: "empty owner public key v1",
-			payload: &tokenpb.FreezeTokensPayload{
-				Version:                   1,
-				OwnerPublicKey:            []byte{},
-				TokenIdentifier:           tokenIdentifier,
-				ShouldUnfreeze:            false,
-				IssuerProvidedTimestamp:   1234567890,
-				OperatorIdentityPublicKey: operatorPubKey.Serialize(),
-			},
-			wantErr: "owner public key cannot be empty",
-		},
+		// V1 with empty owner_public_key is allowed (global pause), tested separately.
 		{
 			name: "missing token identifier v1",
 			payload: &tokenpb.FreezeTokensPayload{
@@ -1906,7 +1895,7 @@ func TestValidateFreezeTokensPayload(t *testing.T) {
 				OperatorIdentityPublicKey: operatorPubKey.Serialize(),
 			},
 			expectedOperatorKey: operatorPubKey,
-			wantErr:             "owner public key cannot be empty",
+			wantErr:             "invalid freeze tokens payload version: 0",
 		},
 		{
 			name: "v0 nil token public key",
@@ -2243,4 +2232,280 @@ func TestHashTokenTransactionTransferV2(t *testing.T) {
 		0xe2, 0x23, 0xd, 0x4f, 0x7b, 0xa4, 0x3c, 0xf2, 0xa3, 0x2c, 0x27, 0xf0, 0x31, 0xae, 0x8, 0x83,
 	}
 	assert.Equal(t, want, hash)
+}
+
+func TestValidateExecuteBefore(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	maxWindow := 300 * time.Second
+
+	tests := []struct {
+		name                   string
+		executeBefore          *time.Time
+		clientCreatedTimestamp time.Time
+		maxWindow              time.Duration
+		wantErr                bool
+		errContains            string
+	}{
+		{
+			name:                   "nil execute_before is valid",
+			executeBefore:          nil,
+			clientCreatedTimestamp: now,
+			maxWindow:              maxWindow,
+			wantErr:                false,
+		},
+		{
+			name:                   "valid execute_before within window",
+			executeBefore:          ptr(now.Add(100 * time.Second)),
+			clientCreatedTimestamp: now.Add(-10 * time.Second),
+			maxWindow:              maxWindow,
+			wantErr:                false,
+		},
+		{
+			name:                   "execute_before at max window boundary",
+			executeBefore:          ptr(now.Add(maxWindow)),
+			clientCreatedTimestamp: now,
+			maxWindow:              maxWindow,
+			wantErr:                false,
+		},
+		{
+			name:                   "execute_before 1 microsecond past max window",
+			executeBefore:          ptr(now.Add(maxWindow + time.Microsecond)),
+			clientCreatedTimestamp: now,
+			maxWindow:              maxWindow,
+			wantErr:                true,
+			errContains:            "exceeds max window",
+		},
+		{
+			name:                   "execute_before exceeds max window",
+			executeBefore:          ptr(now.Add(maxWindow + time.Second)),
+			clientCreatedTimestamp: now,
+			maxWindow:              maxWindow,
+			wantErr:                true,
+			errContains:            "exceeds max window",
+		},
+		{
+			name:                   "execute_before before client_created_timestamp",
+			executeBefore:          ptr(now.Add(-10 * time.Second)),
+			clientCreatedTimestamp: now,
+			maxWindow:              maxWindow,
+			wantErr:                true,
+			errContains:            "must be after client_created_timestamp",
+		},
+		{
+			name:                   "execute_before equal to client_created_timestamp",
+			executeBefore:          ptr(now),
+			clientCreatedTimestamp: now,
+			maxWindow:              maxWindow,
+			wantErr:                true,
+			errContains:            "must be after client_created_timestamp",
+		},
+		{
+			name:                   "execute_before 1 microsecond after client_created_timestamp",
+			executeBefore:          ptr(now.Add(100 * time.Second)),
+			clientCreatedTimestamp: now.Add(100*time.Second - time.Microsecond),
+			maxWindow:              maxWindow,
+			wantErr:                false,
+		},
+		{
+			name:                   "zero max window rejects any execute_before",
+			executeBefore:          ptr(now.Add(time.Microsecond)),
+			clientCreatedTimestamp: now,
+			maxWindow:              0,
+			wantErr:                true,
+			errContains:            "exceeds max window",
+		},
+		{
+			name:                   "execute_before has already passed",
+			executeBefore:          ptr(now.Add(-1 * time.Second)),
+			clientCreatedTimestamp: now.Add(-10 * time.Second),
+			maxWindow:              maxWindow,
+			wantErr:                true,
+			errContains:            "has already passed",
+		},
+		{
+			name:                   "execute_before with sub-microsecond precision",
+			executeBefore:          ptr(now.Add(100*time.Second + 123*time.Nanosecond)),
+			clientCreatedTimestamp: now,
+			maxWindow:              maxWindow,
+			wantErr:                true,
+			errContains:            "sub-microsecond precision",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateExecuteBefore(tt.executeBefore, tt.clientCreatedTimestamp, tt.maxWindow)
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateFinalTokenTransaction_RevocationKeyCardinalityMismatch verifies that
+// ValidateFinalTokenTransaction returns a clear error (not a panic) when the number of
+// token outputs exceeds the number of expected revocation public keys.
+//
+// Before the fix this caused a runtime index-out-of-range panic inside the SO, which
+// a malicious coordinator could exploit to crash all peer operators by submitting a
+// PrepareTransactionRequest with more token outputs than keyshare IDs.
+func TestValidateFinalTokenTransaction_RevocationKeyCardinalityMismatch(t *testing.T) {
+	t.Parallel()
+	rng := rand.NewChaCha8([32]byte{42})
+
+	issuerPriv := keys.MustGeneratePrivateKeyFromRand(rng)
+	revKey1 := keys.MustGeneratePrivateKeyFromRand(rng)
+	revKey2 := keys.MustGeneratePrivateKeyFromRand(rng)
+
+	network := pb.Network_REGTEST
+	bondSats := uint64(1000)
+	locktime := uint64(144)
+	opPub := testSparkOperatorPubKey
+
+	// tokenID must be identical in both MintInput and every output.
+	tokenID := make([]byte, 32)
+	tokenID[0] = 1
+
+	makeOutput := func(revKey keys.Public, id string) *tokenpb.TokenOutput {
+		amount := make([]byte, 16)
+		amount[15] = 10
+		return &tokenpb.TokenOutput{
+			Id:                            proto.String(id),
+			OwnerPublicKey:                issuerPriv.Public().Serialize(),
+			TokenIdentifier:               tokenID,
+			TokenAmount:                   amount,
+			RevocationCommitment:          revKey.Serialize(),
+			WithdrawBondSats:              &bondSats,
+			WithdrawRelativeBlockLocktime: &locktime,
+		}
+	}
+
+	ts := timestamppb.New(time.Now())
+	expiry := timestamppb.New(time.Now().Add(24 * time.Hour))
+
+	// Build a mint transaction with 2 outputs
+	tx2Outputs := &tokenpb.TokenTransaction{
+		Version: 2,
+		TokenInputs: &tokenpb.TokenTransaction_MintInput{
+			MintInput: &tokenpb.TokenMintInput{
+				IssuerPublicKey: issuerPriv.Public().Serialize(),
+				TokenIdentifier: tokenID,
+			},
+		},
+		TokenOutputs: []*tokenpb.TokenOutput{
+			makeOutput(revKey1.Public(), "output-a"),
+			makeOutput(revKey2.Public(), "output-b"),
+		},
+		SparkOperatorIdentityPublicKeys: [][]byte{opPub.Serialize()},
+		Network:                         network,
+		ClientCreatedTimestamp:          ts,
+		ExpiryTime:                      expiry,
+	}
+
+	// Config supplies only ONE revocation public key, but the transaction has TWO outputs.
+	// Before the fix: panic (index out of range at config.ExpectedRevocationPublicKeys[1])
+	// After the fix:  returns an InvalidArgument error describing the mismatch.
+	config := &FinalValidationConfig{
+		ExpectedSparkOperators: map[string]*pb.SigningOperatorInfo{
+			"op1": {PublicKey: opPub.Serialize(), Identifier: "op1"},
+		},
+		SupportedNetworks:             []btcnetwork.Network{btcnetwork.Regtest},
+		ExpectedRevocationPublicKeys:  []keys.Public{revKey1.Public()}, // only 1, but tx has 2 outputs
+		ExpectedBondSats:              bondSats,
+		ExpectedRelativeBlockLocktime: locktime,
+	}
+
+	// Sign with issuer key so the base validation passes
+	partialHash, err := HashTokenTransaction(tx2Outputs, true)
+	require.NoError(t, err)
+	schnorrSig, err := schnorr.Sign(issuerPriv.ToBTCEC(), partialHash)
+	require.NoError(t, err)
+	sigs := []*tokenpb.SignatureWithIndex{{InputIndex: 0, Signature: schnorrSig.Serialize()}}
+
+	err = ValidateFinalTokenTransaction(tx2Outputs, sigs, config)
+	require.Error(t, err, "should reject when output count != revocation key count")
+	require.Contains(t, err.Error(), "number of token outputs",
+		"error message should identify the cardinality mismatch")
+}
+
+// TestValidateFinalTokenTransaction_RevocationKeyCardinalityMatch verifies that
+// ValidateFinalTokenTransaction succeeds when output count equals revocation key count.
+func TestValidateFinalTokenTransaction_RevocationKeyCardinalityMatch(t *testing.T) {
+	t.Parallel()
+	rng := rand.NewChaCha8([32]byte{43})
+
+	issuerPriv := keys.MustGeneratePrivateKeyFromRand(rng)
+	revKey1 := keys.MustGeneratePrivateKeyFromRand(rng)
+	revKey2 := keys.MustGeneratePrivateKeyFromRand(rng)
+
+	network := pb.Network_REGTEST
+	bondSats := uint64(1000)
+	locktime := uint64(144)
+	opPub := testSparkOperatorPubKey
+
+	tokenID := make([]byte, 32)
+	tokenID[0] = 1
+
+	makeOutput := func(revKey keys.Public, idx int) *tokenpb.TokenOutput {
+		amount := make([]byte, 16)
+		amount[15] = 10
+		return &tokenpb.TokenOutput{
+			Id:                            proto.String(fmt.Sprintf("output-%d", idx)),
+			OwnerPublicKey:                issuerPriv.Public().Serialize(),
+			TokenIdentifier:               tokenID,
+			TokenAmount:                   amount,
+			RevocationCommitment:          revKey.Serialize(),
+			WithdrawBondSats:              &bondSats,
+			WithdrawRelativeBlockLocktime: &locktime,
+		}
+	}
+
+	ts := timestamppb.New(time.Now())
+	expiry := timestamppb.New(time.Now().Add(24 * time.Hour))
+
+	tx := &tokenpb.TokenTransaction{
+		Version: 2,
+		TokenInputs: &tokenpb.TokenTransaction_MintInput{
+			MintInput: &tokenpb.TokenMintInput{
+				IssuerPublicKey: issuerPriv.Public().Serialize(),
+				TokenIdentifier: tokenID,
+			},
+		},
+		TokenOutputs: []*tokenpb.TokenOutput{
+			makeOutput(revKey1.Public(), 0),
+			makeOutput(revKey2.Public(), 1),
+		},
+		SparkOperatorIdentityPublicKeys: [][]byte{opPub.Serialize()},
+		Network:                         network,
+		ClientCreatedTimestamp:          ts,
+		ExpiryTime:                      expiry,
+	}
+
+	config := &FinalValidationConfig{
+		ExpectedSparkOperators: map[string]*pb.SigningOperatorInfo{
+			"op1": {PublicKey: opPub.Serialize(), Identifier: "op1"},
+		},
+		SupportedNetworks:             []btcnetwork.Network{btcnetwork.Regtest},
+		ExpectedRevocationPublicKeys:  []keys.Public{revKey1.Public(), revKey2.Public()}, // matches output count
+		ExpectedBondSats:              bondSats,
+		ExpectedRelativeBlockLocktime: locktime,
+	}
+
+	partialHash, err := HashTokenTransaction(tx, true)
+	require.NoError(t, err)
+	schnorrSig, err := schnorr.Sign(issuerPriv.ToBTCEC(), partialHash)
+	require.NoError(t, err)
+	sigs := []*tokenpb.SignatureWithIndex{{InputIndex: 0, Signature: schnorrSig.Serialize()}}
+
+	err = ValidateFinalTokenTransaction(tx, sigs, config)
+	require.NoError(t, err, "matching output and revocation key counts should succeed")
+}
+
+func ptr[T any](v T) *T {
+	return &v
 }

@@ -151,6 +151,166 @@ class SparkFrostReactNative extends SparkFrostBase {
     return toUint8Array(result);
   }
 
+  async splitSecretWithProofs(
+    secret: Uint8Array,
+    threshold: number,
+    numShares: number,
+  ) {
+    const result = await SparkFrostReactNative.callNativeModule(
+      "splitSecretWithProofs",
+      {
+        secret: toNumberArray(secret),
+        threshold,
+        numShares,
+      },
+    );
+    return (
+      result as {
+        threshold: number;
+        index: number;
+        share: number[];
+        proofs: number[][];
+      }[]
+    ).map(
+      (s: {
+        threshold: number;
+        index: number;
+        share: number[];
+        proofs: number[][];
+      }) => ({
+        threshold: s.threshold,
+        index: s.index,
+        share: toUint8Array(s.share),
+        proofs: s.proofs.map((p: number[]) => toUint8Array(p)),
+      }),
+    );
+  }
+
+  async recoverSecret(
+    shares: { threshold: number; index: number; share: Uint8Array }[],
+  ) {
+    const nativeShares = shares.map((s) => ({
+      threshold: s.threshold,
+      index: s.index,
+      share: toNumberArray(s.share),
+    }));
+    const result = await SparkFrostReactNative.callNativeModule(
+      "recoverSecret",
+      { shares: nativeShares },
+    );
+    return toUint8Array(result as number[]);
+  }
+
+  async validateShare(
+    share: Uint8Array,
+    index: number,
+    threshold: number,
+    proofs: Uint8Array[],
+  ) {
+    await SparkFrostReactNative.callNativeModule("validateShare", {
+      share: toNumberArray(share),
+      index,
+      threshold,
+      proofs: proofs.map(toNumberArray),
+    });
+  }
+
+  async constructNodeTxPair(
+    parentTx: Uint8Array,
+    vout: number,
+    address: string,
+    sequence: number,
+    directSequence: number,
+    feeSats: bigint,
+  ): Promise<{ cpfp: { tx: Uint8Array }; direct: { tx: Uint8Array } }> {
+    if (!SparkFrostModule) {
+      throw new Error("SparkFrostModule is not available in this environment");
+    }
+    const result = await SparkFrostModule.constructNodeTxPair({
+      parentTx: toNumberArray(parentTx),
+      vout,
+      address,
+      sequence,
+      directSequence,
+      feeSats: feeSats.toString(),
+    });
+    return {
+      cpfp: { tx: toUint8Array(result.cpfp.tx) },
+      direct: { tx: toUint8Array(result.direct.tx) },
+    };
+  }
+
+  async constructRefundTxTrio(
+    cpfpNodeTx: Uint8Array,
+    directNodeTx: Uint8Array | null,
+    vout: number,
+    receivingPubkey: Uint8Array,
+    network: string,
+    sequence: number,
+    directSequence: number,
+    feeSats: bigint,
+  ): Promise<{
+    cpfp_refund: { tx: Uint8Array };
+    direct_refund?: { tx: Uint8Array };
+    direct_from_cpfp_refund: { tx: Uint8Array };
+  }> {
+    if (!SparkFrostModule) {
+      throw new Error("SparkFrostModule is not available in this environment");
+    }
+    const result = await SparkFrostModule.constructRefundTxTrio({
+      cpfpNodeTx: toNumberArray(cpfpNodeTx),
+      directNodeTx: directNodeTx ? toNumberArray(directNodeTx) : null,
+      vout,
+      receivingPubkey: toNumberArray(receivingPubkey),
+      network,
+      sequence,
+      directSequence,
+      feeSats: feeSats.toString(),
+    });
+    const out: {
+      cpfp_refund: { tx: Uint8Array };
+      direct_refund?: { tx: Uint8Array };
+      direct_from_cpfp_refund: { tx: Uint8Array };
+    } = {
+      cpfp_refund: { tx: toUint8Array(result.cpfp_refund.tx) },
+      direct_from_cpfp_refund: {
+        tx: toUint8Array(result.direct_from_cpfp_refund.tx),
+      },
+    };
+    if (result.direct_refund) {
+      out.direct_refund = { tx: toUint8Array(result.direct_refund.tx) };
+    }
+    return out;
+  }
+
+  async computeMultiInputSighash(
+    tx: Uint8Array,
+    inputIndex: number,
+    prevOutScripts: Uint8Array[],
+    prevOutValues: number[],
+  ): Promise<Uint8Array> {
+    if (!SparkFrostModule) {
+      throw new Error("SparkFrostModule is not available in this environment");
+    }
+    const result = await SparkFrostModule.computeMultiInputSighash({
+      tx: toNumberArray(tx),
+      inputIndex,
+      prevOutScripts: prevOutScripts.map(toNumberArray),
+      prevOutValues,
+    });
+    return toUint8Array(result);
+  }
+
+  private static async callNativeModule(
+    method: string,
+    params: any,
+  ): Promise<any> {
+    if (!SparkFrostModule) {
+      throw new Error("SparkFrostModule is not available in this environment");
+    }
+    return SparkFrostModule[method](params);
+  }
+
   static async getPublicKey(
     privateKey: Uint8Array,
     compressed: boolean = true,

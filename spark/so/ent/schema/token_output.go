@@ -36,21 +36,26 @@ func (TokenOutput) Fields() []ent.Field {
 	return []ent.Field{
 		field.Enum("status").
 			GoType(st.TokenOutputStatus("")).
+			Comment("Current lifecycle status of the token output (e.g., CREATED_FINALIZED, SPENT).").
 			Annotations(entexample.Default(st.TokenOutputStatusCreatedFinalized)),
 		field.Bytes("owner_public_key").
 			Immutable().
 			GoType(keys.Public{}).
+			Comment("The public key of the owner of this token output.").
 			Annotations(entexample.Default(
 				"02a28e9787ad87631160d9e59b3ee939e804d592f7f8c75a9b0c8c8647075de9e8",
 			)),
 		field.Uint64("withdraw_bond_sats").
 			Immutable().
+			Comment("Bond amount in satoshis required to initiate an L1 withdrawal.").
 			Annotations(entexample.Default(10000)),
 		field.Uint64("withdraw_relative_block_locktime").
 			Immutable().
+			Comment("Relative block locktime for the L1 withdrawal transaction.").
 			Annotations(entexample.Default(1000)),
 		field.Bytes("withdraw_revocation_commitment").
 			Immutable().
+			Comment("Commitment to the revocation secret, used to punish invalid withdrawals.").
 			Annotations(entexample.Default(
 				"0340c064753fe86c78d501d4826ca22b499c5b06be5b5dfdd35181548767783829",
 			)),
@@ -58,12 +63,14 @@ func (TokenOutput) Fields() []ent.Field {
 			Immutable().
 			Optional().
 			GoType(keys.Public{}).
+			Comment("The public key identifying the token type held in this output.").
 			Annotations(entexample.Default(
 				"02a28e9787ad87631160d9e59b3ee939e804d592f7f8c75a9b0c8c8647075de9e8",
 			)),
 		field.Bytes("token_amount").
 			NotEmpty().
 			Immutable().
+			Comment("The token amount held in this output as raw bytes (uint128).").
 			Annotations(entexample.Default(
 				"00000000000000000000000000000064",
 			)),
@@ -77,6 +84,7 @@ func (TokenOutput) Fields() []ent.Field {
 			Annotations(entexample.Default(100)),
 		field.Int32("created_transaction_output_vout").
 			Immutable().
+			Comment("The vout index of this output in the creating token transaction.").
 			Annotations(entexample.Default(0)),
 		field.Bytes("created_transaction_finalized_hash").
 			Immutable().
@@ -84,28 +92,41 @@ func (TokenOutput) Fields() []ent.Field {
 			Annotations(entexample.Default(
 				"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
 			)),
+		field.Bytes("se_finalization_adaptor_sig").
+			Optional().
+			Comment("SE adaptor signature locked to the finalization secret. Created during transaction signing (Phase 1).").
+			Annotations(entexample.Default("c4d0f7f4ed725175ea7f93e3c3864a4fe8f386c5652964b736c7ab7752c939c84d40affa0876733deb843a466c74662e82c94857324e07bcb597097034b3c949")),
+		field.Bytes("se_withdrawal_signature").
+			Optional().
+			Comment("Final SE Schnorr signature over SparkExitReceipt. Computed by adapting se_finalization_adaptor_sig with the finalization secret (Phase 2). Enables offline L1 withdrawal capability.").
+			Annotations(entexample.Default("c4d0f7f4ed725175ea7f93e3c3864a4fe8f386c5652964b736c7ab7752c939c84d40affa0876733deb843a466c74662e82c94857324e07bcb597097034b3c949")),
 		field.Bytes("spent_ownership_signature").
-			Optional(),
+			Optional().
+			Comment("The ownership signature provided when this output was spent."),
 		field.Bytes("spent_operator_specific_ownership_signature").
-			Optional(),
+			Optional().
+			Comment("An operator-specific ownership signature provided when this output was spent."),
 		field.Int32("spent_transaction_input_vout").
-			Optional(),
+			Optional().
+			Comment("The vout index used as input in the spending token transaction."),
 		field.Bytes("spent_revocation_secret").
 			Optional().
-			GoType(keys.Private{}),
-		field.Bytes("confirmed_withdraw_block_hash").
-			Optional(),
+			GoType(keys.Private{}).
+			Comment("The revocation secret revealed when this output was spent."),
 		field.Enum("network").
 			GoType(btcnetwork.Unspecified).
 			Optional().
+			Comment("The Bitcoin network this token output belongs to.").
 			Annotations(entexample.Default(btcnetwork.Regtest)),
 		field.Bytes("token_identifier").
 			Immutable().
+			Comment("The identifier of the token type held in this output.").
 			Annotations(entexample.Default(
 				"f88a9e871e6b3324d414ea180f02cd1eae930fa32baf847c4691c9d086bd2e17",
 			)),
 		field.UUID("token_create_id", uuid.UUID{}).
 			Immutable().
+			Comment("Foreign key referencing the associated TokenCreate record.").
 			Annotations(entexample.Default("019a14b9-1783-7109-9fca-1e4f7a6aa539")),
 	}
 }
@@ -141,6 +162,12 @@ func (TokenOutput) Edges() []ent.Edge {
 			Required().
 			Field("token_create_id").
 			Comment("Token create contains the token metadata associated with this output."),
+		edge.To("withdrawal", L1TokenOutputWithdrawal.Type).
+			Unique().
+			Comment("The L1 withdrawal record if this output has been withdrawn."),
+		edge.To("justice_tx", L1TokenJusticeTransaction.Type).
+			Unique().
+			Comment("The justice transaction if an invalid withdrawal was punished for this output."),
 	}
 }
 
@@ -148,12 +175,12 @@ func (TokenOutput) Indexes() []ent.Index {
 	return []ent.Index{
 		// Optimized for GetOwnedTokenOutputs query
 		index.Fields("owner_public_key", "status", "network"),
+		index.Fields("update_time", "id").
+			StorageKey("token_outputs_update_time_id_idx"),
 		// Optimized for GetTokenTransactions query
 		index.Fields("owner_public_key", "token_identifier", "status").Annotations(tokenTxIncludeAnnotations()),
 		index.Fields("token_identifier", "status").Annotations(tokenTxIncludeAnnotations()),
 		index.Fields("token_public_key", "status").Annotations(tokenTxIncludeAnnotations()),
-		// Enables quick unmarking of withdrawn outputs in response to block reorgs.
-		index.Fields("confirmed_withdraw_block_hash"),
 		// Optimize pre-emption queries by indexing the spent transaction relationship
 		index.Edges("output_spent_token_transaction"),
 		// For finalizing token transactions

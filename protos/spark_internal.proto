@@ -2,11 +2,13 @@ syntax = "proto3";
 
 package spark_internal;
 
-option go_package = "github.com/lightsparkdev/spark/proto/spark_internal";
+import "common.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
-import "common.proto";
 import "spark.proto";
+import "validate/validate.proto";
+
+option go_package = "github.com/lightsparkdev/spark/proto/spark_internal";
 
 service SparkInternalService {
     rpc mark_keyshares_as_used(MarkKeysharesAsUsedRequest) returns (google.protobuf.Empty) {}
@@ -34,10 +36,12 @@ service SparkInternalService {
     rpc initiate_preimage_swap_v2(InitiatePreimageSwapRequest) returns (InitiatePreimageSwapResponse) {}
     rpc provide_preimage(ProvidePreimageRequest) returns (google.protobuf.Empty) {}
     rpc update_preimage_request(UpdatePreimageRequestRequest) returns (google.protobuf.Empty) {}
+    rpc store_preimage_share(spark.StorePreimageShareV2Request) returns (google.protobuf.Empty) {}
 
     rpc prepare_tree_address(PrepareTreeAddressRequest) returns (PrepareTreeAddressResponse) {}
 
     rpc initiate_transfer(InitiateTransferRequest) returns (google.protobuf.Empty) {}
+    rpc initiate_transfer_v2(InitiateTransferV2Request) returns (google.protobuf.Empty) {}
 
     rpc deliver_sender_key_tweak(DeliverSenderKeyTweakRequest) returns (google.protobuf.Empty) {}
 
@@ -51,9 +55,15 @@ service SparkInternalService {
     rpc create_static_deposit_utxo_swap(CreateStaticDepositUtxoSwapRequest) returns (CreateStaticDepositUtxoSwapResponse) {}
     // Create UTXO swap record to refund UTXO to the user in the static deposit flow
     rpc create_static_deposit_utxo_refund(CreateStaticDepositUtxoRefundRequest) returns (CreateStaticDepositUtxoRefundResponse) {}
+    // Create instant static deposit UTXO swap record across all SOs
+    rpc create_instant_static_deposit_utxo_swap(CreateInstantStaticDepositUtxoSwapRequest) returns (CreateInstantStaticDepositUtxoSwapResponse) {}
+    // Save utxo for an instant static deposit across all SOs
+    rpc save_utxo_for_instant_static_deposit(SaveUtxoForInstantStaticDepositRequest) returns (SaveUtxoForInstantStaticDepositResponse) {}
 
     // Internal method to cancel a swap for other SOs if one of them failed to ack it
     rpc rollback_utxo_swap(RollbackUtxoSwapRequest) returns (RollbackUtxoSwapResponse) {}
+    // Internal method to cancel an instant UTXO swap for other SOs if one of them failed to ack it
+    rpc rollback_instant_utxo_swap(RollbackInstantUtxoSwapRequest) returns (RollbackInstantUtxoSwapResponse) {}
     // Internal method to mark a swap as COMPLETE in all SOs
     rpc utxo_swap_completed(UtxoSwapCompletedRequest) returns (UtxoSwapCompletedResponse) {}
 
@@ -114,7 +124,7 @@ message FrostRound1Response {
 
 message SigningJob {
     // The unique identifier for the signing job.
-    string job_id = 1;
+    string job_id = 1 [(validate.rules).string.uuid = true];
 
     // The message to sign.
     bytes message = 2;
@@ -256,6 +266,31 @@ message InitiateTransferRequest {
     string primary_transfer_id = 14;
 }
 
+// Per-sender data within an InitiateTransferV2Request.
+message InitiateTransferSenderPackage {
+    bytes sender_identity_public_key = 1;
+    spark.TransferPackage transfer_package = 2;
+    // leaf_id → receiver_identity_public_key for each leaf in this sender's package.
+    map<string, bytes> receiver_identity_public_keys = 3;
+    // Finalized CPFP refund signatures (leaf_id → signature).
+    map<string, bytes> refund_signatures = 4;
+    // Finalized direct refund signatures (leaf_id → signature).
+    map<string, bytes> direct_refund_signatures = 5;
+    // Finalized direct-from-CPFP refund signatures (leaf_id → signature).
+    map<string, bytes> direct_from_cpfp_refund_signatures = 6;
+}
+
+// Internal SO-to-SO request to create one Transfer with multiple senders and receivers.
+// Receiving SOs must accept all sender packages atomically (all or nothing).
+message InitiateTransferV2Request {
+    string transfer_id = 1;
+    // One entry per sender. Leaf IDs must be disjoint across entries.
+    repeated InitiateTransferSenderPackage sender_packages = 2;
+    // FROST key-tweak proofs keyed by leaf_id (across all senders).
+    map<string, spark.SecretProof> sender_key_tweak_proofs = 3;
+    google.protobuf.Timestamp expiry_time = 4;
+}
+
 message DeliverSenderKeyTweakRequest {
     string transfer_id = 1;
     bytes sender_identity_public_key = 2;
@@ -266,6 +301,7 @@ message InitiateCooperativeExitRequest {
     InitiateTransferRequest transfer = 1;
     string exit_id = 2;
     bytes exit_txid = 3;
+    bytes connector_tx = 4;
 }
 
 message UpdatePreimageRequestRequest {
@@ -278,6 +314,12 @@ message InitiateSettleReceiverKeyTweakRequest {
     string transfer_id = 1;
     map<string, spark.SecretProof> key_tweak_proofs = 2;
     map<string, bytes> user_public_keys = 3;
+    // Full ECIES-encrypted key tweak package (SO identifier -> ciphertext).
+    // Each SO verifies the user signature against this full map, then decrypts its own portion.
+    map<string, bytes> encrypted_claim_key_tweak_package = 4;
+    // User signature over the encrypted claim key tweak package.
+    bytes claim_signature = 5;
+    bytes receiver_identity_public_key = 6;
 }
 
 enum SettleKeyTweakAction {
@@ -289,6 +331,7 @@ enum SettleKeyTweakAction {
 message SettleReceiverKeyTweakRequest {
     string transfer_id = 1;
     SettleKeyTweakAction action = 3;
+    bytes receiver_identity_public_key = 4;
 
     reserved 2;
 }
@@ -297,6 +340,49 @@ message SettleSenderKeyTweakRequest {
     string transfer_id = 1;
     SettleKeyTweakAction action = 2;
 }
+
+message ReserveInstantStaticDepositUtxoSwapRequest {
+    spark.UTXO on_chain_utxo = 1;
+    // SSP signature of a message consenting to transfer a specific amount of funds
+    // in exchange for a specific UTXO.
+    bytes ssp_signature = 2;
+    // User signature of a message consenting to exchange a specific UTXO for a fund
+    // transfer from a specific SSP.
+    bytes user_signature = 3;
+    // Transfer package to send from SSP to User.
+    spark.StartTransferRequest transfer = 4;
+    // Destination address for the static deposit UTXO.
+    string destination_address = 5;
+    // UTXO output value in satoshis.
+    int64 value_sats = 6;
+    // credit amount in satoshis.
+    int64 credit_amount_sats = 7;
+    // secondary credit amount in satoshis.
+    int64 secondary_credit_amount_sats = 8;
+    // expiry time of the swap
+    google.protobuf.Timestamp expiry_time = 9;
+    // Optional: requested secondary transfer ID for secondary credit amount.
+    string requested_secondary_transfer_id = 10;
+}
+
+message CreateInstantStaticDepositUtxoSwapRequest {
+    ReserveInstantStaticDepositUtxoSwapRequest request = 1;
+    bytes signature = 2;
+    bytes coordinator_public_key = 3;
+}
+
+message CreateInstantStaticDepositUtxoSwapResponse {
+    string swap_id = 1;
+}
+
+message SaveUtxoForInstantStaticDepositRequest {
+    spark.UTXO on_chain_utxo = 1;
+    string utxo_swap_id = 2;
+    bytes signature = 3;
+    bytes coordinator_public_key = 4;
+}
+
+message SaveUtxoForInstantStaticDepositResponse {}
 
 message InitiateStaticDepositUtxoSwapRequest {
     spark.UTXO on_chain_utxo = 1;
@@ -310,6 +396,10 @@ message InitiateStaticDepositUtxoSwapRequest {
     spark.StartTransferRequest transfer = 4;
     // Transaction constructed by the SSP spending the UTXO to an address it owns.
     spark.SigningJob spend_tx_signing_job = 5;
+    // Optional: which hash variant was used to create user_signature.
+    spark.HashVariant hash_variant = 6;
+    // Optional: minimum confirmations required. Defaults to 3 if unset/0. Min 1.
+    optional uint32 confirmation_threshold = 7;
 }
 
 message CreateStaticDepositUtxoSwapRequest {
@@ -339,6 +429,17 @@ message RollbackUtxoSwapRequest {
 }
 
 message RollbackUtxoSwapResponse {
+}
+
+message RollbackInstantUtxoSwapRequest {
+    spark.UTXO on_chain_utxo = 1;
+    bytes signature = 2;
+    bytes coordinator_public_key = 3;
+    repeated spark.UtxoSwapStatus rollback_from_statuses = 4;
+    spark.UtxoSwapStatus rollback_to_status = 5;
+}
+
+message RollbackInstantUtxoSwapResponse {
 }
 
 message UtxoSwapCompletedRequest {

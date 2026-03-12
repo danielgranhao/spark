@@ -1,16 +1,19 @@
 [tools]
-atlas = "0.35.0"
+atlas-community = "1.0.0"
+github-cli = "latest"
 go = "1.25.1"
-golangci-lint = "2.4.0"
+golangci-lint = "2.8.0"
 gotestsum = "1.13.0"
-helm = "3.14.4"
-lefthook = "latest"
+helm = "3.19.4"
+jq = "latest"
+lefthook = "2.1.1"
 node = "20.19.0"
-protoc = "29.3"
-protoc-gen-go = "1.36.6"
-protoc-gen-go-grpc = "1.5.1"
-protoc-gen-validate = "1.2.1"
+protoc = "33.2"
+protoc-gen-go = "1.36.11"
+protoc-gen-go-grpc = "1.6.0"
+protoc-gen-validate = "1.3.0"
 rust = { version = "latest", profile = "minimal" }
+tilt = "0.36.0"
 
 [env]
 MISE_NODE_COREPACK = true
@@ -19,21 +22,24 @@ MISE_NODE_COREPACK = true
 build-to-minikube = { dir = "{{config_root}}", run = 'scripts/build-to-minikube.sh' }
 rds = { dir = "{{config_root}}", run = 'scripts/rds.sh' }
 run-minikube = { dir = "{{config_root}}", run = 'scripts/local-test.sh' }
-spark-cli-local = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd examples/spark-cli && yarn build && yarn run cli:local' }
-spark-cli-minikube = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd examples/spark-cli && yarn build && yarn run cli:minikube' }
-spark-cli-regtest = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd examples/spark-cli && yarn build && yarn run cli' }
-spark-cli-mainnet = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd examples/spark-cli && yarn build && yarn run cli:mainnet' }
-spark-cli-dev = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd examples/spark-cli && yarn build && yarn run cli:dev' }
-spark-cli-dev-mainnet = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd examples/spark-cli && yarn build && yarn run cli:dev:mainnet' }
-spark-cli-loadtest = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd examples/spark-cli && yarn build && yarn run cli:loadtest' }
-test-go = { dir = "{{config_root}}/spark", run = 'mise test-unit-with-postgres' }
+spark-cli-local = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd apps/spark-cli && yarn build && yarn run cli:local' }
+spark-cli-minikube = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd apps/spark-cli && yarn build && yarn run cli:minikube' }
+spark-cli-regtest = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd apps/spark-cli && yarn build && yarn run cli' }
+spark-cli-mainnet = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd apps/spark-cli && yarn build && yarn run cli:mainnet' }
+spark-cli-dev = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd apps/spark-cli && yarn build && yarn run cli:dev' }
+spark-cli-dev-mainnet = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd apps/spark-cli && yarn build && yarn run cli:dev:mainnet' }
+spark-cli-loadtest = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages && cd apps/spark-cli && yarn build && yarn run cli:loadtest' }
+test-go = { dir = "{{config_root}}/spark", run = 'mise test-unit' }
 test-grpc = { dir = "{{config_root}}/spark", run = 'mise test-grpc' }
 test-grpc-minikube = { dir = "{{config_root}}/spark", run = 'mise test-grpc-minikube' }
+build-js-packages = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn build:packages' }
 test-js = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn test' }
 test-js-integration = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn test:integration' }
 test-js-integration-minikube = { dir = "{{config_root}}/sdks/js", run = 'yarn install && MINIKUBE_IP=$(minikube ip) yarn test:integration' }
 test-js-integration-ssp = { dir = "{{config_root}}/sdks/js", run = 'yarn install && yarn test:integration:ssp' }
 test-js-integration-ssp-minikube = { dir = "{{config_root}}/sdks/js", run = 'MINIKUBE_IP=$(minikube ip) yarn install && yarn test:integration:ssp' }
+fix-atlas-conflicts = { dir = "{{config_root}}", run = 'scripts/fix-atlas-conflicts.sh' }
+fix-ent-conflicts = { dir = "{{config_root}}", run = 'scripts/fix-ent-conflicts.sh' }
 
 [tasks.money-dev]
 description = "Send regtest BTC on dev to <address> [amount (default=0.0001)]"
@@ -47,6 +53,16 @@ run = """kubectl --context dev -n bitcoin exec -it regtest-miner-bitcoind-0 -- \
     -datadir=/data \
     sendtoaddress {{arg(name="addr")}} {{arg(name="amount", default="0.0001")}}
     """
+
+[tasks.bcli-mk]
+description = "Run arbitrary bitcoin-cli commands against regtest in minikube"
+run = """
+kubectl --context minikube -n bitcoin exec -it regtest-bitcoind-0 -c bitcoind -- \
+  bitcoin-cli \
+    -conf=/etc/bitcoin/bitcoin.conf \
+    -datadir=/data \
+    "$@"
+"""
 
 [tasks.money-mk]
 description = "Send regtest BTC in minikube to <address> [amount (default=0.0001)]"
@@ -150,6 +166,24 @@ else \
   exit 2; \
 fi'"""
 
+[tasks.mempool-mk]
+description = "List all txids in mempool (pass 'true' for verbose details)"
+run = """kubectl --context minikube -n bitcoin exec regtest-bitcoind-0 -- \
+  bitcoin-cli \
+    -conf=/etc/bitcoin/bitcoin.conf \
+    -datadir=/data \
+    getrawmempool "$@"
+"""
+
+[tasks.mempool-info-mk]
+description = "Show mempool summary stats (count, size, fees)"
+run = """kubectl --context minikube -n bitcoin exec regtest-bitcoind-0 -- \
+  bitcoin-cli \
+    -conf=/etc/bitcoin/bitcoin.conf \
+    -datadir=/data \
+    getmempoolinfo
+"""
+
 [tasks.gen-ent]
 description = "Generate ent code for Spark schemas"
 dir = "{{config_root}}/spark"
@@ -167,6 +201,11 @@ description = "Generate SSP API code"
 dir = "{{config_root}}/spark"
 run = "go generate ./testing/wallet/ssp_api/..."
 
+[tasks.release]
+description = "Cut a prerelease (canary) from the RC branch (use flags to promote or skip canary)"
+dir = "{{config_root}}"
+run = "scripts/release.sh"
+
 [tasks.gen-protos]
 description = "Generate Go code from proto files (via Make)"
 dir = "{{config_root}}"
@@ -176,6 +215,13 @@ run = "make all"
 description = "Clean generated proto files"
 dir = "{{config_root}}"
 run = "make clean"
+
+[tasks.gen-protos-with-ts]
+description = "Generates Go code from protos AND the typescript client changes"
+depends = ["gen-protos"]
+dir = "{{config_root}}/sdks/js/packages/spark-sdk/"
+run = "yarn generate:proto"
+
 
 [settings]
 activate_aggressive = true

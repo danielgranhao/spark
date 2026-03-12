@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 
 	pb "github.com/lightsparkdev/spark/proto/spark"
 	tokenpb "github.com/lightsparkdev/spark/proto/spark_token"
+	legacypb "github.com/lightsparkdev/spark/proto/spark_token_legacy"
 )
 
 var (
@@ -37,7 +39,7 @@ func TestSparkTokenTransactionFromTokenProto(t *testing.T) {
 	tests := []struct {
 		name  string
 		input *tokenpb.TokenTransaction
-		want  *pb.TokenTransaction
+		want  *legacypb.TokenTransaction
 	}{
 		{
 			name: "valid mint transaction",
@@ -62,8 +64,8 @@ func TestSparkTokenTransactionFromTokenProto(t *testing.T) {
 				},
 				ClientCreatedTimestamp: timestamppb.New(time.UnixMilli(1234567890)),
 			},
-			want: &pb.TokenTransaction{
-				TokenOutputs: []*pb.TokenOutput{
+			want: &legacypb.TokenTransaction{
+				TokenOutputs: []*legacypb.TokenOutput{
 					{
 						Id:                            proto.String("output1"),
 						OwnerPublicKey:                ownerPubKey,
@@ -76,8 +78,8 @@ func TestSparkTokenTransactionFromTokenProto(t *testing.T) {
 				},
 				SparkOperatorIdentityPublicKeys: [][]byte{op1Key, op2Key},
 				Network:                         pb.Network_MAINNET,
-				TokenInputs: &pb.TokenTransaction_MintInput{
-					MintInput: &pb.TokenMintInput{
+				TokenInputs: &legacypb.TokenTransaction_MintInput{
+					MintInput: &legacypb.TokenMintInput{
 						IssuerPublicKey:         issuerPubKey,
 						IssuerProvidedTimestamp: 1234567890,
 					},
@@ -107,8 +109,8 @@ func TestSparkTokenTransactionFromTokenProto(t *testing.T) {
 				},
 				ClientCreatedTimestamp: timestamppb.New(time.UnixMilli(0)),
 			},
-			want: &pb.TokenTransaction{
-				TokenOutputs: []*pb.TokenOutput{
+			want: &legacypb.TokenTransaction{
+				TokenOutputs: []*legacypb.TokenOutput{
 					{
 						Id:                            proto.String("output1"),
 						OwnerPublicKey:                ownerPubKey,
@@ -121,8 +123,8 @@ func TestSparkTokenTransactionFromTokenProto(t *testing.T) {
 				},
 				SparkOperatorIdentityPublicKeys: [][]byte{op1Key, op2Key},
 				Network:                         pb.Network_MAINNET,
-				TokenInputs: &pb.TokenTransaction_MintInput{
-					MintInput: &pb.TokenMintInput{
+				TokenInputs: &legacypb.TokenTransaction_MintInput{
+					MintInput: &legacypb.TokenMintInput{
 						IssuerPublicKey:         issuerPubKey,
 						IssuerProvidedTimestamp: 0,
 					},
@@ -160,8 +162,8 @@ func TestSparkTokenTransactionFromTokenProto(t *testing.T) {
 					},
 				},
 			},
-			want: &pb.TokenTransaction{
-				TokenOutputs: []*pb.TokenOutput{
+			want: &legacypb.TokenTransaction{
+				TokenOutputs: []*legacypb.TokenOutput{
 					{
 						Id:                            proto.String("output1"),
 						OwnerPublicKey:                ownerPubKey,
@@ -174,9 +176,9 @@ func TestSparkTokenTransactionFromTokenProto(t *testing.T) {
 				},
 				SparkOperatorIdentityPublicKeys: [][]byte{op1Key},
 				Network:                         pb.Network_MAINNET,
-				TokenInputs: &pb.TokenTransaction_TransferInput{
-					TransferInput: &pb.TokenTransferInput{
-						OutputsToSpend: []*pb.TokenOutputToSpend{
+				TokenInputs: &legacypb.TokenTransaction_TransferInput{
+					TransferInput: &legacypb.TokenTransferInput{
+						OutputsToSpend: []*legacypb.TokenOutputToSpend{
 							{
 								PrevTokenTransactionHash: prevHash1[:],
 								PrevTokenTransactionVout: 0,
@@ -203,12 +205,12 @@ func TestSparkTokenTransactionFromTokenProto(t *testing.T) {
 				},
 				ClientCreatedTimestamp: timestamppb.New(time.UnixMilli(1234567890)),
 			},
-			want: &pb.TokenTransaction{
-				TokenOutputs:                    []*pb.TokenOutput{},
+			want: &legacypb.TokenTransaction{
+				TokenOutputs:                    []*legacypb.TokenOutput{},
 				SparkOperatorIdentityPublicKeys: [][]byte{},
 				Network:                         pb.Network_MAINNET,
-				TokenInputs: &pb.TokenTransaction_MintInput{
-					MintInput: &pb.TokenMintInput{
+				TokenInputs: &legacypb.TokenTransaction_MintInput{
+					MintInput: &legacypb.TokenMintInput{
 						IssuerPublicKey:         issuerPubKey,
 						IssuerProvidedTimestamp: 1234567890,
 					},
@@ -706,10 +708,13 @@ func TestConvertBroadcastToStart(t *testing.T) {
 
 func TestRoundTrip_Final_Legacy_Equivalent(t *testing.T) {
 	ts := timestamppb.New(time.UnixMilli(333))
+	// For V3+ transactions, operator keys must be sorted for deterministic hashing
+	sortedOpKeys := [][]byte{op1Key, op2Key}
+	slices.SortFunc(sortedOpKeys, bytes.Compare)
 	final := &tokenpb.FinalTokenTransaction{
 		Version: 3,
 		TokenTransactionMetadata: &tokenpb.TokenTransactionMetadata{
-			SparkOperatorIdentityPublicKeys: [][]byte{op1Key, op2Key},
+			SparkOperatorIdentityPublicKeys: sortedOpKeys,
 			Network:                         pb.Network_REGTEST,
 			ClientCreatedTimestamp:          ts,
 			InvoiceAttachments:              []*tokenpb.InvoiceAttachment{{SparkInvoice: "inv-1"}, {SparkInvoice: "inv-2"}},

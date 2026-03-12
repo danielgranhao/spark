@@ -86,6 +86,26 @@ func (dau *DepositAddressUpdate) ClearConfirmationTxid() *DepositAddressUpdate {
 	return dau
 }
 
+// SetAvailabilityConfirmedAt sets the "availability_confirmed_at" field.
+func (dau *DepositAddressUpdate) SetAvailabilityConfirmedAt(t time.Time) *DepositAddressUpdate {
+	dau.mutation.SetAvailabilityConfirmedAt(t)
+	return dau
+}
+
+// SetNillableAvailabilityConfirmedAt sets the "availability_confirmed_at" field if the given value is not nil.
+func (dau *DepositAddressUpdate) SetNillableAvailabilityConfirmedAt(t *time.Time) *DepositAddressUpdate {
+	if t != nil {
+		dau.SetAvailabilityConfirmedAt(*t)
+	}
+	return dau
+}
+
+// ClearAvailabilityConfirmedAt clears the value of the "availability_confirmed_at" field.
+func (dau *DepositAddressUpdate) ClearAvailabilityConfirmedAt() *DepositAddressUpdate {
+	dau.mutation.ClearAvailabilityConfirmedAt()
+	return dau
+}
+
 // SetAddressSignatures sets the "address_signatures" field.
 func (dau *DepositAddressUpdate) SetAddressSignatures(m map[string][]uint8) *DepositAddressUpdate {
 	dau.mutation.SetAddressSignatures(m)
@@ -107,6 +127,18 @@ func (dau *DepositAddressUpdate) SetPossessionSignature(b []byte) *DepositAddres
 // ClearPossessionSignature clears the value of the "possession_signature" field.
 func (dau *DepositAddressUpdate) ClearPossessionSignature() *DepositAddressUpdate {
 	dau.mutation.ClearPossessionSignature()
+	return dau
+}
+
+// SetPossessionSignatureV2 sets the "possession_signature_v2" field.
+func (dau *DepositAddressUpdate) SetPossessionSignatureV2(b []byte) *DepositAddressUpdate {
+	dau.mutation.SetPossessionSignatureV2(b)
+	return dau
+}
+
+// ClearPossessionSignatureV2 clears the value of the "possession_signature_v2" field.
+func (dau *DepositAddressUpdate) ClearPossessionSignatureV2() *DepositAddressUpdate {
+	dau.mutation.ClearPossessionSignatureV2()
 	return dau
 }
 
@@ -349,6 +381,12 @@ func (dau *DepositAddressUpdate) sqlSave(ctx context.Context) (n int, err error)
 	if dau.mutation.ConfirmationTxidCleared() {
 		_spec.ClearField(depositaddress.FieldConfirmationTxid, field.TypeString)
 	}
+	if value, ok := dau.mutation.AvailabilityConfirmedAt(); ok {
+		_spec.SetField(depositaddress.FieldAvailabilityConfirmedAt, field.TypeTime, value)
+	}
+	if dau.mutation.AvailabilityConfirmedAtCleared() {
+		_spec.ClearField(depositaddress.FieldAvailabilityConfirmedAt, field.TypeTime)
+	}
 	if value, ok := dau.mutation.AddressSignatures(); ok {
 		_spec.SetField(depositaddress.FieldAddressSignatures, field.TypeJSON, value)
 	}
@@ -360,6 +398,12 @@ func (dau *DepositAddressUpdate) sqlSave(ctx context.Context) (n int, err error)
 	}
 	if dau.mutation.PossessionSignatureCleared() {
 		_spec.ClearField(depositaddress.FieldPossessionSignature, field.TypeBytes)
+	}
+	if value, ok := dau.mutation.PossessionSignatureV2(); ok {
+		_spec.SetField(depositaddress.FieldPossessionSignatureV2, field.TypeBytes, value)
+	}
+	if dau.mutation.PossessionSignatureV2Cleared() {
+		_spec.ClearField(depositaddress.FieldPossessionSignatureV2, field.TypeBytes)
 	}
 	if value, ok := dau.mutation.NodeID(); ok {
 		_spec.SetField(depositaddress.FieldNodeID, field.TypeUUID, value)
@@ -567,6 +611,26 @@ func (dauo *DepositAddressUpdateOne) ClearConfirmationTxid() *DepositAddressUpda
 	return dauo
 }
 
+// SetAvailabilityConfirmedAt sets the "availability_confirmed_at" field.
+func (dauo *DepositAddressUpdateOne) SetAvailabilityConfirmedAt(t time.Time) *DepositAddressUpdateOne {
+	dauo.mutation.SetAvailabilityConfirmedAt(t)
+	return dauo
+}
+
+// SetNillableAvailabilityConfirmedAt sets the "availability_confirmed_at" field if the given value is not nil.
+func (dauo *DepositAddressUpdateOne) SetNillableAvailabilityConfirmedAt(t *time.Time) *DepositAddressUpdateOne {
+	if t != nil {
+		dauo.SetAvailabilityConfirmedAt(*t)
+	}
+	return dauo
+}
+
+// ClearAvailabilityConfirmedAt clears the value of the "availability_confirmed_at" field.
+func (dauo *DepositAddressUpdateOne) ClearAvailabilityConfirmedAt() *DepositAddressUpdateOne {
+	dauo.mutation.ClearAvailabilityConfirmedAt()
+	return dauo
+}
+
 // SetAddressSignatures sets the "address_signatures" field.
 func (dauo *DepositAddressUpdateOne) SetAddressSignatures(m map[string][]uint8) *DepositAddressUpdateOne {
 	dauo.mutation.SetAddressSignatures(m)
@@ -588,6 +652,18 @@ func (dauo *DepositAddressUpdateOne) SetPossessionSignature(b []byte) *DepositAd
 // ClearPossessionSignature clears the value of the "possession_signature" field.
 func (dauo *DepositAddressUpdateOne) ClearPossessionSignature() *DepositAddressUpdateOne {
 	dauo.mutation.ClearPossessionSignature()
+	return dauo
+}
+
+// SetPossessionSignatureV2 sets the "possession_signature_v2" field.
+func (dauo *DepositAddressUpdateOne) SetPossessionSignatureV2(b []byte) *DepositAddressUpdateOne {
+	dauo.mutation.SetPossessionSignatureV2(b)
+	return dauo
+}
+
+// ClearPossessionSignatureV2 clears the value of the "possession_signature_v2" field.
+func (dauo *DepositAddressUpdateOne) ClearPossessionSignatureV2() *DepositAddressUpdateOne {
+	dauo.mutation.ClearPossessionSignatureV2()
 	return dauo
 }
 
@@ -860,6 +936,12 @@ func (dauo *DepositAddressUpdateOne) sqlSave(ctx context.Context) (_node *Deposi
 	if dauo.mutation.ConfirmationTxidCleared() {
 		_spec.ClearField(depositaddress.FieldConfirmationTxid, field.TypeString)
 	}
+	if value, ok := dauo.mutation.AvailabilityConfirmedAt(); ok {
+		_spec.SetField(depositaddress.FieldAvailabilityConfirmedAt, field.TypeTime, value)
+	}
+	if dauo.mutation.AvailabilityConfirmedAtCleared() {
+		_spec.ClearField(depositaddress.FieldAvailabilityConfirmedAt, field.TypeTime)
+	}
 	if value, ok := dauo.mutation.AddressSignatures(); ok {
 		_spec.SetField(depositaddress.FieldAddressSignatures, field.TypeJSON, value)
 	}
@@ -871,6 +953,12 @@ func (dauo *DepositAddressUpdateOne) sqlSave(ctx context.Context) (_node *Deposi
 	}
 	if dauo.mutation.PossessionSignatureCleared() {
 		_spec.ClearField(depositaddress.FieldPossessionSignature, field.TypeBytes)
+	}
+	if value, ok := dauo.mutation.PossessionSignatureV2(); ok {
+		_spec.SetField(depositaddress.FieldPossessionSignatureV2, field.TypeBytes, value)
+	}
+	if dauo.mutation.PossessionSignatureV2Cleared() {
+		_spec.ClearField(depositaddress.FieldPossessionSignatureV2, field.TypeBytes)
 	}
 	if value, ok := dauo.mutation.NodeID(); ok {
 		_spec.SetField(depositaddress.FieldNodeID, field.TypeUUID, value)

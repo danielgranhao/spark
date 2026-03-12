@@ -30,10 +30,10 @@ func MaybeApplyFee(amount int64) int64 {
 const (
 	// Estimated transaction size in bytes for fee calculation
 	estimatedTxSize = 191
-	// Default fee rate in satoshis per vbyte
-	defaultSatsPerVbyte = 5
-	// DefaultFeeSats is the default fee in satoshis (estimatedTxSize * defaultSatsPerVbyte)
-	DefaultFeeSats = estimatedTxSize * defaultSatsPerVbyte
+	// DefaultSatsPerVbyte is the default fee rate in satoshis per vbyte.
+	DefaultSatsPerVbyte = 5
+	// DefaultFeeSats is the default fee in satoshis (estimatedTxSize * DefaultSatsPerVbyte)
+	DefaultFeeSats = estimatedTxSize * DefaultSatsPerVbyte
 )
 
 // P2TRScriptFromPubKey returns a P2TR script from a public key.
@@ -43,12 +43,16 @@ func P2TRScriptFromPubKey(pubKey keys.Public) ([]byte, error) {
 }
 
 func P2TRRawAddressFromPublicKey(pubKey keys.Public, network btcnetwork.Network) (btcutil.Address, error) {
+	params, err := network.Params()
+	if err != nil {
+		return nil, err
+	}
 	// Tweak the internal key with empty merkle root
 	taprootKey := txscript.ComputeTaprootKeyNoScript(pubKey.ToBTCEC())
 	return btcutil.NewAddressTaproot(
 		// Convert a 33 byte public key to a 32 byte x-only public key
 		schnorr.SerializePubKey(taprootKey),
-		network.Params(),
+		params,
 	)
 }
 
@@ -68,7 +72,10 @@ func P2TRAddressFromPkScript(pkScript []byte, network btcnetwork.Network) (*stri
 		return nil, err
 	}
 
-	networkParams := network.Params()
+	networkParams, err := network.Params()
+	if err != nil {
+		return nil, err
+	}
 	if parsedScript.Class() == txscript.WitnessV1TaprootTy {
 		address, err := parsedScript.Address(networkParams)
 		if err != nil {
@@ -159,7 +166,7 @@ func validateTxStructure(rawTxBytes []byte) error {
 	// Skip inputs - we just need to get past them to read output count
 	// Each input is at minimum 41 bytes (32 prevout hash + 4 index + 1 script len + 4 sequence)
 	minInputSize := 41
-	for i := uint64(0); i < inputCount; i++ {
+	for range inputCount {
 		if offset+minInputSize > len(rawTxBytes) {
 			return fmt.Errorf("transaction truncated while reading inputs")
 		}
@@ -169,6 +176,9 @@ func validateTxStructure(rawTxBytes []byte) error {
 		scriptLen, bytesReadLoop := readVarInt(rawTxBytes[offset:])
 		if bytesReadLoop == 0 {
 			return fmt.Errorf("failed to read input script length")
+		}
+		if scriptLen > uint64(len(rawTxBytes)-offset-bytesReadLoop) {
+			return fmt.Errorf("input script length %d exceeds remaining transaction bytes, overflow detected", scriptLen)
 		}
 		offset += bytesReadLoop + int(scriptLen)
 		// Skip sequence (4 bytes)
@@ -307,8 +317,10 @@ func UpdateTxWithSignature(rawTxBytes []byte, vin int, signature []byte) ([]byte
 	return buf.Bytes(), nil
 }
 
-// VerifySignatureSingleInput verifies that a signed transaction's input
-// properly spends the prevOutput provided.
+// VerifySignatureSingleInput verifies a single input's signature for a transaction
+// that only has one input. Use this when the tx has a single input and you have
+// the prev output directly. For multi-input transactions, use VerifySignatureInput
+// or VerifySignatureMultiInput instead, since Taproot sighash commits to all prev outputs.
 func VerifySignatureSingleInput(signedTx *wire.MsgTx, vin int, prevOutput *wire.TxOut) error {
 	if err := ValidateBitcoinTxVersion(signedTx); err != nil {
 		return fmt.Errorf("transaction version validation failed: %w", err)
@@ -331,6 +343,33 @@ func VerifySignatureSingleInput(signedTx *wire.MsgTx, vin int, prevOutput *wire.
 	return nil
 }
 
+// VerifySignatureInput verifies a single input's signature in a multi-input transaction.
+// Unlike VerifySignatureSingleInput, it takes a PrevOutputFetcher with all prev outputs,
+// which is required for correct Taproot sighash computation. Use this when the tx has
+// multiple inputs but only one input's witness needs verification (e.g., refund txs where
+// the user signs input 0 but the connector input is unsigned).
+func VerifySignatureInput(signedTx *wire.MsgTx, vin int, prevOutputFetcher txscript.PrevOutputFetcher) error {
+	if err := ValidateBitcoinTxVersion(signedTx); err != nil {
+		return fmt.Errorf("transaction version validation failed: %w", err)
+	}
+
+	txOut := prevOutputFetcher.FetchPrevOutput(signedTx.TxIn[vin].PreviousOutPoint)
+	if txOut == nil {
+		return fmt.Errorf("previous output not found for input %d (outpoint %s)", vin, signedTx.TxIn[vin].PreviousOutPoint)
+	}
+	hashCache := txscript.NewTxSigHashes(signedTx, prevOutputFetcher)
+	verifyFlags := txscript.StandardVerifyFlags & ^txscript.ScriptVerifyDiscourageUpgradeableWitnessProgram
+	vm, err := txscript.NewEngine(txOut.PkScript, signedTx, vin, verifyFlags,
+		nil, hashCache, txOut.Value, prevOutputFetcher)
+	if err != nil {
+		return err
+	}
+	return vm.Execute()
+}
+
+// VerifySignatureMultiInput verifies all input signatures in a multi-input transaction.
+// Use this when every input in the tx has a valid witness that needs verification
+// (e.g., fully signed coop exit transactions).
 func VerifySignatureMultiInput(signedTx *wire.MsgTx, prevOutputFetcher txscript.PrevOutputFetcher) error {
 	hashCache := txscript.NewTxSigHashes(signedTx, prevOutputFetcher)
 	for vin, txIn := range signedTx.TxIn {
@@ -421,4 +460,74 @@ func CompareTransactions(txA, txB *wire.MsgTx) error {
 		}
 	}
 	return nil
+}
+
+// ValidatePushBytes parses a Bitcoin script push operation and validates its format.
+// It advances the buffer past the push opcode and length bytes, then validates that
+// the remaining buffer contains exactly the expected number of data bytes (without consuming them).
+// Returns nil if valid.
+// Handles OP_PUSHDATA1 (0x4c), OP_PUSHDATA2 (0x4d), OP_PUSHDATA4 (0x4e), and direct pushes (0x01-0x4b).
+// If an error occurs, there are no guarantees about the buffer's subsequent state.
+func ValidatePushBytes(script *bytes.Buffer) error {
+	totalLen := script.Len() + 1 // Account for OP_RETURN
+	if totalLen <= 2 {
+		return fmt.Errorf("script too short: no push operation")
+	}
+
+	pushOp, err := ReadByte(script)
+	if err != nil {
+		return err
+	}
+
+	var dataLength int
+	switch {
+	case pushOp >= 0x01 && pushOp <= 0x4b:
+		dataLength = int(pushOp)
+	case pushOp == txscript.OP_PUSHDATA1:
+		length, err := ReadByte(script)
+		if err != nil {
+			return fmt.Errorf("script too short for OP_PUSHDATA1")
+		}
+		dataLength = int(length)
+	case pushOp == txscript.OP_PUSHDATA2:
+		lengthBytes := script.Next(2)
+		if len(lengthBytes) != 2 {
+			return fmt.Errorf("script too short for OP_PUSHDATA2")
+		}
+		dataLength = int(binary.LittleEndian.Uint16(lengthBytes))
+	case pushOp == txscript.OP_PUSHDATA4:
+		lengthBytes := script.Next(4)
+		if len(lengthBytes) != 4 {
+			return fmt.Errorf("script too short for OP_PUSHDATA4")
+		}
+		dataLength = int(binary.LittleEndian.Uint32(lengthBytes))
+	default:
+		return fmt.Errorf("unparseable pushBytes")
+	}
+
+	if script.Len() != dataLength {
+		return fmt.Errorf("script length mismatch: expected %d bytes, got %d", dataLength, script.Len())
+	}
+
+	return nil
+}
+
+// ReadBytes reads exactly 'want' bytes from the buffer.
+// Returns an error if insufficient data is available.
+func ReadBytes(buf *bytes.Buffer, want int) ([]byte, error) {
+	asBytes := buf.Next(want)
+	if len(asBytes) != want {
+		return nil, fmt.Errorf("insufficient data: expected %d byte(s), got %d", want, len(asBytes))
+	}
+	return asBytes, nil
+}
+
+// ReadByte reads exactly one byte from the buffer.
+// Returns an error if no data is available.
+func ReadByte(buf *bytes.Buffer) (byte, error) {
+	asByte, err := buf.ReadByte()
+	if err != nil {
+		return 0, fmt.Errorf("insufficient data: expected 1 byte, got 0")
+	}
+	return asByte, nil
 }

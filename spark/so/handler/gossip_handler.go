@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/lightsparkdev/spark/common"
+	"github.com/lightsparkdev/spark/common/btcnetwork"
 	"github.com/lightsparkdev/spark/common/keys"
 	"github.com/lightsparkdev/spark/common/logging"
 	"github.com/lightsparkdev/spark/common/uuids"
@@ -18,8 +20,33 @@ import (
 	st "github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	enttree "github.com/lightsparkdev/spark/so/ent/tree"
 	"github.com/lightsparkdev/spark/so/ent/treenode"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
+	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/status"
 )
+
+var gossipMessageHandledTotal metric.Int64Counter
+
+func init() {
+	meter := otel.GetMeterProvider().Meter("spark.grpc")
+
+	counter, err := meter.Int64Counter(
+		"gossip.message_handled_total",
+		metric.WithDescription("Total number of gossip messages handled by type and status"),
+		metric.WithUnit("{count}"),
+	)
+	if err != nil {
+		otel.Handle(err)
+		if counter == nil {
+			counter = noop.Int64Counter{}
+		}
+	}
+	gossipMessageHandledTotal = counter
+}
 
 type GossipHandler struct {
 	config *so.Config
@@ -29,9 +56,16 @@ func NewGossipHandler(config *so.Config) *GossipHandler {
 	return &GossipHandler{config: config}
 }
 
+// Routes incoming gossip messages to their appropriate handlers based on message type.
+// The forCoordinator flag indicates whether this operator is the coordinator for the operation,
+// which affects how certain message types (e.g., FinalizeTransfer) are processed.
+// Returns nil for non-retryable errors to prevent the gossip system from retrying failed operations.
 func (h *GossipHandler) HandleGossipMessage(ctx context.Context, gossipMessage *pbgossip.GossipMessage, forCoordinator bool) error {
 	logger := logging.GetLoggerFromContext(ctx)
 	logger.Sugar().Infof("Handling gossip message with ID %s", gossipMessage.MessageId)
+
+	messageType := getGossipMessageType(gossipMessage)
+
 	var err error
 	switch gossipMessage.Message.(type) {
 	case *pbgossip.GossipMessage_CancelTransfer:
@@ -64,6 +98,9 @@ func (h *GossipHandler) HandleGossipMessage(ctx context.Context, gossipMessage *
 	case *pbgossip.GossipMessage_RollbackUtxoSwap:
 		rollbackUtxoSwap := gossipMessage.GetRollbackUtxoSwap()
 		err = h.handleRollbackUtxoSwapGossipMessage(ctx, rollbackUtxoSwap)
+	case *pbgossip.GossipMessage_RollbackInstantUtxoSwap:
+		rollbackInstantUtxoSwap := gossipMessage.GetRollbackInstantUtxoSwap()
+		err = h.handleRollbackInstantUtxoSwapGossipMessage(ctx, rollbackInstantUtxoSwap)
 	case *pbgossip.GossipMessage_DepositCleanup:
 		depositCleanup := gossipMessage.GetDepositCleanup()
 		err = h.handleDepositCleanupGossipMessage(ctx, depositCleanup)
@@ -74,18 +111,39 @@ func (h *GossipHandler) HandleGossipMessage(ctx context.Context, gossipMessage *
 		settleSwapKeyTweak := gossipMessage.GetSettleSwapKeyTweak()
 		err = h.handleSettleSwapKeyTweakGossipMessage(ctx, settleSwapKeyTweak)
 	case *pbgossip.GossipMessage_FinalizeRefreshTimelock:
-		return fmt.Errorf("gossip message has been deprecated: %T", gossipMessage.Message)
+		err = fmt.Errorf("gossip message has been deprecated: %T", gossipMessage.Message)
 	case *pbgossip.GossipMessage_FinalizeExtendLeaf:
-		return fmt.Errorf("gossip message has been deprecated: %T", gossipMessage.Message)
+		err = fmt.Errorf("gossip message has been deprecated: %T", gossipMessage.Message)
+	case *pbgossip.GossipMessage_ArchiveStaticDepositAddress:
+		archiveStaticDepositAddress := gossipMessage.GetArchiveStaticDepositAddress()
+		err = h.handleArchiveStaticDepositAddressGossipMessage(ctx, archiveStaticDepositAddress)
+	case *pbgossip.GossipMessage_FinalizeTransferReceiver:
+		finalizeTransferReceiver := gossipMessage.GetFinalizeTransferReceiver()
+		err = h.handleFinalizeTransferReceiverGossipMessage(ctx, finalizeTransferReceiver, forCoordinator)
 	default:
-		return fmt.Errorf("unsupported gossip message type: %T", gossipMessage.Message)
+		err = fmt.Errorf("unsupported gossip message type: %T", gossipMessage.Message)
 	}
 
 	if err != nil {
 		logger.With(zap.Error(err)).Sugar().Errorf("Handling for gossip message ID %s failed with error: %v", gossipMessage.MessageId, err)
-		return err
 	}
-	return nil
+
+	// Record metric
+	statusCode := status.Code(err)
+	gossipMessageHandledTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("message_type", messageType),
+		semconv.RPCGRPCStatusCodeKey.Int(int(statusCode)),
+	))
+
+	return err
+}
+
+func getGossipMessageType(msg *pbgossip.GossipMessage) string {
+	if msg.Message == nil {
+		return "unknown"
+	}
+	// Return the raw protobuf type name, e.g., "*gossip.GossipMessage_CancelTransfer"
+	return fmt.Sprintf("%T", msg.Message)
 }
 
 func (h *GossipHandler) handleCancelTransferGossipMessage(ctx context.Context, cancelTransfer *pbgossip.GossipMessageCancelTransfer) error {
@@ -96,6 +154,10 @@ func (h *GossipHandler) handleCancelTransferGossipMessage(ctx context.Context, c
 	transferHandler := NewBaseTransferHandler(h.config)
 	err = transferHandler.CancelTransferInternal(ctx, transferID)
 	if err != nil {
+		if ent.IsNotFound(err) {
+			// The transfer is not created, treat it as successful cancellation.
+			return nil
+		}
 		logger := logging.GetLoggerFromContext(ctx)
 		logger.With(zap.Error(err)).Sugar().Errorf("Failed to cancel transfer %s", transferID)
 	}
@@ -126,7 +188,12 @@ func (h *GossipHandler) handleRollbackTransfer(ctx context.Context, req *pbgossi
 	logger.Sugar().Infof("Handling rollback transfer gossip message for transfer %s", transferID)
 
 	baseHandler := NewBaseTransferHandler(h.config)
-	if err := baseHandler.RollbackTransfer(ctx, transferID); err != nil {
+	err = baseHandler.RollbackTransfer(ctx, transferID)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			// The transfer is not created, treat it as successful rollback.
+			return nil
+		}
 		logger.With(zap.Error(err)).Sugar().Errorf("Failed to rollback transfer %s", transferID)
 	}
 	return err
@@ -304,7 +371,25 @@ func (h *GossipHandler) handleRollbackUtxoSwapGossipMessage(ctx context.Context,
 		CoordinatorPublicKey: rollbackUtxoSwap.CoordinatorPublicKey,
 	})
 	if err != nil {
-		logger.Error("Failed to rollback utxo swap with gossip message, will not retry, on-call to intervene", zap.Error(err))
+		logger.Error("failed to rollback utxo swap with gossip message", zap.Error(err))
+	}
+	return err
+}
+
+func (h *GossipHandler) handleRollbackInstantUtxoSwapGossipMessage(ctx context.Context, rollbackInstantUtxoSwap *pbgossip.GossipMessageRollbackInstantUtxoSwap) error {
+	logger := logging.GetLoggerFromContext(ctx)
+	logger.Info("Handling rollback instant utxo swap gossip message")
+
+	depositHandler := NewInternalDepositHandler(h.config)
+	_, err := depositHandler.RollbackInstantUtxoSwap(ctx, h.config, &pbinternal.RollbackInstantUtxoSwapRequest{
+		OnChainUtxo:          rollbackInstantUtxoSwap.OnChainUtxo,
+		Signature:            rollbackInstantUtxoSwap.Signature,
+		CoordinatorPublicKey: rollbackInstantUtxoSwap.CoordinatorPublicKey,
+		RollbackFromStatuses: rollbackInstantUtxoSwap.RollbackFromStatuses,
+		RollbackToStatus:     rollbackInstantUtxoSwap.RollbackToStatus,
+	})
+	if err != nil {
+		logger.Error("failed to rollback instant utxo swap with gossip message", zap.Error(err))
 	}
 	return err
 }
@@ -371,6 +456,7 @@ func (h *GossipHandler) handleUpdateWalletSettingGossipMessage(ctx context.Conte
 	ownerIdentityPubKey, err := keys.ParsePublicKey(updateWalletSetting.GetOwnerIdentityPublicKey())
 	if err != nil {
 		logger.Error("Failed to parse owner identity public key", zap.Error(err))
+		return fmt.Errorf("failed to parse owner identity public key: %w", err)
 	}
 	logger.Sugar().Infof("Handling wallet setting update gossip message for identity public key %s", ownerIdentityPubKey)
 
@@ -383,4 +469,65 @@ func (h *GossipHandler) handleUpdateWalletSettingGossipMessage(ctx context.Conte
 
 	logger.Sugar().Infof("Successfully updated wallet setting from gossip message for identity public key %x", ownerIdentityPubKey)
 	return nil
+}
+
+func (h *GossipHandler) handleArchiveStaticDepositAddressGossipMessage(ctx context.Context, archiveStaticDepositAddress *pbgossip.GossipMessageArchiveStaticDepositAddress) error {
+	logger := logging.GetLoggerFromContext(ctx)
+
+	// Parse coordinator public key
+	coordinatorPubKey, err := keys.ParsePublicKey(archiveStaticDepositAddress.CoordinatorPublicKey)
+	if err != nil {
+		logger.Error("failed to parse coordinator public key", zap.Error(err))
+		return fmt.Errorf("failed to parse coordinator public key: %w", err)
+	}
+
+	// Parse owner identity public key
+	ownerIDPubKey, err := keys.ParsePublicKey(archiveStaticDepositAddress.OwnerIdentityPublicKey)
+	if err != nil {
+		logger.Error("failed to parse owner identity public key", zap.Error(err))
+		return fmt.Errorf("failed to parse owner identity public key: %w", err)
+	}
+
+	network, err := btcnetwork.FromProtoNetwork(archiveStaticDepositAddress.Network)
+	if err != nil {
+		logger.Error("failed to parse network", zap.Error(err))
+		return fmt.Errorf("failed to parse network: %w", err)
+	}
+
+	messageHash, err := CreateArchiveStaticDepositAddressStatement(ownerIDPubKey, network, archiveStaticDepositAddress.Address)
+	if err != nil {
+		logger.Error("failed to create archive statement", zap.Error(err))
+		return fmt.Errorf("failed to create archive statement: %w", err)
+	}
+
+	if err := common.VerifyECDSASignature(coordinatorPubKey, archiveStaticDepositAddress.Signature, messageHash); err != nil {
+		logger.Error("failed to verify coordinator signature", zap.Error(err))
+		return fmt.Errorf("failed to verify coordinator signature: %w", err)
+	}
+
+	staticDepositHandler := NewStaticDepositInternalHandler(h.config)
+	err = staticDepositHandler.ArchiveStaticDepositAddress(ctx, archiveStaticDepositAddress.OwnerIdentityPublicKey, archiveStaticDepositAddress.Network, archiveStaticDepositAddress.Address)
+	if err != nil {
+		logger.Sugar().Errorf("failed to archive static deposit address from gossip message: %w", err)
+		return err
+	}
+
+	logger.Sugar().Infof("Successfully archived static deposit address %s from gossip message for identity public key %x", archiveStaticDepositAddress.Address, ownerIDPubKey.Serialize())
+	return nil
+}
+
+func (h *GossipHandler) handleFinalizeTransferReceiverGossipMessage(ctx context.Context, req *pbgossip.GossipMessageFinalizeTransferReceiver, forCoordinator bool) error {
+	logger := logging.GetLoggerFromContext(ctx)
+	logger.Info("Handling finalize transfer receiver gossip message")
+
+	if forCoordinator {
+		return nil
+	}
+
+	transferHandler := NewInternalTransferHandler(h.config)
+	err := transferHandler.FinalizeTransferReceiver(ctx, req)
+	if err != nil {
+		logger.Error("Failed to finalize transfer receiver", zap.Error(err))
+	}
+	return err
 }

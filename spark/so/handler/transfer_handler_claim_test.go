@@ -6,13 +6,17 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math/big"
 	"math/rand/v2"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common/btcnetwork"
+	secretsharing "github.com/lightsparkdev/spark/common/secret_sharing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -67,10 +71,10 @@ var (
 
 	frostRound2StubOutput = map[string]any{
 		"results": map[string]any{
-			"operator1": map[string]any{
+			"a99a8b7c-8bd2-40ee-893b-aeefb00f1bf8": map[string]any{
 				"signature_share": signatureShare,
 			},
-			"operator2": map[string]any{
+			"43579ecc-d5a4-4115-80b7-fe86f8ac4586": map[string]any{
 				"signature_share": signatureShare,
 			},
 		},
@@ -415,6 +419,48 @@ func TestValidateReceivedRefundTransactions_RetrySkipsValidation(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateReceivedRefundTransactions_RetryWithDifferentDirectTx_RunsValidation(t *testing.T) {
+	rng := rand.NewChaCha8([32]byte{8})
+	ctx, _ := db.ConnectToTestPostgres(t)
+	ownerPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+	leaf := createTestTreeNodeForValidation(t, rng, ownerPubKey)
+
+	// Simulate that direct refund txs have already been stored from a previous call
+	// by setting DirectRefundTx and DirectFromCpfpRefundTx on the leaf
+	validDirectRefundTx := []byte("valid-direct-refund-tx")
+	validDirectFromCpfpRefundTx := []byte("valid-direct-from-cpfp-refund-tx")
+	leaf.DirectRefundTx = validDirectRefundTx
+	leaf.DirectFromCpfpRefundTx = validDirectFromCpfpRefundTx
+
+	// Create a job where RefundTx matches (would trigger old retry behavior)
+	// but DirectRefundTx is different (the exploit attempt)
+	maliciousDirectRefundTx := []byte("malicious-direct-refund-tx")
+	maliciousDirectFromCpfpRefundTx := []byte("malicious-direct-from-cpfp-refund-tx")
+
+	job := &pb.LeafRefundTxSigningJob{
+		LeafId: "test-leaf-id",
+		RefundTxSigningJob: &pb.SigningJob{
+			SigningPublicKey:       ownerPubKey.Serialize(),
+			RawTx:                  leaf.RawRefundTx, // Same as leaf - would trigger old retry
+			SigningNonceCommitment: createTestSigningCommitment(rng),
+		},
+		DirectRefundTxSigningJob: &pb.SigningJob{
+			SigningPublicKey:       ownerPubKey.Serialize(),
+			RawTx:                  maliciousDirectRefundTx, // DIFFERENT - exploit attempt
+			SigningNonceCommitment: createTestSigningCommitment(rng),
+		},
+		DirectFromCpfpRefundTxSigningJob: &pb.SigningJob{
+			SigningPublicKey:       ownerPubKey.Serialize(),
+			RawTx:                  maliciousDirectFromCpfpRefundTx, // DIFFERENT - exploit attempt
+			SigningNonceCommitment: createTestSigningCommitment(rng),
+		},
+	}
+
+	// This should NOT be treated as a retry because DirectRefundTx differs.
+	err := validateReceivedRefundTransactions(ctx, job, leaf, st.TransferTypeTransfer)
+	require.Error(t, err, "Expected validation to run and fail for mismatched direct txs, but it passed (retry detection bypassed validation)")
+}
+
 func TestValidateReceivedRefundTransactions_MissingRefundTxSigningJob(t *testing.T) {
 	rng := rand.NewChaCha8([32]byte{4})
 	ctx, _ := db.ConnectToTestPostgres(t)
@@ -480,7 +526,7 @@ func TestValidateReceivedRefundTransactions_Swap_DoesNotRequireDirectTx(t *testi
 
 	// Job with only CPFP refund tx - this is sufficient for swaps
 	job := &pb.LeafRefundTxSigningJob{
-		LeafId: "test-leaf-id",
+		LeafId: uuid.NewString(),
 		RefundTxSigningJob: &pb.SigningJob{
 			SigningPublicKey:       refundDestPubKey.Serialize(),
 			RawTx:                  cpfpTxBytes,
@@ -518,13 +564,27 @@ func TestClaimTransferSignRefunds_Success(t *testing.T) {
 	transferLeaf := createTestTransferLeaf(t, ctx, sessionCtx.Client, transfer, leaf)
 
 	tweakPrivKey := keys.MustGeneratePrivateKeyFromRand(rng)
-	tweakPubKey := tweakPrivKey.Public()
+	secretInt := new(big.Int).SetBytes(tweakPrivKey.Serialize())
 	pubkeyShareTweakPubKey := keys.MustGeneratePrivateKeyFromRand(rng).Public()
+
+	cfg := sparktesting.TestConfig(t)
+	threshold := int(cfg.Threshold)
+	numberOfShares := len(cfg.SigningOperatorMap)
+
+	// Create proper VSS shares with correct number of proofs matching the threshold
+	shares, err := secretsharing.SplitSecretWithProofs(secretInt, secp256k1.S256().N, threshold, numberOfShares)
+	require.NoError(t, err)
+	require.NotEmpty(t, shares, "expected at least one share")
+
+	// Use the first share (all shares have the same proofs)
+	share := shares[0]
+	secretShareBytes := make([]byte, 32)
+	share.Share.FillBytes(secretShareBytes)
 
 	claimKeyTweak := &pb.ClaimLeafKeyTweak{
 		SecretShareTweak: &pb.SecretShare{
-			SecretShare: tweakPrivKey.Serialize(),
-			Proofs:      [][]byte{tweakPubKey.Serialize()},
+			SecretShare: secretShareBytes,
+			Proofs:      share.Proofs,
 		},
 		PubkeySharesTweak: map[string][]byte{
 			"operator1": pubkeyShareTweakPubKey.Serialize(),
@@ -537,7 +597,6 @@ func TestClaimTransferSignRefunds_Success(t *testing.T) {
 	_, err = transferLeaf.Update().SetKeyTweak(claimKeyTweakBytes).Save(ctx)
 	require.NoError(t, err)
 
-	cfg := sparktesting.TestConfig(t)
 	req := &pb.ClaimTransferSignRefundsRequest{
 		TransferId:             transfer.ID.String(),
 		OwnerIdentityPublicKey: transfer.ReceiverIdentityPubkey.Serialize(),

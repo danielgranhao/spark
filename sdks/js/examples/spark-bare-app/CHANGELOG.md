@@ -1,5 +1,129 @@
 # @buildonspark/spark-bare-app
 
+## 0.1.20
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.7.0
+  - @buildonspark/bare@0.0.49
+
+## 0.1.19
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.7
+  - @buildonspark/bare@0.0.48
+
+## 0.1.18
+
+### Patch Changes
+
+- @buildonspark/bare@0.0.47
+
+## 0.1.17
+
+### Patch Changes
+
+- @buildonspark/bare@0.0.46
+
+## 0.1.16
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.6
+  - @buildonspark/bare@0.0.45
+
+## 0.1.15
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.5
+  - @buildonspark/bare@0.0.44
+
+## 0.1.14
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.4
+  - @buildonspark/bare@0.0.43
+
+## 0.1.13
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.3
+  - @buildonspark/bare@0.0.42
+
+## 0.1.12
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.2
+  - @buildonspark/bare@0.0.41
+
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.1
+  - @buildonspark/bare@0.0.40
+
+## 0.1.10
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.6.0
+  - @buildonspark/bare@0.0.39
+
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.9
+  - @buildonspark/bare@0.0.38
+
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.8
+  - @buildonspark/bare@0.0.37
+
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.7
+  - @buildonspark/bare@0.0.36
+
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.6
+  - @buildonspark/bare@0.0.35
+
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies
+  - @buildonspark/spark-sdk@0.5.5
+  - @buildonspark/bare@0.0.34
+
 ## 0.1.4
 
 ### Patch Changes

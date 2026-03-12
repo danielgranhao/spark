@@ -8,16 +8,18 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
-	"github.com/lightsparkdev/spark/common/btcnetwork"
-	"github.com/lightsparkdev/spark/common/keys"
-	"go.uber.org/zap"
-
+	"entgo.io/ent/dialect/sql/sqlgraph"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common"
+	"github.com/lightsparkdev/spark/common/btcnetwork"
+	"github.com/lightsparkdev/spark/common/hashstructure"
+	"github.com/lightsparkdev/spark/common/keys"
 	"github.com/lightsparkdev/spark/common/logging"
 	pb "github.com/lightsparkdev/spark/proto/spark"
 	pbinternal "github.com/lightsparkdev/spark/proto/spark_internal"
@@ -26,12 +28,14 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/depositaddress"
 	st "github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	"github.com/lightsparkdev/spark/so/ent/signingkeyshare"
+	"github.com/lightsparkdev/spark/so/ent/treenode"
 	"github.com/lightsparkdev/spark/so/ent/utxo"
 	"github.com/lightsparkdev/spark/so/ent/utxoswap"
 	"github.com/lightsparkdev/spark/so/errors"
 	"github.com/lightsparkdev/spark/so/helper"
 	transferHelper "github.com/lightsparkdev/spark/so/transfer"
 	"github.com/lightsparkdev/spark/so/utils"
+	"go.uber.org/zap"
 )
 
 // InternalDepositHandler is the deposit handler for so internal
@@ -199,7 +203,7 @@ func (h *InternalDepositHandler) FinalizeTreeCreation(ctx context.Context, req *
 			return fmt.Errorf("failed to get deposit address: %w", err)
 		}
 		if address.Edges.Tree != nil {
-			return fmt.Errorf("deposit address already has a tree")
+			return errors.AlreadyExistsDuplicateOperation(fmt.Errorf("deposit address already has a tree"))
 		}
 		markNodeAsAvailable = address.ConfirmationHeight != 0
 		logger.Sugar().Infof("Marking node as available: %v", markNodeAsAvailable)
@@ -256,6 +260,7 @@ func (h *InternalDepositHandler) FinalizeTreeCreation(ctx context.Context, req *
 		if err != nil {
 			return err
 		}
+
 		if node.Vout > math.MaxInt16 {
 			return fmt.Errorf("node vout value %d overflows int16", node.Vout)
 		}
@@ -263,6 +268,16 @@ func (h *InternalDepositHandler) FinalizeTreeCreation(ctx context.Context, req *
 		if err != nil {
 			return err
 		}
+
+		keyshareExists, err := db.SigningKeyshare.Query().Where(signingkeyshare.IDEQ(signingKeyshareID)).Exist(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to check signing keyshare existence: %w", err)
+		}
+		if !keyshareExists {
+			return errors.NotFoundMissingEntity(
+				fmt.Errorf("signing keyshare %s does not exist, cannot create tree node %s", signingKeyshareID, nodeID))
+		}
+
 		ownerIdentityPubKey, err := keys.ParsePublicKey(node.GetOwnerIdentityPubkey())
 		if err != nil {
 			return fmt.Errorf("failed to parse owner identity public key: %w", err)
@@ -297,6 +312,15 @@ func (h *InternalDepositHandler) FinalizeTreeCreation(ctx context.Context, req *
 			if err != nil {
 				return err
 			}
+			// Verify parent node exists before creating child to prevent FK violation
+			parentExists, err := db.TreeNode.Query().Where(treenode.IDEQ(parentID)).Exist(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to check parent node existence: %w", err)
+			}
+			if !parentExists {
+				return errors.NotFoundMissingEntity(
+					fmt.Errorf("parent node %s does not exist, cannot create child node %s", parentID, nodeID))
+			}
 			nodeMutator.SetParentID(parentID)
 		}
 
@@ -312,6 +336,10 @@ func (h *InternalDepositHandler) FinalizeTreeCreation(ctx context.Context, req *
 
 		_, err = nodeMutator.Save(ctx)
 		if err != nil {
+			if sqlgraph.IsUniqueConstraintError(err) {
+				logger.Debug("skipped creating node that was concurrently created", zap.Stringer("node_id", nodeID))
+				continue
+			}
 			return err
 		}
 	}
@@ -348,13 +376,36 @@ func validateTransfer(transferRequest *pb.StartTransferRequest) error {
 }
 
 // validateUserSignature verifies that the user has authorized the UTXO swap by validating their signature.
-func validateUserSignature(userIdentityPubKey keys.Public, userSignature []byte, sspSignature []byte, requestType pb.UtxoSwapRequestType, network btcnetwork.Network, txIdString string, vout uint32, totalAmount uint64) error {
+func validateUserSignature(userIdentityPubKey keys.Public, userSignature []byte, sspSignature []byte, requestType pb.UtxoSwapRequestType, network btcnetwork.Network, txIdString string, vout uint32, totalAmount uint64, hashVariant pb.HashVariant) error {
 	if len(userSignature) == 0 {
 		return fmt.Errorf("user signature is required")
 	}
 
 	// Create user statement to authorize the UTXO swap
-	messageHash := CreateUserStatement(txIdString, vout, network, requestType, totalAmount, sspSignature)
+	messageHash, err := CreateUserStatement(txIdString, vout, network, requestType, totalAmount, sspSignature, hashVariant)
+	if err != nil {
+		return fmt.Errorf("failed to create user statement: %w", err)
+	}
+	return common.VerifyECDSASignature(userIdentityPubKey, userSignature, messageHash)
+}
+
+// validateInstantUserSignature verifies that the user has authorized an instant static deposit UTXO swap
+// by validating their signature over the instant deposit statement.
+func validateInstantUserSignature(
+	userIdentityPubKey keys.Public,
+	userSignature []byte,
+	sspSignature []byte,
+	network btcnetwork.Network,
+	creditAmountSats uint64,
+	secondaryCreditAmountSats uint64,
+	expiryTime time.Time,
+	destinationAddress string,
+	satsValue uint64,
+) error {
+	if len(userSignature) == 0 {
+		return fmt.Errorf("user signature is required")
+	}
+	messageHash := CreateInstantUserStatement(network, creditAmountSats, secondaryCreditAmountSats, expiryTime, destinationAddress, satsValue, sspSignature)
 	return common.VerifyECDSASignature(userIdentityPubKey, userSignature, messageHash)
 }
 
@@ -375,7 +426,22 @@ func CreateUserStatement(
 	requestType pb.UtxoSwapRequestType,
 	creditAmountSats uint64,
 	sspSignature []byte,
-) []byte {
+	hashVariant pb.HashVariant,
+) ([]byte, error) {
+	if hashVariant == pb.HashVariant_HASH_VARIANT_V2 {
+		return createUserStatementV2(transactionID, outputIndex, network, requestType, creditAmountSats, sspSignature)
+	}
+	return createUserStatementLegacy(transactionID, outputIndex, network, requestType, creditAmountSats, sspSignature)
+}
+
+func createUserStatementLegacy(
+	transactionID string,
+	outputIndex uint32,
+	network btcnetwork.Network,
+	requestType pb.UtxoSwapRequestType,
+	creditAmountSats uint64,
+	sspSignature []byte,
+) ([]byte, error) {
 	payload := sha256.New()
 	_, _ = payload.Write([]byte("claim_static_deposit"))            // Action name
 	_, _ = payload.Write([]byte(strings.ToLower(network.String()))) // Network value as UTF-8 bytes
@@ -390,11 +456,77 @@ func CreateUserStatement(
 		requestTypeInt = uint8(1)
 	case pb.UtxoSwapRequestType_Refund:
 		requestTypeInt = uint8(2)
+	case pb.UtxoSwapRequestType_Instant:
+		return nil, fmt.Errorf("Instant deposit not supported for normal static deposit flow")
 	}
 	_ = binary.Write(payload, binary.LittleEndian, requestTypeInt)   // Request type
 	_ = binary.Write(payload, binary.LittleEndian, creditAmountSats) // Credit amount as 8-byte unsigned integer (little-endian)
 	_, _ = payload.Write(sspSignature)                               // SSP signature as UTF-8 bytes
-	return payload.Sum(nil)
+	return payload.Sum(nil), nil
+}
+
+func createUserStatementV2(
+	transactionID string,
+	outputIndex uint32,
+	network btcnetwork.Network,
+	requestType pb.UtxoSwapRequestType,
+	creditAmountSats uint64,
+	sspSignature []byte,
+) ([]byte, error) {
+	requestTypeInt := uint8(0)
+	switch requestType {
+	case pb.UtxoSwapRequestType_Fixed:
+		requestTypeInt = uint8(0)
+	case pb.UtxoSwapRequestType_MaxFee:
+		requestTypeInt = uint8(1)
+	case pb.UtxoSwapRequestType_Refund:
+		requestTypeInt = uint8(2)
+	case pb.UtxoSwapRequestType_Instant:
+		return nil, fmt.Errorf("Instant deposit not supported for normal static deposit flow")
+	}
+
+	hash := hashstructure.NewHasher([]string{"spark", "claim_static_deposit"}).
+		AddString(strings.ToLower(network.String())).
+		AddString(transactionID).
+		AddUint32(outputIndex).
+		AddUint8(requestTypeInt).
+		AddUint64(creditAmountSats).
+		AddBytes(sspSignature).
+		Hash()
+	return hash, nil
+}
+
+// CreateInstantUserStatement creates a user statement to authorize an instant static deposit UTXO swap.
+// The signature is expected to be a DER-encoded ECDSA signature of the tagged hash of the message
+// composed of:
+//   - network: the lowercase network name (e.g., "bitcoin", "testnet")
+//   - requestType: Instant (3)
+//   - creditAmountSats: the primary credit amount in satoshis
+//   - secondaryCreditAmountSats: the secondary credit amount in satoshis
+//   - expiryTime: the expiry time as a unix timestamp
+//   - destinationAddress: the destination static deposit address
+//   - satsValue: the total UTXO value in satoshis
+//   - sspSignature: the SSP signature bytes
+func CreateInstantUserStatement(
+	network btcnetwork.Network,
+	creditAmountSats uint64,
+	secondaryCreditAmountSats uint64,
+	expiryTime time.Time,
+	destinationAddress string,
+	satsValue uint64,
+	sspSignature []byte,
+) []byte {
+	hash := hashstructure.NewHasher([]string{"spark", "claim_instant_static_deposit"}).
+		AddString(strings.ToLower(network.String())).
+		AddUint8(3). // requestType = Instant
+		AddUint64(creditAmountSats).
+		AddUint64(secondaryCreditAmountSats).
+		AddUint64(uint64(expiryTime.Unix())).
+		AddString(destinationAddress).
+		AddUint64(satsValue).
+		AddBytes(sspSignature).
+		Hash()
+	return hash
 }
 
 func CancelUtxoSwap(ctx context.Context, utxoSwap *ent.UtxoSwap) error {
@@ -403,6 +535,16 @@ func CancelUtxoSwap(ctx context.Context, utxoSwap *ent.UtxoSwap) error {
 	}
 	if _, err := utxoSwap.Update().SetStatus(st.UtxoSwapStatusCancelled).Save(ctx); err != nil {
 		return fmt.Errorf("unable to cancel utxo swap: %w", err)
+	}
+	return nil
+}
+
+func SetUtxoSwapStatus(ctx context.Context, utxoSwap *ent.UtxoSwap, status st.UtxoSwapStatus) error {
+	if utxoSwap.Status == status {
+		return fmt.Errorf("utxo swap is already %s", status)
+	}
+	if _, err := utxoSwap.Update().SetStatus(status).Save(ctx); err != nil {
+		return fmt.Errorf("unable to set utxo swap status: %w", err)
 	}
 	return nil
 }
@@ -435,6 +577,27 @@ func CompleteUtxoSwap(ctx context.Context, utxoSwap *ent.UtxoSwap) error {
 		if !transferHelper.IsTransferSent(transfer) {
 			return fmt.Errorf("UTXO swap cannot be completed from transfer status %s: transfer is not sent", transfer.Status)
 		}
+
+		secondaryTransfer, needSecondaryUpdate, err := GetSecondaryTransferFromUtxoSwap(ctx, utxoSwap)
+		if err != nil {
+			return fmt.Errorf("unable to get secondary transfer from utxo swap: %w", err)
+		}
+		if secondaryTransfer != nil {
+			if needSecondaryUpdate {
+				_, err := utxoSwap.Update().SetSecondaryTransfer(secondaryTransfer).Save(ctx)
+				if err != nil {
+					return fmt.Errorf("unable to set secondary transfer: %w", err)
+				}
+			}
+
+			if secondaryTransfer.Status == st.TransferStatusExpired || secondaryTransfer.Status == st.TransferStatusReturned {
+				return fmt.Errorf("secondary transfer is expired or returned")
+			}
+
+			if !transferHelper.IsTransferSent(secondaryTransfer) {
+				return fmt.Errorf("UTXO swap cannot be completed from secondary transfer status %s: transfer is not sent", secondaryTransfer.Status)
+			}
+		}
 	}
 	if _, err := utxoSwap.Update().SetStatus(st.UtxoSwapStatusCompleted).Save(ctx); err != nil {
 		return fmt.Errorf("unable to complete utxo swap: %w", err)
@@ -458,6 +621,28 @@ func GetTransferFromUtxoSwap(ctx context.Context, utxoSwap *ent.UtxoSwap) (*ent.
 		transfer, err = db.Transfer.Get(ctx, utxoSwap.RequestedTransferID)
 		if err != nil {
 			return nil, false, fmt.Errorf("unable to fetch transfer by requested id=%s: %w", utxoSwap.RequestedTransferID, err)
+		}
+		return transfer, true, nil
+	}
+	return transfer, false, nil
+}
+
+func GetSecondaryTransferFromUtxoSwap(ctx context.Context, utxoSwap *ent.UtxoSwap) (*ent.Transfer, bool, error) {
+	if utxoSwap.RequestedSecondaryTransferID == uuid.Nil {
+		return nil, false, nil
+	}
+	transfer, err := utxoSwap.QuerySecondaryTransfer().Only(ctx)
+	if err != nil && !ent.IsNotFound(err) {
+		return nil, false, fmt.Errorf("unable to get secondary transfer: %w", err)
+	}
+	if transfer == nil {
+		db, err := ent.GetDbFromContext(ctx)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to get or create current tx for request: %w", err)
+		}
+		transfer, err = db.Transfer.Get(ctx, utxoSwap.RequestedSecondaryTransferID)
+		if err != nil {
+			return nil, false, fmt.Errorf("unable to fetch secondary transfer by requested id=%s: %w", utxoSwap.RequestedSecondaryTransferID, err)
 		}
 		return transfer, true, nil
 	}
@@ -510,18 +695,14 @@ func (h *InternalDepositHandler) RollbackUtxoSwap(ctx context.Context, config *s
 		return nil, fmt.Errorf("unable to get schema network: %w", err)
 	}
 
-	onChainUtxoTxId, err := NewValidatedTxID(req.OnChainUtxo.Txid)
-	if err != nil {
-		return nil, fmt.Errorf("failed to validate on-chain UTXO txid: %w", err)
-	}
-	targetUtxo, err := VerifiedTargetUtxo(ctx, config, db, schemaNetwork, onChainUtxoTxId, req.OnChainUtxo.Vout)
+	targetUtxo, err := VerifiedTargetUtxoFromRequest(ctx, config, db, schemaNetwork, req.OnChainUtxo, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	utxoSwap, err := db.UtxoSwap.Query().
 		Where(
-			utxoswap.HasUtxoWith(utxo.IDEQ(targetUtxo.ID)),
+			utxoswap.HasUtxoWith(utxo.IDEQ(targetUtxo.inner.ID)),
 			utxoswap.StatusIn(st.UtxoSwapStatusCreated, st.UtxoSwapStatusCompleted),
 			// The identity public key of the coordinator that created the utxo swap.
 			// It's been verified above.
@@ -539,8 +720,142 @@ func (h *InternalDepositHandler) RollbackUtxoSwap(ctx context.Context, config *s
 		return nil, err
 	}
 
-	logger.Sugar().Infof("UTXO swap %s for %x:%d cancelled", utxoSwap.ID, targetUtxo.Txid, targetUtxo.Vout)
+	logger.Sugar().Infof("UTXO swap %s for %s:%d cancelled", utxoSwap.ID, targetUtxo.Hash().String(), targetUtxo.Vout)
 	return &pbinternal.RollbackUtxoSwapResponse{}, nil
+}
+
+// Since instant static deposits has stages, we need to specify what statuses are ok to rollback from and the status we want to rollback to.
+func (h *InternalDepositHandler) RollbackInstantUtxoSwap(ctx context.Context, config *so.Config, req *pbinternal.RollbackInstantUtxoSwapRequest) (*pbinternal.RollbackInstantUtxoSwapResponse, error) {
+	logger := logging.GetLoggerFromContext(ctx)
+	db, err := ent.GetDbFromContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get or create current tx for request: %w", err)
+	}
+
+	// Convert and validate proto statuses to schema UtxoSwapStatus enum values at the start
+	rollbackFromStatuses := make([]st.UtxoSwapStatus, len(req.RollbackFromStatuses))
+	for i, s := range req.RollbackFromStatuses {
+		status, err := protoToSchemaUtxoSwapStatus(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid rollback_from_status at index %d: %w", i, err)
+		}
+		rollbackFromStatuses[i] = status
+	}
+	rollbackToStatus, err := protoToSchemaUtxoSwapStatus(req.RollbackToStatus)
+	if err != nil {
+		return nil, fmt.Errorf("invalid rollback_to_status: %w", err)
+	}
+
+	network, err := btcnetwork.FromProtoNetwork(req.GetOnChainUtxo().GetNetwork())
+	if err != nil {
+		return nil, fmt.Errorf("unable to get network: %w", err)
+	}
+
+	messageHash, err := CreateUtxoSwapStatement(
+		UtxoSwapStatementTypeRollback,
+		hex.EncodeToString(req.OnChainUtxo.Txid),
+		req.OnChainUtxo.Vout,
+		network,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rollback utxo swap request statement: %w", err)
+	}
+	// Coordinator pubkey comes from the request, but it's fine because it will be checked against the DB.
+	coordinatorPubKey, err := keys.ParsePublicKey(req.CoordinatorPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse coordinator public key: %w", err)
+	}
+	if err := common.VerifyECDSASignature(coordinatorPubKey, req.Signature, messageHash); err != nil {
+		logger.Sugar().Debugf(
+			"Rollback instant utxo swap request signature (signature: %x txid: %x vout: %d network: %s coordinator: %s message_hash: %x rollback_from_statuses: %v rollback_to_status: %s)",
+			req.Signature,
+			req.OnChainUtxo.Txid,
+			req.OnChainUtxo.Vout,
+			network,
+			req.CoordinatorPublicKey,
+			messageHash,
+			req.RollbackFromStatuses,
+			req.RollbackToStatus,
+		)
+		return nil, fmt.Errorf("unable to verify coordinator signature: %w", err)
+	}
+
+	logger.Sugar().Infof("Cancelling UTXO swap for %x:%d", req.OnChainUtxo.Txid, req.OnChainUtxo.Vout)
+
+	schemaNetwork, err := btcnetwork.FromProtoNetwork(req.OnChainUtxo.Network)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get schema network: %w", err)
+	}
+
+	// Get the transaction amount and destination address from the raw transaction
+	onChainTx, err := common.TxFromRawTxBytes(req.OnChainUtxo.RawTx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse on-chain transaction: %w", err)
+	}
+	if int(req.OnChainUtxo.Vout) >= len(onChainTx.TxOut) {
+		return nil, fmt.Errorf("vout %d out of bounds for transaction with %d outputs", req.OnChainUtxo.Vout, len(onChainTx.TxOut))
+	}
+	txOut := onChainTx.TxOut[req.OnChainUtxo.Vout]
+	amount := txOut.Value
+	networkParams, err := schemaNetwork.Params()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get network params: %w", err)
+	}
+	_, addresses, _, err := txscript.ExtractPkScriptAddrs(txOut.PkScript, networkParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract address from pkscript: %w", err)
+	}
+	var destinationAddress string
+	if len(addresses) > 0 {
+		destinationAddress = addresses[0].String()
+	}
+	logger.Sugar().Debugf("UTXO amount: %d sats, destination: %s", amount, destinationAddress)
+	depositAddress, err := db.DepositAddress.Query().
+		Where(
+			depositaddress.Address(destinationAddress),
+			depositaddress.IsStatic(true),
+		).
+		Only(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get deposit address: %w", err)
+	}
+	if depositAddress == nil {
+		return nil, fmt.Errorf("deposit address %s not found", destinationAddress)
+	}
+
+	utxoSwap, err := depositAddress.QueryUtxoswaps().
+		Where(
+			utxoswap.StatusIn(rollbackFromStatuses...),
+			utxoswap.UtxoValueSatsEQ(uint64(amount)),
+			utxoswap.CoordinatorIdentityPublicKeyEQ(coordinatorPubKey),
+		).
+		Only(ctx)
+	if err != nil && !ent.IsNotFound(err) {
+		return nil, fmt.Errorf("unable to get utxo swap: %w", err)
+	}
+	if ent.IsNotFound(err) {
+		return &pbinternal.RollbackInstantUtxoSwapResponse{}, nil
+	}
+
+	if err := SetUtxoSwapStatus(ctx, utxoSwap, rollbackToStatus); err != nil {
+		return nil, err
+	}
+
+	logger.Sugar().Infof("UTXO swap %s for %x:%d set to %s", utxoSwap.ID, req.OnChainUtxo.Txid, req.OnChainUtxo.Vout, req.RollbackToStatus.String())
+	return &pbinternal.RollbackInstantUtxoSwapResponse{}, nil
+}
+
+func protoToSchemaUtxoSwapStatus(p pb.UtxoSwapStatus) (st.UtxoSwapStatus, error) {
+	switch p {
+	case pb.UtxoSwapStatus_UTXO_SWAP_STATUS_CREATED:
+		return st.UtxoSwapStatusCreated, nil
+	case pb.UtxoSwapStatus_UTXO_SWAP_STATUS_COMPLETED:
+		return st.UtxoSwapStatusCompleted, nil
+	case pb.UtxoSwapStatus_UTXO_SWAP_STATUS_CANCELLED:
+		return st.UtxoSwapStatusCancelled, nil
+	default:
+		return "", fmt.Errorf("invalid utxo swap status: %s", p.String())
+	}
 }
 
 func CreateUtxoSwapStatement(statementType UtxoSwapStatementType, transactionID string, outputIndex uint32, network btcnetwork.Network) ([]byte, error) {
@@ -600,24 +915,20 @@ func (h *InternalDepositHandler) UtxoSwapCompleted(ctx context.Context, config *
 	if err != nil {
 		return nil, fmt.Errorf("unable to get schema network: %w", err)
 	}
-	onChainUtxoTxId, err := NewValidatedTxID(req.OnChainUtxo.Txid)
-	if err != nil {
-		return nil, fmt.Errorf("failed to validate on-chain UTXO txid: %w", err)
-	}
-	targetUtxo, err := VerifiedTargetUtxo(ctx, config, db, schemaNetwork, onChainUtxoTxId, req.OnChainUtxo.Vout)
+	targetUtxo, err := VerifiedTargetUtxoFromRequest(ctx, config, db, schemaNetwork, req.OnChainUtxo, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	utxoSwap, err := db.UtxoSwap.Query().
-		Where(utxoswap.HasUtxoWith(utxo.IDEQ(targetUtxo.ID))).
+		Where(utxoswap.HasUtxoWith(utxo.IDEQ(targetUtxo.inner.ID))).
 		Where(utxoswap.StatusIn(st.UtxoSwapStatusCreated, st.UtxoSwapStatusCompleted)).
 		// The identity public key of the coordinator that created the utxo swap.
 		// It's been verified above.
 		Where(utxoswap.CoordinatorIdentityPublicKeyEQ(coordinatorPubKey)).
 		Only(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("unable to get utxo swap for utxo %s: %w", targetUtxo.ID, err)
+		return nil, fmt.Errorf("unable to get utxo swap for utxo %s: %w", targetUtxo.inner.ID, err)
 	}
 
 	if utxoSwap != nil && utxoSwap.Status == st.UtxoSwapStatusCompleted {
@@ -628,7 +939,7 @@ func (h *InternalDepositHandler) UtxoSwapCompleted(ctx context.Context, config *
 		return nil, fmt.Errorf("unable to complete utxo swap: %w", err)
 	}
 
-	logger.Sugar().Infof("UTXO swap %s for %x:%d marked as COMPLETED", utxoSwap.ID, targetUtxo.Txid, targetUtxo.Vout)
+	logger.Sugar().Infof("UTXO swap %s for %s:%d marked as COMPLETED", utxoSwap.ID, targetUtxo.Hash().String(), targetUtxo.Vout())
 	return &pbinternal.UtxoSwapCompletedResponse{}, nil
 }
 

@@ -2,6 +2,14 @@ import { jest } from "@jest/globals";
 import { IssuerSparkWalletTesting } from "../utils/issuer-test-wallet.js";
 import { TEST_CONFIGS } from "./test-configs.js";
 import { IssuerSparkWallet } from "../../issuer-wallet/issuer-spark-wallet.js";
+import {
+  burnSingleIssuerToken,
+  freezeSingleIssuerToken,
+  getSingleIssuerTokenBalance,
+  getSingleIssuerTokenIdentifier,
+  mintSingleIssuerToken,
+  unfreezeSingleIssuerToken,
+} from "../utils/multi-token-utils.js";
 
 const TX_HASH_REGEX = /^[a-f0-9]{64}$/i; // valid tx hash: hex string of 64 characters
 
@@ -71,6 +79,48 @@ describe.each(TEST_CONFIGS)(
       expect(metadata[0].tokenTicker).toEqual("TK1");
       expect(metadata[1].tokenName).toEqual("Token2");
       expect(metadata[1].tokenTicker).toEqual("TK2");
+    });
+
+    it("get issuer tokens metadata should only return tokens owned by the issuer", async () => {
+      const { wallet: aliceWallet } = await IssuerSparkWalletTesting.initialize(
+        {
+          options: config,
+        },
+      );
+      const { wallet: bobWallet } = await IssuerSparkWalletTesting.initialize({
+        options: config,
+      });
+
+      const {
+        firstTokenIdentifier: bobCoinOne,
+        secondTokenIdentifier: bobCoinTwo,
+      } = await setupMultipleTokens(bobWallet);
+      const {
+        firstTokenIdentifier: aliceCoinOne,
+        secondTokenIdentifier: aliceCoinTwo,
+      } = await setupMultipleTokens(aliceWallet);
+
+      const bobWalletForBobCoins = await bobWallet.getIssuerTokensMetadata([
+        bobCoinOne,
+        bobCoinTwo,
+      ]);
+      expect(bobWalletForBobCoins.length).toEqual(2);
+      expect(
+        bobWalletForBobCoins.map((m) => ({
+          name: m.tokenName,
+          ticker: m.tokenTicker,
+        })),
+      ).toEqual(
+        expect.arrayContaining([
+          { name: "Token1", ticker: "TK1" },
+          { name: "Token2", ticker: "TK2" },
+        ]),
+      );
+      const bobWalletForAliceCoins = await bobWallet.getIssuerTokensMetadata([
+        aliceCoinOne,
+        aliceCoinTwo,
+      ]);
+      expect(bobWalletForAliceCoins.length).toEqual(0);
     });
 
     it("should fail to create multiple tokens with the same parameters", async () => {
@@ -192,8 +242,8 @@ describe.each(TEST_CONFIGS)(
       const receiverSecondBalance = receiverBalances.tokenBalances.get(
         secondTokenIdentifier,
       );
-      expect(receiverFirstBalance?.balance).toEqual(TOKEN_AMOUNT);
-      expect(receiverSecondBalance?.balance).toEqual(TOKEN_AMOUNT);
+      expect(receiverFirstBalance?.ownedBalance).toEqual(TOKEN_AMOUNT);
+      expect(receiverSecondBalance?.ownedBalance).toEqual(TOKEN_AMOUNT);
 
       // === Freezing tokens ===
       // Legacy single token issuer method - should fail when multiple tokens are created
@@ -206,7 +256,7 @@ describe.each(TEST_CONFIGS)(
         tokenIdentifier: firstTokenIdentifier,
         sparkAddress: receiverAddress,
       });
-      expect(freezeResponse.impactedOutputIds.length).toBeGreaterThan(0);
+      expect(freezeResponse.impactedTokenOutputs.length).toBeGreaterThan(0);
       expect(freezeResponse.impactedTokenAmount).toEqual(TOKEN_AMOUNT);
 
       // Should fail to transfer tokens because the outputs are frozen
@@ -239,8 +289,13 @@ describe.each(TEST_CONFIGS)(
         tokenIdentifier: firstTokenIdentifier,
         sparkAddress: receiverAddress,
       });
-      expect(unfreezeResponse.impactedOutputIds.length).toBeGreaterThan(0);
+      expect(unfreezeResponse.impactedTokenOutputs.length).toBeGreaterThan(0);
       expect(unfreezeResponse.impactedTokenAmount).toEqual(TOKEN_AMOUNT);
+
+      // Wait for local token output lock from before to expire before spending once-frozen outputs.
+      await new Promise((resolve) =>
+        setTimeout(resolve, config.tokenOutputLockExpiryMs),
+      );
 
       // Outputs unfrozen, transfer should succeed
       const transferBackToIssuerOfOnceFrozenToken =
@@ -262,8 +317,12 @@ describe.each(TEST_CONFIGS)(
         receiverBalancesAfterTransferBack.tokenBalances.get(
           secondTokenIdentifier,
         );
-      expect(receiverFirstBalanceAfterTransferBack?.balance).toBeUndefined();
-      expect(receiverSecondBalanceAfterTransferBack?.balance).toBeUndefined();
+      expect(
+        receiverFirstBalanceAfterTransferBack?.ownedBalance,
+      ).toBeUndefined();
+      expect(
+        receiverSecondBalanceAfterTransferBack?.ownedBalance,
+      ).toBeUndefined();
 
       // Verify that the issuer has the correct balances
       const issuerBalances = await issuerWallet.getIssuerTokenBalances();
@@ -299,139 +358,6 @@ describe.each(TEST_CONFIGS)(
       );
       expect(issuerFirstBalanceAfterBurn?.balance).toBe(0n);
       expect(issuerSecondBalanceAfterBurn?.balance).toEqual(TOKEN_AMOUNT);
-    });
-
-    // CNT-608: skip until we migrate existing tests to use multi token methods
-    it.skip("should allow legacy methods to be used with a single token", async () => {
-      const { wallet: issuerWallet } =
-        await IssuerSparkWalletTesting.initialize({
-          options: config,
-        });
-      const issuerSparkAddress = await issuerWallet.getSparkAddress();
-
-      const { wallet: receiverWallet } =
-        await IssuerSparkWalletTesting.initialize({
-          options: config,
-        });
-      const receiverSparkAddress = await receiverWallet.getSparkAddress();
-
-      const createTransactionDetails = await issuerWallet.createToken(
-        TOKEN_ONE_CREATE_TRANSACTION_PARAMS,
-      );
-      expect(createTransactionDetails).toBeDefined();
-      expect(createTransactionDetails.tokenIdentifier).toBeDefined();
-      expect(createTransactionDetails.tokenIdentifier.length).toBeGreaterThan(
-        0,
-      );
-      expect(createTransactionDetails.transactionHash).toBeDefined();
-      expect(createTransactionDetails.transactionHash.length).toBeGreaterThan(
-        0,
-      );
-
-      // Legacy single token issuer method should succeed when only one token is created
-      const tokenIdentifier = await issuerWallet.getIssuerTokenIdentifier();
-      expect(tokenIdentifier).toBeDefined();
-      expect(tokenIdentifier).toEqual(createTransactionDetails.tokenIdentifier);
-
-      // === Minting tokens ===
-      const mintHash = await issuerWallet.mintTokens(TOKEN_AMOUNT);
-      expect(mintHash).toBeDefined();
-      expect(mintHash).toMatch(TX_HASH_REGEX);
-
-      // Legacy single token issuer method should succeed when only one token is created
-      const tokenBalance = await issuerWallet.getIssuerTokenBalance();
-      expect(tokenBalance).toBeDefined();
-      expect(tokenBalance.balance).toEqual(TOKEN_AMOUNT);
-
-      const issuerBalanceAfterMint = await issuerWallet.getBalance();
-      expect(
-        issuerBalanceAfterMint.tokenBalances.get(
-          createTransactionDetails.tokenIdentifier,
-        )?.balance,
-      ).toEqual(TOKEN_AMOUNT);
-
-      const transferHash = await issuerWallet.transferTokens({
-        tokenAmount: TOKEN_AMOUNT,
-        tokenIdentifier: createTransactionDetails.tokenIdentifier,
-        receiverSparkAddress: receiverSparkAddress,
-      });
-      expect(transferHash).toBeDefined();
-      expect(transferHash).toMatch(TX_HASH_REGEX);
-
-      const receiverBalance = await receiverWallet.getBalance();
-      expect(
-        receiverBalance.tokenBalances.get(
-          createTransactionDetails.tokenIdentifier,
-        )?.balance,
-      ).toEqual(TOKEN_AMOUNT);
-
-      const issuerBalanceAfterTransfer = await issuerWallet.getBalance();
-      expect(
-        issuerBalanceAfterTransfer.tokenBalances.get(
-          createTransactionDetails.tokenIdentifier,
-        )?.balance,
-      ).toBeUndefined();
-
-      // === Freezing tokens ===
-      // Legacy single token issuer method should succeed when only one token is created
-      const freezeResponse =
-        await issuerWallet.freezeTokens(receiverSparkAddress);
-      expect(freezeResponse.impactedOutputIds.length).toBeGreaterThan(0);
-      expect(freezeResponse.impactedTokenAmount).toEqual(TOKEN_AMOUNT);
-
-      // Should fail to transfer tokens because the outputs are frozen
-      await expect(
-        receiverWallet.transferTokens({
-          tokenAmount: TOKEN_AMOUNT,
-          tokenIdentifier: createTransactionDetails.tokenIdentifier,
-          receiverSparkAddress: issuerSparkAddress,
-        }),
-      ).rejects.toThrow();
-
-      // === Unfreezing tokens ===
-      // Legacy single token issuer method should succeed when only one token is created
-      const unfreezeResponse =
-        await issuerWallet.unfreezeTokens(receiverSparkAddress);
-      expect(unfreezeResponse.impactedOutputIds.length).toBeGreaterThan(0);
-      expect(unfreezeResponse.impactedTokenAmount).toEqual(TOKEN_AMOUNT);
-
-      const transferBackToIssuerOfUnfrozenToken =
-        await receiverWallet.transferTokens({
-          tokenAmount: TOKEN_AMOUNT,
-          tokenIdentifier: createTransactionDetails.tokenIdentifier,
-          receiverSparkAddress: issuerSparkAddress,
-        });
-      expect(transferBackToIssuerOfUnfrozenToken).toBeDefined();
-      expect(transferBackToIssuerOfUnfrozenToken).toMatch(TX_HASH_REGEX);
-
-      const receiverBalanceAfterTransferOfUnfrozenToken =
-        await receiverWallet.getBalance();
-      expect(
-        receiverBalanceAfterTransferOfUnfrozenToken.tokenBalances.get(
-          createTransactionDetails.tokenIdentifier,
-        )?.balance,
-      ).toBeUndefined();
-
-      const issuerBalanceAfterTransferOfUnfrozenToken =
-        await issuerWallet.getBalance();
-      expect(
-        issuerBalanceAfterTransferOfUnfrozenToken.tokenBalances.get(
-          createTransactionDetails.tokenIdentifier,
-        )?.balance,
-      ).toEqual(TOKEN_AMOUNT);
-
-      // === Burning tokens ===
-      // Legacy single token issuer method should succeed when only one token is created
-      const burnHash = await issuerWallet.burnTokens(TOKEN_AMOUNT);
-      expect(burnHash).toBeDefined();
-      expect(burnHash).toMatch(TX_HASH_REGEX);
-
-      const issuerBalanceAfterBurn = await issuerWallet.getBalance();
-      expect(
-        issuerBalanceAfterBurn.tokenBalances.get(
-          createTransactionDetails.tokenIdentifier,
-        )?.balance,
-      ).toBeUndefined();
     });
   },
 );

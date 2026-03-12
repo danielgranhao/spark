@@ -1,7 +1,7 @@
 [tasks]
 build = "go build -tags=lightspark ./bin/operator"
 build-oss = "go build ./bin/operator"
-lint = "golangci-lint run"
+lint = "golangci-lint run && go run ./tools/entfieldlint/cmd/entfieldlint check"
 # Sadly, `mise fmt` is a built in command
 format = "golangci-lint fmt"
 test-unit = """
@@ -41,6 +41,15 @@ test-grpc-minikube = """
     -p 1 \
     -tags=lightspark
 """
+test-grpc-minikube-dbg = """
+  MINIKUBE_IP=$(minikube ip) \
+  gotestsum \
+    --format standard-verbose \
+    --packages="./so/grpc_test/... ./so/grpc_test_internal/..." \
+    -- \
+    -p 1 \
+    -tags=lightspark
+"""
 test-grpc-minikube-oss = """
   MINIKUBE_IP=$(minikube ip) \
   gotestsum \
@@ -49,4 +58,22 @@ test-grpc-minikube-oss = """
     -- \
     -p 1
 """
-atlas-hash="atlas migrate hash --dir 'file://so/ent/migrate/migrations'"
+# Ent field deprecation lint - checks that fields are deprecated before removal
+ent-field-lint = "go run ./tools/entfieldlint/cmd/entfieldlint check"
+ent-field-diff = "go run ./tools/entfieldlint/cmd/entfieldlint diff"
+
+[tasks.atlas-hash]
+dir = "so/ent"
+run = "atlas migrate hash --dir 'file://migrate/migrations'"
+
+[tasks.atlas-diff]
+dir = "so/ent"
+run = "atlas migrate diff \"$@\" --env local"
+
+[tasks.atlas-ephemeral-hash]
+dir = "so/entephemeral"
+run = "atlas migrate hash --dir 'file://migrate/migrations'"
+
+[tasks.atlas-ephemeral-diff]
+dir = "so/entephemeral"
+run = "atlas migrate diff \"$@\" --env local"

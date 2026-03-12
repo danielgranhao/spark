@@ -1,12 +1,17 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"math/rand/v2"
 	"testing"
+	"time"
 
 	"entgo.io/ent/dialect/sql"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
 	"github.com/lightsparkdev/spark/common/btcnetwork"
 	"github.com/lightsparkdev/spark/common/keys"
@@ -20,8 +25,6 @@ import (
 	sparktesting "github.com/lightsparkdev/spark/testing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 func TestNewFinalizeSignatureHandler(t *testing.T) {
@@ -37,7 +40,18 @@ func TestFinalizeSignatureHandler_FinalizeNodeSignatures_EmptyRequest(t *testing
 	t.Parallel()
 	ctx, _ := db.NewTestSQLiteContext(t)
 
-	config := &so.Config{FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{}}
+	config := &so.Config{
+		SigningOperatorMap: map[string]*so.SigningOperator{
+			"test-operator": {
+				ID:                        0,
+				Identifier:                "test-operator",
+				AddressRpc:                "localhost:8080",
+				AddressDkg:                "localhost:8081",
+				OperatorConnectionFactory: &sparktesting.DangerousTestOperatorConnectionFactoryNoTLS{},
+			},
+		},
+		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
+	}
 	handler := NewFinalizeSignatureHandler(config)
 
 	req := &pb.FinalizeNodeSignaturesRequest{
@@ -55,7 +69,18 @@ func TestFinalizeSignatureHandler_FinalizeNodeSignaturesV2_EmptyRequest(t *testi
 	t.Parallel()
 	ctx, _ := db.NewTestSQLiteContext(t)
 
-	config := &so.Config{FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{}}
+	config := &so.Config{
+		SigningOperatorMap: map[string]*so.SigningOperator{
+			"test-operator": {
+				ID:                        0,
+				Identifier:                "test-operator",
+				AddressRpc:                "localhost:8080",
+				AddressDkg:                "localhost:8081",
+				OperatorConnectionFactory: &sparktesting.DangerousTestOperatorConnectionFactoryNoTLS{},
+			},
+		},
+		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
+	}
 	handler := NewFinalizeSignatureHandler(config)
 
 	req := &pb.FinalizeNodeSignaturesRequest{
@@ -88,7 +113,7 @@ func TestFinalizeSignatureHandler_ErrorCases(t *testing.T) {
 			},
 			verifyFunc: func(t *testing.T, ctx context.Context, handler *FinalizeSignatureHandler, input any) error {
 				require.IsType(t, &pb.FinalizeNodeSignaturesRequest{}, input)
-				req := input.(*pb.FinalizeNodeSignaturesRequest)
+				req, _ := input.(*pb.FinalizeNodeSignaturesRequest)
 				resp, err := handler.FinalizeNodeSignatures(ctx, req)
 				assert.Nil(t, resp)
 				return err
@@ -107,12 +132,13 @@ func TestFinalizeSignatureHandler_ErrorCases(t *testing.T) {
 				}
 			},
 			verifyFunc: func(t *testing.T, ctx context.Context, handler *FinalizeSignatureHandler, input any) error {
-				req := input.(*pb.FinalizeNodeSignaturesRequest)
+				require.IsType(t, &pb.FinalizeNodeSignaturesRequest{}, input)
+				req, _ := input.(*pb.FinalizeNodeSignaturesRequest)
 				resp, err := handler.FinalizeNodeSignatures(ctx, req)
 				assert.Nil(t, resp)
 				return err
 			},
-			expectedError: "failed to get first node",
+			expectedError: "not all nodes found",
 		},
 		{
 			name: "VerifyAndUpdateTransfer_NoTransferFound",
@@ -126,7 +152,8 @@ func TestFinalizeSignatureHandler_ErrorCases(t *testing.T) {
 				}
 			},
 			verifyFunc: func(t *testing.T, ctx context.Context, handler *FinalizeSignatureHandler, input any) error {
-				req := input.(*pb.FinalizeNodeSignaturesRequest)
+				require.IsType(t, &pb.FinalizeNodeSignaturesRequest{}, input)
+				req, _ := input.(*pb.FinalizeNodeSignaturesRequest)
 				transfer, err := handler.verifyAndUpdateTransfer(ctx, req)
 				assert.Nil(t, transfer)
 				return err
@@ -139,7 +166,8 @@ func TestFinalizeSignatureHandler_ErrorCases(t *testing.T) {
 				return &pb.NodeSignatures{NodeId: "invalid-uuid"}
 			},
 			verifyFunc: func(t *testing.T, ctx context.Context, handler *FinalizeSignatureHandler, input any) error {
-				nodeSignatures := input.(*pb.NodeSignatures)
+				require.IsType(t, &pb.NodeSignatures{}, input)
+				nodeSignatures, _ := input.(*pb.NodeSignatures)
 				sparkNode, internalNode, err := handler.updateNode(ctx, nodeSignatures, pbcommon.SignatureIntent_CREATION, false)
 				assert.Nil(t, sparkNode)
 				assert.Nil(t, internalNode)
@@ -154,7 +182,8 @@ func TestFinalizeSignatureHandler_ErrorCases(t *testing.T) {
 				return &pb.NodeSignatures{NodeId: nodeID.String()}
 			},
 			verifyFunc: func(t *testing.T, ctx context.Context, handler *FinalizeSignatureHandler, input any) error {
-				nodeSignatures := input.(*pb.NodeSignatures)
+				require.IsType(t, &pb.NodeSignatures{}, input)
+				nodeSignatures, _ := input.(*pb.NodeSignatures)
 				sparkNode, internalNode, err := handler.updateNode(ctx, nodeSignatures, pbcommon.SignatureIntent_CREATION, false)
 				assert.Nil(t, sparkNode)
 				assert.Nil(t, internalNode)
@@ -247,10 +276,11 @@ func TestFinalizeSignatureHandler_FinalizeNodeSignatures_InvalidIntent(t *testin
 	config := &so.Config{
 		SigningOperatorMap: map[string]*so.SigningOperator{
 			"test-operator": {
-				ID:         0,
-				Identifier: "test-operator",
-				AddressRpc: "localhost:8080",
-				AddressDkg: "localhost:8081",
+				ID:                        0,
+				Identifier:                "test-operator",
+				AddressRpc:                "localhost:8080",
+				AddressDkg:                "localhost:8081",
+				OperatorConnectionFactory: &sparktesting.DangerousTestOperatorConnectionFactoryNoTLS{},
 			},
 		},
 		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
@@ -303,7 +333,18 @@ func TestFinalizeSignatureHandler_FinalizeNodeSignaturesV2_RequireDirectTx(t *te
 	t.Parallel()
 	ctx, _ := db.NewTestSQLiteContext(t)
 
-	config := &so.Config{FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{}}
+	config := &so.Config{
+		SigningOperatorMap: map[string]*so.SigningOperator{
+			"test-operator": {
+				ID:                        0,
+				Identifier:                "test-operator",
+				AddressRpc:                "localhost:8080",
+				AddressDkg:                "localhost:8081",
+				OperatorConnectionFactory: &sparktesting.DangerousTestOperatorConnectionFactoryNoTLS{},
+			},
+		},
+		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
+	}
 	handler := NewFinalizeSignatureHandler(config)
 
 	req := &pb.FinalizeNodeSignaturesRequest{
@@ -558,10 +599,11 @@ func TestConfirmTreeWithNonRootConfirmation(t *testing.T) {
 	config := &so.Config{
 		SigningOperatorMap: map[string]*so.SigningOperator{
 			"test-operator": {
-				ID:         0,
-				Identifier: "test-operator",
-				AddressRpc: "localhost:8080",
-				AddressDkg: "localhost:8081",
+				ID:                        0,
+				Identifier:                "test-operator",
+				AddressRpc:                "localhost:8080",
+				AddressDkg:                "localhost:8081",
+				OperatorConnectionFactory: &sparktesting.DangerousTestOperatorConnectionFactoryNoTLS{},
 			},
 		},
 		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
@@ -670,10 +712,11 @@ func TestFinalizeTreeWithInsufficientConfirmations(t *testing.T) {
 	config := &so.Config{
 		SigningOperatorMap: map[string]*so.SigningOperator{
 			"test-operator": {
-				ID:         0,
-				Identifier: "test-operator",
-				AddressRpc: "localhost:8080",
-				AddressDkg: "localhost:8081",
+				ID:                        0,
+				Identifier:                "test-operator",
+				AddressRpc:                "localhost:8080",
+				AddressDkg:                "localhost:8081",
+				OperatorConnectionFactory: &sparktesting.DangerousTestOperatorConnectionFactoryNoTLS{},
 			},
 		},
 		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
@@ -764,14 +807,11 @@ func TestFinalizeTreeWithInsufficientConfirmations(t *testing.T) {
 		Intent: pbcommon.SignatureIntent_CREATION,
 	}
 
-	_, err = handler.FinalizeNodeSignatures(ctx, req)
-	require.Error(t, err, "should fail with insufficient confirmations")
-	require.ErrorContains(t, err, "expected at least")
+	// Should not receive an error for this. Node should be CREATING until the correct number of confirmations is reached.
+	resp, err := handler.FinalizeNodeSignatures(ctx, req)
 
-	// Check that the error has the correct gRPC status code
-	grpcError, ok := status.FromError(err)
-	require.True(t, ok, "error should be a gRPC status error")
-	assert.Equal(t, codes.FailedPrecondition, grpcError.Code(), "error should have FailedPrecondition status code (9)")
+	require.NoError(t, err)
+	require.Equal(t, string(st.TreeNodeStatusCreating), resp.Nodes[0].Status)
 }
 
 // Test that trees cannot be finalized when no block height is present in db
@@ -783,10 +823,11 @@ func TestFinalizeTreeWithNoBlockHeight(t *testing.T) {
 	config := &so.Config{
 		SigningOperatorMap: map[string]*so.SigningOperator{
 			"test-operator": {
-				ID:         0,
-				Identifier: "test-operator",
-				AddressRpc: "localhost:8080",
-				AddressDkg: "localhost:8081",
+				ID:                        0,
+				Identifier:                "test-operator",
+				AddressRpc:                "localhost:8080",
+				AddressDkg:                "localhost:8081",
+				OperatorConnectionFactory: &sparktesting.DangerousTestOperatorConnectionFactoryNoTLS{},
 			},
 		},
 		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
@@ -913,4 +954,334 @@ func TestFinalizeSignatureHandler_UpdateNode_TreeNodeExitingStatus(t *testing.T)
 			assert.Equal(t, nodeStatus, updatedNode.Status)
 		})
 	}
+}
+
+// Test that nodes from different trees (same base txid, different vouts) are rejected.
+// This is a regression test for the Calif Audit Finding 11 - double spend vulnerability
+// where an attacker could confirm a tree by using nodes from different trees that share
+// the same base transaction but different vouts.
+func TestFinalizeNodeSignatures_RejectsNodesFromDifferentTrees(t *testing.T) {
+	t.Parallel()
+	// Use a different seed than createTestTree to avoid duplicate key constraint violations
+	rng := rand.NewChaCha8([32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+	ctx, _ := db.NewTestSQLiteContext(t)
+
+	config := &so.Config{
+		SigningOperatorMap: map[string]*so.SigningOperator{
+			"test-operator": {
+				ID:                        0,
+				Identifier:                "test-operator",
+				AddressRpc:                "localhost:8080",
+				AddressDkg:                "localhost:8081",
+				OperatorConnectionFactory: &sparktesting.DangerousTestOperatorConnectionFactoryNoTLS{},
+			},
+		},
+		FrostGRPCConnectionFactory: &sparktesting.TestGRPCConnectionFactory{},
+	}
+	handler := NewFinalizeSignatureHandler(config)
+
+	dbTX, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	// Create a shared base txid - this simulates a Bitcoin transaction with multiple outputs
+	sharedBaseTxid := st.NewRandomTxIDForTesting(t)
+
+	// Create first tree using vout 0
+	tree1, node1 := createTestTree(t, ctx, btcnetwork.Regtest, st.TreeStatusPending)
+	_, err = tree1.Update().
+		SetBaseTxid(sharedBaseTxid).
+		SetVout(0).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Create second tree using vout 1 (same txid, different vout)
+	ownerIdentity2 := keys.MustGeneratePrivateKeyFromRand(rng)
+	verifyingPrivKey2 := keys.MustGeneratePrivateKeyFromRand(rng)
+	ownerSigningKey2 := keys.MustGeneratePrivateKeyFromRand(rng)
+	secretShare2 := keys.MustGeneratePrivateKeyFromRand(rng)
+	publicShare1_2 := keys.MustGeneratePrivateKeyFromRand(rng)
+	publicShare2_2 := keys.MustGeneratePrivateKeyFromRand(rng)
+	publicShare3_2 := keys.MustGeneratePrivateKeyFromRand(rng)
+
+	tree2, err := dbTX.Tree.Create().
+		SetID(uuid.New()).
+		SetNetwork(btcnetwork.Regtest).
+		SetStatus(st.TreeStatusPending).
+		SetBaseTxid(sharedBaseTxid). // Same txid as tree1
+		SetVout(1).                  // Different vout
+		SetOwnerIdentityPubkey(ownerIdentity2.Public()).
+		Save(ctx)
+	require.NoError(t, err)
+
+	keyshare2, err := dbTX.SigningKeyshare.Create().
+		SetID(uuid.New()).
+		SetStatus(st.KeyshareStatusAvailable).
+		SetSecretShare(secretShare2).
+		SetPublicShares(map[string]keys.Public{"1": publicShare1_2.Public(), "2": publicShare2_2.Public(), "3": publicShare3_2.Public()}).
+		SetPublicKey(secretShare2.Public()).
+		SetMinSigners(2).
+		SetCoordinatorIndex(0).
+		Save(ctx)
+	require.NoError(t, err)
+
+	exampleTxString := "03000000000101d8966edeae1a3a05d0e5a3c971bb0a1b99bb901e76863812a40ea61fc60b87a000000000006c0700400214470000000000002251206b631936db9ab75c98e13235462f902944d9d81a45e3041bacaeec957bf7eeb700000000000000000451024e730140e06339a1f987b228843cf20f462f991264f89ca54c531c1c14d0df937d80acfd2ed9c626c6ad95106f3c9d90bc1de92b3d24aa89f03dd21974bb406e47ac84b000000000"
+	nodeRawTx2, err := hex.DecodeString(exampleTxString)
+	require.NoError(t, err)
+
+	node2, err := dbTX.TreeNode.Create().
+		SetID(uuid.New()).
+		SetTree(tree2). // Different tree
+		SetNetwork(tree2.Network).
+		SetSigningKeyshare(keyshare2).
+		SetValue(1000).
+		SetVerifyingPubkey(verifyingPrivKey2.Public()).
+		SetOwnerIdentityPubkey(ownerIdentity2.Public()).
+		SetOwnerSigningPubkey(ownerSigningKey2.Public()).
+		SetRawTx(nodeRawTx2).
+		SetRawRefundTx(nodeRawTx2).
+		SetVout(0).
+		SetStatus(st.TreeNodeStatusCreating).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Create block height for confirmation check
+	_, err = dbTX.BlockHeight.Create().
+		SetID(uuid.New()).
+		SetNetwork(btcnetwork.Regtest).
+		SetHeight(110).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Create deposit addresses for both nodes with matching confirmation txid
+	keyshare1, err := node1.QuerySigningKeyshare().Only(ctx)
+	require.NoError(t, err)
+
+	_, err = dbTX.DepositAddress.Create().
+		SetID(uuid.New()).
+		SetAddress("deposit_address_1").
+		SetOwnerIdentityPubkey(node1.OwnerIdentityPubkey).
+		SetOwnerSigningPubkey(node1.OwnerSigningPubkey).
+		SetConfirmationHeight(100).
+		SetConfirmationTxid(sharedBaseTxid.String()).
+		SetSigningKeyshare(keyshare1).
+		SetNetwork(btcnetwork.Regtest).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = dbTX.DepositAddress.Create().
+		SetID(uuid.New()).
+		SetAddress("deposit_address_2").
+		SetOwnerIdentityPubkey(node2.OwnerIdentityPubkey).
+		SetOwnerSigningPubkey(node2.OwnerSigningPubkey).
+		SetConfirmationHeight(100).
+		SetConfirmationTxid(sharedBaseTxid.String()).
+		SetSigningKeyshare(keyshare2).
+		SetNetwork(btcnetwork.Regtest).
+		Save(ctx)
+	require.NoError(t, err)
+
+	// Attempt to finalize with nodes from different trees - this should fail
+	req := &pb.FinalizeNodeSignaturesRequest{
+		NodeSignatures: []*pb.NodeSignatures{
+			{NodeId: node1.ID.String()},
+			{NodeId: node2.ID.String()}, // Node from a different tree
+		},
+		Intent: pbcommon.SignatureIntent_CREATION,
+	}
+
+	_, err = handler.FinalizeNodeSignatures(ctx, req)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "does not belong to the same tree as first node")
+}
+
+func buildTestTxBytes(t *testing.T, value int64) []byte {
+	t.Helper()
+	tx := wire.NewMsgTx(3)
+	input := wire.NewTxIn(&wire.OutPoint{Hash: chainhash.Hash{1}, Index: 0}, nil, nil)
+	input.Sequence = 2000
+	tx.AddTxIn(input)
+	pkScript, err := txscript.NewScriptBuilder().AddOp(txscript.OP_TRUE).Script()
+	require.NoError(t, err)
+	tx.AddTxOut(wire.NewTxOut(value, pkScript))
+	var buf bytes.Buffer
+	require.NoError(t, tx.Serialize(&buf))
+	return buf.Bytes()
+}
+
+func TestVerifyAndUpdateTransfer_UpdatesReceiverStatus(t *testing.T) {
+	ctx, _ := db.ConnectToTestPostgres(t)
+
+	config := &so.Config{}
+	handler := NewFinalizeSignatureHandler(config)
+
+	dbTx, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	senderPub := keys.GeneratePrivateKey().Public()
+	receiverPub := keys.GeneratePrivateKey().Public()
+
+	_, node := createTestTree(t, ctx, btcnetwork.Regtest, st.TreeStatusAvailable)
+
+	transfer, err := dbTx.Transfer.Create().
+		SetSenderIdentityPubkey(senderPub).
+		SetReceiverIdentityPubkey(receiverPub).
+		SetStatus(st.TransferStatusReceiverRefundSigned).
+		SetTotalValue(1000).
+		SetExpiryTime(time.Now().Add(10 * time.Minute)).
+		SetType(st.TransferTypeTransfer).
+		SetNetwork(btcnetwork.Regtest).
+		Save(ctx)
+	require.NoError(t, err)
+
+	receiver, err := dbTx.TransferReceiver.Create().
+		SetTransferID(transfer.ID).
+		SetIdentityPubkey(receiverPub).
+		SetStatus(st.TransferReceiverStatusRefundSigned).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = dbTx.TransferLeaf.Create().
+		SetTransfer(transfer).
+		SetLeaf(node).
+		SetTransferReceiverID(receiver.ID).
+		SetPreviousRefundTx(buildTestTxBytes(t, 3000)).
+		SetIntermediateRefundTx(buildTestTxBytes(t, 4000)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	req := &pb.FinalizeNodeSignaturesRequest{
+		NodeSignatures: []*pb.NodeSignatures{
+			{NodeId: node.ID.String()},
+		},
+		Intent: pbcommon.SignatureIntent_TRANSFER,
+	}
+
+	updatedTransfer, err := handler.verifyAndUpdateTransfer(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, st.TransferStatusCompleted, updatedTransfer.Status)
+	require.NotNil(t, updatedTransfer.CompletionTime)
+
+	updatedReceiver, err := dbTx.TransferReceiver.Get(ctx, receiver.ID)
+	require.NoError(t, err)
+	require.Equal(t, st.TransferReceiverStatusCompleted, updatedReceiver.Status)
+	require.NotNil(t, updatedReceiver.CompletionTime)
+}
+
+func TestVerifyAndUpdateTransfer_SkipsAlreadyCompletedReceiver(t *testing.T) {
+	ctx, _ := db.ConnectToTestPostgres(t)
+
+	config := &so.Config{}
+	handler := NewFinalizeSignatureHandler(config)
+
+	dbTx, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	senderPub := keys.GeneratePrivateKey().Public()
+	receiverPub := keys.GeneratePrivateKey().Public()
+
+	_, node := createTestTree(t, ctx, btcnetwork.Regtest, st.TreeStatusAvailable)
+
+	transfer, err := dbTx.Transfer.Create().
+		SetSenderIdentityPubkey(senderPub).
+		SetReceiverIdentityPubkey(receiverPub).
+		SetStatus(st.TransferStatusReceiverRefundSigned).
+		SetTotalValue(1000).
+		SetExpiryTime(time.Now().Add(10 * time.Minute)).
+		SetType(st.TransferTypeTransfer).
+		SetNetwork(btcnetwork.Regtest).
+		Save(ctx)
+	require.NoError(t, err)
+
+	receiver, err := dbTx.TransferReceiver.Create().
+		SetTransferID(transfer.ID).
+		SetIdentityPubkey(receiverPub).
+		SetStatus(st.TransferReceiverStatusCompleted).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = dbTx.TransferLeaf.Create().
+		SetTransfer(transfer).
+		SetLeaf(node).
+		SetTransferReceiverID(receiver.ID).
+		SetPreviousRefundTx(buildTestTxBytes(t, 3000)).
+		SetIntermediateRefundTx(buildTestTxBytes(t, 4000)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	req := &pb.FinalizeNodeSignaturesRequest{
+		NodeSignatures: []*pb.NodeSignatures{
+			{NodeId: node.ID.String()},
+		},
+		Intent: pbcommon.SignatureIntent_TRANSFER,
+	}
+
+	updatedTransfer, err := handler.verifyAndUpdateTransfer(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, st.TransferStatusCompleted, updatedTransfer.Status)
+
+	// Receiver should still be completed (no error from trying to re-complete)
+	updatedReceiver, err := dbTx.TransferReceiver.Get(ctx, receiver.ID)
+	require.NoError(t, err)
+	require.Equal(t, st.TransferReceiverStatusCompleted, updatedReceiver.Status)
+}
+
+func TestVerifyAndUpdateTransfer_ErrorsOnMultipleReceivers(t *testing.T) {
+	ctx, _ := db.ConnectToTestPostgres(t)
+
+	config := &so.Config{}
+	handler := NewFinalizeSignatureHandler(config)
+
+	dbTx, err := ent.GetDbFromContext(ctx)
+	require.NoError(t, err)
+
+	senderPub := keys.GeneratePrivateKey().Public()
+	receiverPub1 := keys.GeneratePrivateKey().Public()
+	receiverPub2 := keys.GeneratePrivateKey().Public()
+
+	_, node := createTestTree(t, ctx, btcnetwork.Regtest, st.TreeStatusAvailable)
+
+	transfer, err := dbTx.Transfer.Create().
+		SetSenderIdentityPubkey(senderPub).
+		SetReceiverIdentityPubkey(receiverPub1).
+		SetStatus(st.TransferStatusReceiverRefundSigned).
+		SetTotalValue(1000).
+		SetExpiryTime(time.Now().Add(10 * time.Minute)).
+		SetType(st.TransferTypeTransfer).
+		SetNetwork(btcnetwork.Regtest).
+		Save(ctx)
+	require.NoError(t, err)
+
+	receiver1, err := dbTx.TransferReceiver.Create().
+		SetTransferID(transfer.ID).
+		SetIdentityPubkey(receiverPub1).
+		SetStatus(st.TransferReceiverStatusRefundSigned).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = dbTx.TransferReceiver.Create().
+		SetTransferID(transfer.ID).
+		SetIdentityPubkey(receiverPub2).
+		SetStatus(st.TransferReceiverStatusRefundSigned).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = dbTx.TransferLeaf.Create().
+		SetTransfer(transfer).
+		SetLeaf(node).
+		SetTransferReceiverID(receiver1.ID).
+		SetPreviousRefundTx(buildTestTxBytes(t, 3000)).
+		SetIntermediateRefundTx(buildTestTxBytes(t, 4000)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	req := &pb.FinalizeNodeSignaturesRequest{
+		NodeSignatures: []*pb.NodeSignatures{
+			{NodeId: node.ID.String()},
+		},
+		Intent: pbcommon.SignatureIntent_TRANSFER,
+	}
+
+	_, err = handler.verifyAndUpdateTransfer(ctx, req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not support multi-receiver transfers")
 }

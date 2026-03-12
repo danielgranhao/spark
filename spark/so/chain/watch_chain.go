@@ -29,7 +29,9 @@ import (
 	"github.com/lightsparkdev/spark/so/ent/depositaddress"
 	st "github.com/lightsparkdev/spark/so/ent/schema/schematype"
 	"github.com/lightsparkdev/spark/so/ent/signingkeyshare"
+	"github.com/lightsparkdev/spark/so/ent/transfer"
 	"github.com/lightsparkdev/spark/so/ent/treenode"
+	entutxo "github.com/lightsparkdev/spark/so/ent/utxo"
 	"github.com/lightsparkdev/spark/so/helper"
 	"github.com/lightsparkdev/spark/so/knobs"
 	"github.com/lightsparkdev/spark/so/tree"
@@ -48,6 +50,14 @@ var (
 	eligibleNodesGauge                 metric.Int64Gauge
 	blockHeightGauge                   metric.Int64Gauge
 	blockHeightProcessingTimeHistogram metric.Int64Histogram
+
+	// tweakKeysForCoopExitFunc is a function variable that can be mocked in tests
+	tweakKeysForCoopExitFunc = tweakKeysForCoopExit
+)
+
+const (
+	nonStaticDefaultConfirmationThreshold = 3
+	lookbackThreshold                     = 2
 )
 
 func init() {
@@ -177,6 +187,7 @@ func scanChainUpdates(
 	dbClient *ent.Client,
 	bitcoinClient *rpcclient.Client,
 	network btcnetwork.Network,
+	bitcoindConfig so.BitcoindConfig,
 ) error {
 	logger := logging.GetLoggerFromContext(ctx)
 	defer func() {
@@ -225,6 +236,12 @@ func scanChainUpdates(
 	if err != nil {
 		return fmt.Errorf("failed to disconnect blocks: %w", err)
 	}
+
+	// Save the old block height before connecting new blocks so we can query deposits
+	// that were confirmed in any of the blocks we're about to connect
+	oldBlockHeight := dbBlockHeight.Height
+
+	// Connect new blocks first
 	err = connectBlocks(
 		ctx,
 		config,
@@ -237,6 +254,39 @@ func scanChainUpdates(
 	if err != nil {
 		return fmt.Errorf("failed to connect blocks: %w", err)
 	}
+
+	if knobs.GetKnobsService(ctx).GetValue(knobs.KnobMultipleConfirmationForNonStaticDeposit, 0) > 0 {
+		// After connecting blocks, process deposit availability
+		// This runs sequentially to avoid potential issues with parallel database transactions
+		deposits, err := loadDepositAvailabilityCandidates(ctx, dbClient, latestBlockHeight, oldBlockHeight, bitcoindConfig)
+		if err != nil {
+			return fmt.Errorf("failed to load deposit availability candidates: %w", err)
+		}
+		err = setDepositAvailability(ctx, dbClient, deposits, network)
+		if err != nil {
+			return fmt.Errorf("failed to set deposit availability: %w", err)
+		}
+
+		// Mark individual UTXOs as confirmed once they meet the confirmation threshold.
+		// Each UTXO is tracked independently since new UTXOs can arrive at the same
+		// deposit address after the first one was confirmed.
+		// UTXOs are only created in connectBlocks (above) when scanning chain data for
+		// outputs matching deposit addresses, with BlockHeight set to the block they
+		// were found in. This bulk update catches all UTXOs that have reached the
+		// required number of confirmations.
+		threshold := getNonStaticConfirmationThreshold(bitcoindConfig)
+		maxUtxoBlockHeight := latestBlockHeight - threshold + 1
+		_, err = dbClient.Utxo.Update().
+			Where(entutxo.AvailabilityConfirmedAtIsNil()).
+			Where(entutxo.BlockHeightLTE(maxUtxoBlockHeight)).
+			Where(entutxo.NetworkEQ(network)).
+			SetAvailabilityConfirmedAt(time.Now()).
+			Save(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to mark UTXOs as confirmed: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -269,7 +319,7 @@ func WatchChain(
 		return err
 	}
 
-	err = scanChainUpdates(ctx, config, dbClient, bitcoinClient, network)
+	err = scanChainUpdates(ctx, config, dbClient, bitcoinClient, network, bitcoindConfig)
 	if err != nil {
 		logger.Error("failed to scan chain updates", zap.Error(err))
 	}
@@ -307,7 +357,7 @@ func WatchChain(
 		// we need to query bitcoind for the height anyway. We just
 		// treat it as a notification that a new block appeared.
 
-		err = scanChainUpdates(ctx, config, dbClient, bitcoinClient, network)
+		err = scanChainUpdates(ctx, config, dbClient, bitcoinClient, network, bitcoindConfig)
 		if err != nil {
 			logger.Error("Failed to scan chain updates", zap.Error(err))
 		}
@@ -361,6 +411,7 @@ func connectBlocks(
 			bitcoinClient,
 			txs,
 			chainTip.Height,
+			chainTip.Hash,
 			network,
 		)
 		if err != nil {
@@ -448,21 +499,25 @@ func handleBlock(
 	bitcoinClient *rpcclient.Client,
 	txs []wire.MsgTx,
 	blockHeight int64,
+	blockHash chainhash.Hash,
 	network btcnetwork.Network,
 ) error {
 	logger := logging.GetLoggerFromContext(ctx)
 	start := time.Now()
 	logger.Sugar().Infof("Starting to handle block at height %d", blockHeight)
 
-	networkParams := network.Params()
-	_, err := dbClient.BlockHeight.Update().
+	networkParams, err := network.Params()
+	if err != nil {
+		return err
+	}
+	_, err = dbClient.BlockHeight.Update().
 		SetHeight(blockHeight).
 		Where(blockheight.NetworkEQ(network)).
 		Save(ctx)
 	if err != nil {
 		return err
 	}
-	handleTokenUpdatesForBlock(ctx, config, dbClient, txs, blockHeight, network)
+	handleTokenUpdatesForBlock(ctx, config, bitcoinClient, dbClient, txs, blockHeight, blockHash, network)
 
 	confirmedTxHashSet, creditedAddresses, addressToUtxoMap, err := processTransactions(txs, networkParams)
 	if err != nil {
@@ -501,7 +556,12 @@ func handleBlock(
 			return fmt.Errorf("failed to query transfer leaves: %w", err)
 		}
 		for _, transferLeaf := range transferLeaves {
-			if err := watchtower.BroadcastTransferLeafRefund(ctx, bitcoinClient, transferLeaf, network, blockHeight); err != nil {
+			leaf := transferLeaf.Edges.Leaf
+			if leaf == nil {
+				logger.Sugar().Errorf("Transfer leaf %s has no leaf edge (expected with WithLeaf())", transferLeaf.ID)
+				continue
+			}
+			if err := watchtower.BroadcastTransferLeafRefund(ctx, bitcoinClient, transferLeaf, leaf.NodeConfirmationHeight, network, blockHeight); err != nil {
 				logger.Sugar().Errorf("Failed to broadcast intermediate refund for transfer leaf %s: %v", transferLeaf.ID, err)
 			}
 		}
@@ -519,49 +579,125 @@ func handleBlock(
 
 	logger.Sugar().Infof("Started processing coop exits at block height %d", blockHeight)
 	// TODO: expire pending coop exits after some time so this doesn't become too large
-	pendingCoopExits, err := dbClient.CooperativeExit.Query().Where(cooperativeexit.ConfirmationHeightIsNil()).All(ctx)
-	if err != nil {
-		return err
-	}
-	for _, coopExit := range pendingCoopExits {
-		txHash := coopExit.ExitTxid
-		txHashBytes := txHash.Bytes()
-		reversedHash := slices.Clone(txHashBytes)
-		slices.Reverse(reversedHash)
-		_, found := confirmedTxHashSet[[32]byte(txHashBytes)]
-		_, reverseFound := confirmedTxHashSet[[32]byte(reversedHash)]
-		if found {
-			logger.Sugar().Debugf("Found BE coop exit tx at tx hash %s", txHash)
-		} else if reverseFound {
-			logger.Sugar().Debugf("Found LE coop exit tx at tx hash %s", txHash)
-		} else {
-			continue
-		}
-		// Set confirmation height for the coop exit.
-		_, err = coopExit.Update().SetConfirmationHeight(blockHeight).Save(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to update coop exit %s: %w", coopExit.ID, err)
+	if knobs.GetKnobsService(ctx).GetValue(knobs.KnobWatchChainTweakKeysForCoopExitDelayEnabled, 0) > 0 {
+		// Build lists of both normal and reversed TxIDs to handle both endianness
+		confirmedTxIDs := make([]st.TxID, 0, len(confirmedTxHashSet)*2)
+		for txHashBytes := range confirmedTxHashSet {
+			normalTxid, err := st.NewTxIDFromBytes(txHashBytes[:])
+			if err != nil {
+				return fmt.Errorf("failed to parse normal txid from confirmed tx hash: %w", err)
+			}
+			confirmedTxIDs = append(confirmedTxIDs, normalTxid)
+			reversedTxHashBytes := slices.Clone(txHashBytes[:])
+			slices.Reverse(reversedTxHashBytes)
+			reversedTxid, err := st.NewTxIDFromBytes(reversedTxHashBytes)
+			if err != nil {
+				return fmt.Errorf("failed to parse reversed txid from confirmed tx hash: %w", err)
+			}
+			confirmedTxIDs = append(confirmedTxIDs, reversedTxid)
 		}
 
-		// Attempt to tweak keys for the coop exit. Ok to log the error and continue here
-		// since this is not critical for the block processing.
-		err = tweakKeysForCoopExit(ctx, coopExit, blockHeight)
+		if len(confirmedTxIDs) > 0 {
+			unconfirmedCoopExits, err := dbClient.CooperativeExit.Query().
+				Where(
+					cooperativeexit.And(
+						cooperativeexit.ConfirmationHeightIsNil(),
+						cooperativeexit.ExitTxidIn(confirmedTxIDs...),
+					),
+				).
+				All(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to query unconfirmed coop exits: %w", err)
+			}
+
+			for _, coopExit := range unconfirmedCoopExits {
+				if coopExit.KeyTweakedHeight != nil {
+					return fmt.Errorf("coop exit %s has KeyTweakedHeight set but ConfirmationHeight not set", coopExit.ID)
+				}
+				logger.Sugar().Debugf("Found coop exit %s at block height %d", coopExit.ID, blockHeight)
+				_, err = coopExit.Update().SetConfirmationHeight(blockHeight).Save(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to update ConfirmationHeight for coop exit %s: %w", coopExit.ID, err)
+				}
+			}
+		}
+
+		coopExitsToTweak, err := dbClient.CooperativeExit.Query().
+			Where(
+				cooperativeexit.ConfirmationHeightNotNil(),
+				cooperativeexit.KeyTweakedHeightIsNil(),
+				cooperativeexit.HasTransferWith(transfer.NetworkEQ(network)),
+			).
+			All(ctx)
 		if err != nil {
-			logger.With(zap.Error(err)).Sugar().Errorf("Failed to handle coop exit confirmation for %s", coopExit.ID)
-			continue
+			return fmt.Errorf("failed to query coop exits to tweak: %w", err)
+		}
+
+		for _, coopExit := range coopExitsToTweak {
+			if blockHeight-*coopExit.ConfirmationHeight >= 2 {
+				// Attempt to tweak keys for the coop exit. Ok to log the error and continue here
+				// since this is not critical for the block processing.
+				err = tweakKeysForCoopExitFunc(ctx, coopExit, blockHeight)
+				if err != nil {
+					logger.With(zap.Error(err)).Sugar().Errorf("Failed to handle transfer key tweak for coop exit %s", coopExit.ID)
+					continue
+				}
+				_, err = coopExit.Update().SetKeyTweakedHeight(blockHeight).Save(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to update KeyTweakedHeight for coop exit %s: %w", coopExit.ID, err)
+				}
+			}
+		}
+	} else {
+		pendingCoopExits, err := dbClient.CooperativeExit.Query().Where(cooperativeexit.ConfirmationHeightIsNil()).All(ctx)
+		if err != nil {
+			return err
+		}
+		for _, coopExit := range pendingCoopExits {
+			txHash := coopExit.ExitTxid
+			txHashBytes := txHash.Bytes()
+			reversedHash := slices.Clone(txHashBytes)
+			slices.Reverse(reversedHash)
+			_, found := confirmedTxHashSet[[32]byte(txHashBytes)]
+			_, reverseFound := confirmedTxHashSet[[32]byte(reversedHash)]
+			if found {
+				logger.Sugar().Debugf("Found BE coop exit tx at tx hash %s", txHash)
+			} else if reverseFound {
+				logger.Sugar().Debugf("Found LE coop exit tx at tx hash %s", txHash)
+			} else {
+				continue
+			}
+			// Set block height for the coop exit.
+			_, err = coopExit.Update().SetConfirmationHeight(blockHeight).Save(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to update ConfirmationHeight for coop exit %s: %w", coopExit.ID, err)
+			}
+			_, err = coopExit.Update().SetKeyTweakedHeight(blockHeight).Save(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to update KeyTweakedHeight for coop exit %s: %w", coopExit.ID, err)
+			}
+
+			// Attempt to tweak keys for the coop exit. Ok to log the error and continue here
+			// since this is not critical for the block processing.
+			err = tweakKeysForCoopExitFunc(ctx, coopExit, blockHeight)
+			if err != nil {
+				logger.With(zap.Error(err)).Sugar().Errorf("Failed to tweak keys for coop exit %s", coopExit.ID)
+				continue
+			}
 		}
 	}
 
-	logger.Sugar().Infof("Started processing static deposits at block height %d", blockHeight)
-	err = storeStaticDeposits(ctx, dbClient, creditedAddresses, addressToUtxoMap, network, blockHeight)
+	logger.Sugar().Infof("Started storing deposit UTXOs at block height %d", blockHeight)
+	err = storeDepositUtxos(ctx, dbClient, creditedAddresses, addressToUtxoMap, network, blockHeight)
 	if err != nil {
-		return fmt.Errorf("failed to store static deposits: %w", err)
+		return fmt.Errorf("failed to store deposit utxos: %w", err)
 	}
 
 	logger.Sugar().Infof("Started processing confirmed deposits at block height %d", blockHeight)
 	confirmedDeposits, err := dbClient.DepositAddress.Query().
 		Where(depositaddress.ConfirmationHeightIsNil()).
 		Where(depositaddress.IsStaticEQ(false)).
+		Where(depositaddress.NetworkEQ(network)).
 		Where(depositaddress.AddressIn(creditedAddresses...)).
 		All(ctx)
 	if err != nil {
@@ -592,89 +728,27 @@ func handleBlock(
 		if err != nil {
 			return err
 		}
-		signingKeyShare, err := deposit.QuerySigningKeyshare().Only(ctx)
-		if err != nil {
-			return err
-		}
-		treeNode, err := dbClient.TreeNode.Query().
-			Where(treenode.HasSigningKeyshareWith(signingkeyshare.ID(signingKeyShare.ID))).
-			// FIXME(mhr): Unblocking deployment. Is this what we should do if we encounter a tree node that
-			// has already been marked available (e.g. through `FinalizeNodeSignatures`)?
-			Where(treenode.StatusEQ(st.TreeNodeStatusCreating)).
-			Only(ctx)
-		if ent.IsNotFound(err) {
-			logger.Sugar().Infof("Deposit confirmed before tree creation or tree already available for address %s", deposit.Address)
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		logger.Sugar().Infof("Found tree node %s", treeNode.ID)
-		if treeNode.Status != st.TreeNodeStatusCreating {
-			logger.Sugar().Infof("Expected tree node status to be creating (was: %s)", treeNode.Status)
-		}
-		nodeTree, err := treeNode.QueryTree().Only(ctx)
-		if err != nil {
-			return err
-		}
-		if nodeTree.Status != st.TreeStatusPending {
-			logger.Sugar().Infof("Expected tree status to be pending (was: %s)", nodeTree.Status)
-			continue
-		}
-		baseTxidHash := nodeTree.BaseTxid.Hash()
-		if _, ok := confirmedTxHashSet[baseTxidHash]; !ok {
-			logger.Sugar().Debugf("Base txid %s not found in confirmed txids", baseTxidHash.String())
-			for txid := range confirmedTxHashSet {
-				logger.Sugar().Debugf("Found confirmed txid %s", chainhash.Hash(txid))
-			}
-			continue
-		}
 
-		_, err = dbClient.Tree.UpdateOne(nodeTree).
-			SetStatus(st.TreeStatusAvailable).
+		if knobs.GetKnobsService(ctx).GetValue(knobs.KnobMultipleConfirmationForNonStaticDeposit, 0) == 0 {
+			err = markDepositAsAvailable(ctx, dbClient, deposit, confirmedTxHashSet)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Mark individual UTXOs as confirmed when the multi-confirmation knob is off.
+	// Each UTXO is tracked independently since new UTXOs can arrive at the same
+	// deposit address after the first one was confirmed.
+	if knobs.GetKnobsService(ctx).GetValue(knobs.KnobMultipleConfirmationForNonStaticDeposit, 0) == 0 {
+		_, err = dbClient.Utxo.Update().
+			Where(entutxo.AvailabilityConfirmedAtIsNil()).
+			Where(entutxo.BlockHeight(blockHeight)).
+			Where(entutxo.NetworkEQ(network)).
+			SetAvailabilityConfirmedAt(time.Now()).
 			Save(ctx)
 		if err != nil {
-			return err
-		}
-
-		treeNodes, err := nodeTree.QueryNodes().All(ctx)
-		if err != nil {
-			return err
-		}
-		for _, treeNode := range treeNodes {
-			if treeNode.Status != st.TreeNodeStatusCreating {
-				logger.Sugar().Debugf("Tree node %s is not in creating status", treeNode.ID)
-				continue
-			}
-			if len(treeNode.RawRefundTx) > 0 {
-				tx, err := common.TxFromRawTxBytes(treeNode.RawRefundTx)
-				if err != nil {
-					return err
-				}
-
-				// A deposit is a two-step protocol that creates a tree in the first step.
-				// In the second step, the operators validate and populate the witness of each tree node.
-				// The witness will be valid if and only if it is populated,
-				// and this is the only available signal that the deposit is complete.
-				if !tx.HasWitness() {
-					logger.Sugar().Debugf("Tree node %s has not been signed", treeNode.ID)
-					continue
-				}
-
-				_, err = dbClient.TreeNode.UpdateOne(treeNode).
-					SetStatus(st.TreeNodeStatusAvailable).
-					Save(ctx)
-				if err != nil {
-					return err
-				}
-			} else {
-				_, err = dbClient.TreeNode.UpdateOne(treeNode).
-					SetStatus(st.TreeNodeStatusSplitted).
-					Save(ctx)
-				if err != nil {
-					return err
-				}
-			}
+			return fmt.Errorf("failed to mark UTXOs as confirmed at block %d: %w", blockHeight, err)
 		}
 	}
 
@@ -685,49 +759,304 @@ func handleBlock(
 	return nil
 }
 
-func storeStaticDeposits(ctx context.Context, dbClient *ent.Client, creditedAddresses []string, addressToUtxoMap map[string][]AddressDepositUtxo, network btcnetwork.Network, blockHeight int64) error {
+// loadDepositAvailabilityCandidates loads deposits that are ready to be marked as available.
+// A deposit is ready when:
+// - It has a confirmation height set
+// - Its confirmation height is at least getNonStaticConfirmationThreshold() blocks old
+// - We also check a few blocks back (2) to catch any deposits that may have been missed on previous runs
+func loadDepositAvailabilityCandidates(
+	ctx context.Context,
+	dbClient *ent.Client,
+	blockHeight int64,
+	dbBlockHeight int64,
+	bitcoindConfig so.BitcoindConfig,
+) ([]*ent.DepositAddress, error) {
+	threshold := getNonStaticConfirmationThreshold(bitcoindConfig)
+	// "threshold" is 1-based (i.e., setting it to 1 means the funds are available on the same block as the first confirmation)
+	maxConfirmationHeight := blockHeight - threshold + 1
+	//TODO(SPARK-289) Set to a constant height after this has been running for awhile
+	minConfirmationHeight := min(dbBlockHeight, blockHeight) - threshold - lookbackThreshold
+	network, err := btcnetwork.FromString(bitcoindConfig.Network)
+	if err != nil {
+		return nil, fmt.Errorf("cannot load deposit availability candidates: invalid network %s: %w", bitcoindConfig.Network, err)
+	}
+
+	deposits, err := dbClient.DepositAddress.Query().
+		Where(depositaddress.IsStaticEQ(false)).
+		Where(depositaddress.AvailabilityConfirmedAtIsNil()).
+		Where(depositaddress.ConfirmationHeightLTE(maxConfirmationHeight)).
+		Where(depositaddress.ConfirmationHeightGTE(minConfirmationHeight)).
+		Where(depositaddress.NetworkEQ(network)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return deposits, nil
+}
+
+// setDepositAvailability processes a list of deposit addresses and marks their associated
+// trees and nodes as available if all conditions are met.
+func setDepositAvailability(
+	ctx context.Context,
+	dbClient *ent.Client,
+	deposits []*ent.DepositAddress,
+	network btcnetwork.Network,
+) error {
+	logger := logging.GetLoggerFromContext(ctx)
+	logger.Sugar().Infof("Processing %d deposit availability candidates for network %s", len(deposits), network)
+
+	if len(deposits) == 0 {
+		return nil
+	}
+
+	// Build a set of confirmed transaction hashes
+	// Since these deposits already have confirmation_height set (verified in handleBlock),
+	// we just need to track which txids we've seen for the tree availability check
+	confirmedTxHashSet := make(map[[32]byte]bool)
+
+	for _, deposit := range deposits {
+		if deposit.ConfirmationTxid == "" {
+			continue
+		}
+		txidHash, err := chainhash.NewHashFromStr(deposit.ConfirmationTxid)
+		if err != nil {
+			logger.Sugar().Warnf("Failed to parse confirmation txid %s: %v", deposit.ConfirmationTxid, err)
+			continue
+		}
+
+		// No need to verify with RPC - if confirmation_height is set, it was already verified
+		var txHashBytes [32]byte
+		copy(txHashBytes[:], txidHash.CloneBytes())
+		confirmedTxHashSet[txHashBytes] = true
+	}
+
+	// Start a database transaction to make all updates atomic
+	notifier := ent.NewBufferedNotifier(dbClient)
+	ctx = ent.InjectNotifier(ctx, &notifier)
+
+	dbTx, err := dbClient.Tx(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Process each deposit within the transaction
+	var failedDeposits []string
+	for _, deposit := range deposits {
+		err := markDepositAsAvailable(ctx, dbTx.Client(), deposit, confirmedTxHashSet)
+		if err != nil {
+			logger.Sugar().Warnf("Failed to mark deposit %s as available: %v", deposit.Address, err)
+			failedDeposits = append(failedDeposits, deposit.Address)
+			// Continue processing other deposits even if one fails
+		}
+	}
+
+	// Commit the transaction
+	err = dbTx.Commit()
+	if err != nil {
+		logger.Error("Failed to commit deposit availability transaction", zap.Error(err))
+		return err
+	}
+
+	// Flush notifier after successful commit
+	err = notifier.Flush(ctx)
+	if err != nil {
+		logger.Error("Failed to flush notifier", zap.Error(err))
+	}
+
+	if len(failedDeposits) > 0 {
+		logger.Sugar().Warnf("Failed to process %d deposits: %v", len(failedDeposits), failedDeposits)
+	}
+
+	logger.Sugar().Infof("Finished processing deposit availability candidates")
+	return nil
+}
+
+// markDepositAsAvailable marks a deposit's tree and tree nodes as available once the deposit
+// has been confirmed on-chain and all signatures have been finalized.
+func markDepositAsAvailable(
+	ctx context.Context,
+	dbClient *ent.Client,
+	deposit *ent.DepositAddress,
+	confirmedTxHashSet map[[32]byte]bool,
+) error {
 	logger := logging.GetLoggerFromContext(ctx)
 
-	staticDepositAddresses, err := dbClient.DepositAddress.Query().
-		Where(depositaddress.IsStaticEQ(true)).
+	signingKeyShare, err := deposit.QuerySigningKeyshare().Only(ctx)
+	if err != nil {
+		return err
+	}
+	treeNode, err := dbClient.TreeNode.Query().
+		Where(treenode.HasSigningKeyshareWith(signingkeyshare.ID(signingKeyShare.ID))).
+		// FIXME(mhr): Unblocking deployment. Is this what we should do if we encounter a tree node that
+		// has already been marked available (e.g. through `FinalizeNodeSignatures`)?
+		Where(treenode.StatusIn(st.TreeNodeStatusCreating, st.TreeNodeStatusAvailable)).
+		Only(ctx)
+	if ent.IsNotFound(err) {
+		logger.Sugar().Infof("tree not found in available or creating status for %s", deposit.Address)
+		return markDepositAddressUTXOConfirmed(ctx, dbClient, deposit)
+	}
+	if ent.IsNotSingular(err) {
+		logger.Sugar().Warnf("tree has multiple nodes in CREATING and AVAILABLE for %s", deposit.Address)
+		return fmt.Errorf("multiple nodes found for deposit address")
+	}
+	if err != nil {
+		return err
+	}
+	if treeNode.Status == st.TreeNodeStatusAvailable {
+		return markDepositAddressUTXOConfirmed(ctx, dbClient, deposit)
+	}
+	logger.Sugar().Infof("Found tree node %s", treeNode.ID)
+	if treeNode.Status != st.TreeNodeStatusCreating {
+		logger.Sugar().Infof("Expected tree node status to be creating (was: %s)", treeNode.Status)
+	}
+	nodeTree, err := treeNode.QueryTree().Only(ctx)
+	if err != nil {
+		return err
+	}
+	if nodeTree.Status != st.TreeStatusPending {
+		logger.Sugar().Infof("Expected tree status to be pending (was: %s)", nodeTree.Status)
+		if nodeTree.Status == st.TreeStatusAvailable || nodeTree.Status == st.TreeStatusExited {
+			return markDepositAddressUTXOConfirmed(ctx, dbClient, deposit)
+		}
+		return nil
+	}
+	baseTxidHash := nodeTree.BaseTxid.Hash()
+	if _, ok := confirmedTxHashSet[baseTxidHash]; !ok {
+		logger.Sugar().Debugf("Base txid %s not found in confirmed txids", baseTxidHash.String())
+		for txid := range confirmedTxHashSet {
+			logger.Sugar().Debugf("Found confirmed txid %s", chainhash.Hash(txid))
+		}
+		return nil
+	}
+
+	_, err = dbClient.Tree.UpdateOne(nodeTree).
+		SetStatus(st.TreeStatusAvailable).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+
+	treeNodes, err := nodeTree.QueryNodes().All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, treeNode := range treeNodes {
+		if treeNode.Status != st.TreeNodeStatusCreating {
+			logger.Sugar().Debugf("Tree node %s is not in creating status", treeNode.ID)
+			continue
+		}
+		if len(treeNode.RawRefundTx) > 0 {
+			tx, err := common.TxFromRawTxBytes(treeNode.RawRefundTx)
+			if err != nil {
+				return err
+			}
+
+			// A deposit is a two-step protocol that creates a tree in the first step.
+			// In the second step, the operators validate and populate the witness of each tree node.
+			// The witness will be valid if and only if it is populated,
+			// and this is the only available signal that the deposit is complete.
+			if !tx.HasWitness() {
+				logger.Sugar().Debugf("Tree node %s has not been signed", treeNode.ID)
+				continue
+			}
+
+			_, err = dbClient.TreeNode.UpdateOne(treeNode).
+				SetStatus(st.TreeNodeStatusAvailable).
+				Save(ctx)
+			if err != nil {
+				return err
+			}
+		} else {
+			_, err = dbClient.TreeNode.UpdateOne(treeNode).
+				SetStatus(st.TreeNodeStatusSplitted).
+				Save(ctx)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return markDepositAddressUTXOConfirmed(ctx, dbClient, deposit)
+}
+
+func markDepositAddressUTXOConfirmed(
+	ctx context.Context,
+	dbClient *ent.Client,
+	deposit *ent.DepositAddress,
+) error {
+	logger := logging.GetLoggerFromContext(ctx)
+
+	// There is a race condition that, in practice, should not occur, but
+	// if multiple blocks are mined in rapid succession, duplicate gRPC events
+	// can be sent. To avoid this, only update availability_confirmed_at if it's
+	// already NULL.
+	// Note: We use UpdateOne (not Update) to ensure the Ent hooks fire and trigger notifications.
+	_, err := dbClient.DepositAddress.UpdateOne(deposit).
+		Where(depositaddress.AvailabilityConfirmedAtIsNil()).
+		SetAvailabilityConfirmedAt(time.Now()).
+		Save(ctx)
+
+	if err != nil {
+		if ent.IsNotFound(err) {
+			// Deposit was already marked as available by another process - this is fine
+			logger.Sugar().Debugf("Deposit %s was already marked as available", deposit.ID)
+			return nil
+		}
+		return fmt.Errorf("failed to mark deposit %s as availability confirmed: %w", deposit.ID, err)
+	}
+
+	return nil
+}
+
+func storeUtxosForAddress(ctx context.Context, dbClient *ent.Client, address *ent.DepositAddress, utxos []AddressDepositUtxo, network btcnetwork.Network, blockHeight int64) error {
+	logger := logging.GetLoggerFromContext(ctx)
+	for _, utxo := range utxos {
+		// Convert transaction ID string to bytes for storage.
+		// Note: Bitcoin transaction IDs are displayed as hex strings with reversed byte order,
+		// but we convert it to the byte representation in the database for faster lookup
+		// while keeping the reversed byte order.
+		txidStringBytes, err := hex.DecodeString(utxo.tx.TxID())
+		if err != nil {
+			return fmt.Errorf("unable to decode txid for a new utxo: %w", err)
+		}
+		err = dbClient.Utxo.Create().
+			SetTxid(txidStringBytes).
+			SetVout(utxo.idx).
+			SetAmount(utxo.amount).
+			SetPkScript(utxo.tx.TxOut[utxo.idx].PkScript).
+			SetNetwork(network).
+			SetBlockHeight(blockHeight).
+			SetDepositAddress(address).
+			OnConflictColumns("network", "txid", "vout").
+			UpdateNewValues().
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("unable to store a new utxo: %w", err)
+		}
+		logger.Sugar().Debugf(
+			"Stored an L1 utxo for deposit address %s (txid: %x, vout: %v, amount: %v)",
+			address.Address,
+			utxo.tx.TxID(),
+			utxo.idx,
+			utxo.amount,
+		)
+	}
+	return nil
+}
+
+func storeDepositUtxos(ctx context.Context, dbClient *ent.Client, creditedAddresses []string, addressToUtxoMap map[string][]AddressDepositUtxo, network btcnetwork.Network, blockHeight int64) error {
+	depositAddresses, err := dbClient.DepositAddress.Query().
+		Where(depositaddress.NetworkEQ(network)).
 		Where(depositaddress.AddressIn(creditedAddresses...)).
 		All(ctx)
 	if err != nil {
 		return err
 	}
 
-	for _, address := range staticDepositAddresses {
+	for _, address := range depositAddresses {
 		if utxos, ok := addressToUtxoMap[address.Address]; ok {
-			for _, utxo := range utxos {
-				// Convert transaction ID string to bytes for storage.
-				// Note: Bitcoin transaction IDs are displayed as hex strings with reversed byte order,
-				// but we convert it to the byte representation in the database for faster lookup
-				// while keeping the reversed byte order.
-				txidStringBytes, err := hex.DecodeString(utxo.tx.TxID())
-				if err != nil {
-					return fmt.Errorf("unable to decode txid for a new utxo: %w", err)
-				}
-				err = dbClient.Utxo.Create().
-					SetTxid(txidStringBytes).
-					SetVout(utxo.idx).
-					SetAmount(utxo.amount).
-					SetPkScript(utxo.tx.TxOut[utxo.idx].PkScript).
-					SetNetwork(network).
-					SetBlockHeight(blockHeight).
-					SetDepositAddress(address).
-					OnConflictColumns("network", "txid", "vout").
-					UpdateNewValues().
-					Exec(ctx)
-				if err != nil {
-					return fmt.Errorf("unable to store a new utxo: %w", err)
-				}
-				logger.Sugar().Debugf(
-					"Stored an L1 utxo to a static deposit address %s (txid: %x, vout: %v, amount: %v)",
-					address.Address,
-					utxo.tx.TxID(),
-					utxo.idx,
-					utxo.amount,
-				)
+			if err := storeUtxosForAddress(ctx, dbClient, address, utxos, network, blockHeight); err != nil {
+				return err
 			}
 		}
 	}
@@ -790,4 +1119,12 @@ func tweakKeysForCoopExit(ctx context.Context, coopExit *ent.CooperativeExit, bl
 
 	logger.Sugar().Infof("Successfully tweaked key for coop exit transaction %x at block height %d", coopExit.ExitTxid, blockHeight)
 	return nil
+}
+
+func getNonStaticConfirmationThreshold(bitcoindConfig so.BitcoindConfig) int64 {
+	if bitcoindConfig.NonStaticConfirmationThreshold > 0 {
+		return int64(bitcoindConfig.NonStaticConfirmationThreshold)
+	}
+
+	return nonStaticDefaultConfirmationThreshold
 }

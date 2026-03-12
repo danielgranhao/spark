@@ -21,7 +21,7 @@ type DepositAddress struct {
 func (DepositAddress) Mixin() []ent.Mixin {
 	return []ent.Mixin{
 		BaseMixin{},
-		NotifyMixin{AdditionalFields: []string{"owner_identity_pubkey", "confirmation_txid"}},
+		NotifyMixin{AdditionalFields: []string{"owner_identity_pubkey", "confirmation_txid", "availability_confirmed_at"}},
 	}
 }
 
@@ -33,6 +33,7 @@ func (DepositAddress) Indexes() []ent.Index {
 		index.Fields("owner_signing_pubkey"),
 		index.Edges("signing_keyshare"),
 		index.Fields("network", "owner_identity_pubkey").Unique().Annotations(entsql.IndexWhere("is_static = true and is_default = true")),
+		index.Fields("confirmation_height", "is_static").Annotations(entsql.IndexWhere("availability_confirmed_at IS NULL")),
 	}
 }
 
@@ -74,6 +75,10 @@ func (DepositAddress) Fields() []ent.Field {
 			Optional().
 			Comment("Transaction ID of the block that confirmed the deposit address.").
 			Annotations(entexample.Default("6afc6ebd5ce104a3d03a927e48b05ee5b9ba52ec28dea2e4b79776e2f95de2d4")),
+		field.Time("availability_confirmed_at").
+			Optional().
+			Default(nil).
+			Comment("Timestamp when the availability of funds was confirmed (null if not yet confirmed)"),
 		field.JSON("address_signatures", map[string][]byte{}).
 			Optional().
 			Comment("Address signatures of the deposit address. It is used prove that all SOs have generated the address.").
@@ -85,6 +90,10 @@ func (DepositAddress) Fields() []ent.Field {
 		field.Bytes("possession_signature").
 			Optional().
 			Comment("Proof of keyshare possession signature for the deposit address. It is used to prove that the key used by the coordinator to generate the address is known by all SOs.").
+			Annotations(entexample.Default("14bc648e78ec4ae6376b6752c35b1bd3f7a3c60a4caf3b107f9a08891bde9565006afe542e056da2726baf0915c61cbf6ec07b84b6fbcba4b82b6e5db953b1db")),
+		field.Bytes("possession_signature_v2").
+			Optional().
+			Comment("V2 proof of keyshare possession signature for the deposit address. It is used to prove that the key used by the coordinator to generate the address is known by all SOs. This uses the V2 hash variant.").
 			Annotations(entexample.Default("14bc648e78ec4ae6376b6752c35b1bd3f7a3c60a4caf3b107f9a08891bde9565006afe542e056da2726baf0915c61cbf6ec07b84b6fbcba4b82b6e5db953b1db")),
 		field.UUID("node_id", uuid.UUID{}).
 			Optional().

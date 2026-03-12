@@ -46,6 +46,9 @@ message TokenTransferInput {
 }
 
 message TokenMintInput {
+    // Deprecated: The SO now uses token_identifier to look up the issuer public key
+    // from the TokenCreate record. This field is still included in the transaction hash,
+    // so it must be set correctly, but will be removed in a future version bump.
     bytes issuer_public_key = 1 [(validate.rules).bytes.len = 33];
     optional bytes token_identifier = 2 [(validate.rules).bytes.len = 32];
 }
@@ -77,7 +80,16 @@ message TokenOutput {
     optional bytes token_identifier = 8 [(validate.rules).bytes.len = 32];
     bytes token_amount     = 7
         [(validate.rules).bytes.len = 16];  // Decoded uint128
+    // SE Schnorr signature enabling offline L1 withdrawal.
+    // Only present in query responses; empty until SE signing is implemented.
+    optional bytes se_withdrawal_signature = 9;
+    optional TokenOutputStatus status = 10;
+}
 
+enum TokenOutputStatus {
+    TOKEN_OUTPUT_STATUS_UNSPECIFIED = 0;
+    TOKEN_OUTPUT_STATUS_AVAILABLE = 1;
+    TOKEN_OUTPUT_STATUS_PENDING_OUTBOUND = 2;
 }
 
 message PartialTokenOutput {
@@ -160,7 +172,11 @@ message PartialTokenTransaction {
         TokenCreateInput create_input = 5;
     }
     repeated PartialTokenOutput partial_token_outputs = 6;
-
+    // Optional client-specified deadline for transaction execution.
+    // If set, the server must reject the transaction if current time > execute_before.
+    // Must be after client_created_timestamp, within a configurable max window,
+    // and truncated to microsecond precision.
+    optional google.protobuf.Timestamp execute_before = 7;
 }
 
 message FinalTokenTransaction {
@@ -289,20 +305,24 @@ message QueryTokenOutputsRequest {
     // Optionally provide issuer public keys or token identifiers. If both are not set return outputs for all tokens.
     repeated bytes issuer_public_keys = 2 [(validate.rules).repeated.items.bytes.len = 33];
     repeated bytes token_identifiers = 4 [(validate.rules).repeated.items.bytes.len = 32];
-    spark.Network network = 3; // defaults to mainnet when no network is provided.
+    spark.Network network = 3;
     // For pagination
     spark.PageRequest page_request = 5;
 }
 
 // Request constraints are combined using an AND relation.
 message QueryTokenTransactionsRequest {
+    oneof query_type {
+        QueryTokenTransactionsByTxHash by_tx_hash = 9;
+        QueryTokenTransactionsByFilters by_filters = 10;
+    }
     // Returns transactions that have one of these output ids in the input or output.
     repeated string output_ids = 1 [(validate.rules).repeated.items.string.uuid = true];
-    // Returns transactions that have this owner public key as the sender or receiver in one or more of the input/output leaves.
+    // Returns transactions that have this owner public key as the sender or receiver in one or more of the outputs.
     repeated bytes owner_public_keys = 2 [(validate.rules).repeated.items.bytes.len = 33];
-    // Returns transactions that related to this token public key.
+    // Returns transactions that are related to this token public key.
     repeated bytes issuer_public_keys = 3 [(validate.rules).repeated.items.bytes.len = 33];
-    // Returns transactions that related to this token identifier.
+    // Returns transactions that are related to this token identifier.
     repeated bytes token_identifiers = 7 [(validate.rules).repeated.items.bytes.len = 32];
     // Returns transactions that match the provided transaction hashes.
     repeated bytes token_transaction_hashes = 4 [(validate.rules).repeated.items.bytes.len = 32];
@@ -311,9 +331,27 @@ message QueryTokenTransactionsRequest {
     int64 offset = 6 [(validate.rules).int64.gte = 0];
 }
 
+message QueryTokenTransactionsByTxHash {
+    repeated bytes token_transaction_hashes = 1 [(validate.rules).repeated = {min_items: 1, items: {bytes: {len: 32}}}];
+}
+
+message QueryTokenTransactionsByFilters {
+    // Returns transactions that have one of these output ids in the input or output.
+    repeated string output_ids = 1 [(validate.rules).repeated.items.string.uuid = true];
+    // Returns transactions that have this owner public key as the sender or receiver in one or more of the output leaves.
+    repeated bytes owner_public_keys = 2 [(validate.rules).repeated.items.bytes.len = 33];
+    // Returns transactions that are related to this token public key.
+    repeated bytes issuer_public_keys = 3 [(validate.rules).repeated.items.bytes.len = 33];
+    // Returns transactions that are related to this token identifier.
+    repeated bytes token_identifiers = 4 [(validate.rules).repeated.items.bytes.len = 32];
+    // For cursor-based pagination
+    spark.PageRequest page_request = 5;
+}
+
 message QueryTokenTransactionsResponse {
     repeated TokenTransactionWithStatus token_transactions_with_status = 1;
     int64 offset = 2;
+    spark.PageResponse page_response = 3;
 }
 
 message OutputWithPreviousTransactionData {
@@ -360,7 +398,7 @@ message TokenTransactionWithStatus {
 
 message FreezeTokensPayload {
     uint32 version = 1;
-    bytes owner_public_key = 2 [(validate.rules).bytes.len = 33];
+    optional bytes owner_public_key = 2 [(validate.rules).bytes.len = 33];
     optional bytes token_public_key = 3 [(validate.rules).bytes.len = 33];
     optional bytes token_identifier = 4 [(validate.rules).bytes.len = 32];
     uint64 issuer_provided_timestamp = 5;
@@ -375,7 +413,21 @@ message FreezeTokensRequest {
     bytes issuer_signature = 2 [(validate.rules).bytes.min_len = 64, (validate.rules).bytes.max_len = 73];
 }
 
+// Reference to a token output by its outpoint (transaction hash + vout).
+message TokenOutputRef {
+    bytes transaction_hash = 1 [(validate.rules).bytes.len = 32];
+    uint32 vout = 2;
+}
+
+// FreezeProgress tracks the coordinated freeze status across operators.
+message FreezeProgress {
+    repeated bytes applied_operator_public_keys = 1 [(validate.rules).repeated.items.bytes.len = 33];
+}
+
 message FreezeTokensResponse {
-    repeated string impacted_output_ids = 1 [(validate.rules).repeated.items.string.uuid = true];
+    // Deprecated: Use impacted_token_outputs instead. UUIDs are SO-local and differ across SOs.
+    repeated string impacted_output_ids = 1 [deprecated = true, (validate.rules).repeated.items.string.uuid = true];
     bytes impacted_token_amount = 2;  // Decoded uint128
+    repeated TokenOutputRef impacted_token_outputs = 3;
+    FreezeProgress freeze_progress = 4;
 }

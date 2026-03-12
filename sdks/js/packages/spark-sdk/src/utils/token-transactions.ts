@@ -1,12 +1,12 @@
 import { bytesToNumberBE, equalBytes } from "@noble/curves/utils";
 import { OutputWithPreviousTransactionData } from "../proto/spark_token.js";
-import { TokenBalanceMap, TokenOutputsMap } from "../spark-wallet/types.js";
+import { TokenBalanceMap } from "../spark-wallet/types.js";
 import {
   Bech32mTokenIdentifier,
   decodeBech32mTokenIdentifier,
 } from "./token-identifier.js";
 
-export function sumAvailableTokens(
+export function sumTokenOutputs(
   outputs: OutputWithPreviousTransactionData[],
 ): bigint {
   try {
@@ -20,45 +20,12 @@ export function sumAvailableTokens(
   }
 }
 
-export function checkIfSelectedOutputsAreAvailable(
-  selectedOutputs: OutputWithPreviousTransactionData[],
-  tokenOutputs: TokenOutputsMap,
-  tokenIdentifier: Bech32mTokenIdentifier,
-) {
-  const tokenOutputsAvailable = tokenOutputs.get(tokenIdentifier);
-  if (!tokenOutputsAvailable) {
-    return false;
-  }
-  if (
-    selectedOutputs.length === 0 ||
-    tokenOutputsAvailable.length < selectedOutputs.length
-  ) {
-    return false;
-  }
-
-  // Create a Set of available token output IDs for O(n + m) lookup
-  const availableOutputIds = new Set(
-    tokenOutputsAvailable.map((output) => output.output!.id),
-  );
-
-  for (const selectedOutput of selectedOutputs) {
-    if (
-      !selectedOutput.output?.id ||
-      !availableOutputIds.has(selectedOutput.output.id)
-    ) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
 export function filterTokenBalanceForTokenIdentifier(
   tokenBalances: TokenBalanceMap,
   tokenIdentifier: Bech32mTokenIdentifier,
-): { balance: bigint } {
+): { ownedBalance: bigint; availableToSendBalance: bigint } {
   if (!tokenBalances) {
-    return { balance: 0n };
+    return { ownedBalance: 0n, availableToSendBalance: 0n };
   }
 
   const tokenIdentifierBytes =
@@ -70,10 +37,12 @@ export function filterTokenBalanceForTokenIdentifier(
 
   if (!tokenBalance) {
     return {
-      balance: 0n,
+      ownedBalance: 0n,
+      availableToSendBalance: 0n,
     };
   }
   return {
-    balance: tokenBalance[1].balance,
+    ownedBalance: tokenBalance[1].ownedBalance,
+    availableToSendBalance: tokenBalance[1].availableToSendBalance,
   };
 }

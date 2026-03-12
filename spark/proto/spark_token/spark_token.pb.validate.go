@@ -719,6 +719,14 @@ func (m *TokenOutput) validate(all bool) error {
 
 	}
 
+	if m.SeWithdrawalSignature != nil {
+		// no validation rules for SeWithdrawalSignature
+	}
+
+	if m.Status != nil {
+		// no validation rules for Status
+	}
+
 	if len(errors) > 0 {
 		return TokenOutputMultiError(errors)
 	}
@@ -1894,6 +1902,39 @@ func (m *PartialTokenTransaction) validate(all bool) error {
 
 	default:
 		_ = v // ensures v is used
+	}
+
+	if m.ExecuteBefore != nil {
+
+		if all {
+			switch v := interface{}(m.GetExecuteBefore()).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, PartialTokenTransactionValidationError{
+						field:  "ExecuteBefore",
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, PartialTokenTransactionValidationError{
+						field:  "ExecuteBefore",
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(m.GetExecuteBefore()).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return PartialTokenTransactionValidationError{
+					field:  "ExecuteBefore",
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
 	}
 
 	if len(errors) > 0 {
@@ -4583,6 +4624,93 @@ func (m *QueryTokenTransactionsRequest) validate(all bool) error {
 		errors = append(errors, err)
 	}
 
+	switch v := m.QueryType.(type) {
+	case *QueryTokenTransactionsRequest_ByTxHash:
+		if v == nil {
+			err := QueryTokenTransactionsRequestValidationError{
+				field:  "QueryType",
+				reason: "oneof value cannot be a typed-nil",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+		if all {
+			switch v := interface{}(m.GetByTxHash()).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, QueryTokenTransactionsRequestValidationError{
+						field:  "ByTxHash",
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, QueryTokenTransactionsRequestValidationError{
+						field:  "ByTxHash",
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(m.GetByTxHash()).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return QueryTokenTransactionsRequestValidationError{
+					field:  "ByTxHash",
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
+	case *QueryTokenTransactionsRequest_ByFilters:
+		if v == nil {
+			err := QueryTokenTransactionsRequestValidationError{
+				field:  "QueryType",
+				reason: "oneof value cannot be a typed-nil",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+		if all {
+			switch v := interface{}(m.GetByFilters()).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, QueryTokenTransactionsRequestValidationError{
+						field:  "ByFilters",
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, QueryTokenTransactionsRequestValidationError{
+						field:  "ByFilters",
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(m.GetByFilters()).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return QueryTokenTransactionsRequestValidationError{
+					field:  "ByFilters",
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
+	default:
+		_ = v // ensures v is used
+	}
+
 	if len(errors) > 0 {
 		return QueryTokenTransactionsRequestMultiError(errors)
 	}
@@ -4672,6 +4800,341 @@ var _ interface {
 	ErrorName() string
 } = QueryTokenTransactionsRequestValidationError{}
 
+// Validate checks the field values on QueryTokenTransactionsByTxHash with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *QueryTokenTransactionsByTxHash) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on QueryTokenTransactionsByTxHash with
+// the rules defined in the proto definition for this message. If any rules
+// are violated, the result is a list of violation errors wrapped in
+// QueryTokenTransactionsByTxHashMultiError, or nil if none found.
+func (m *QueryTokenTransactionsByTxHash) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *QueryTokenTransactionsByTxHash) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if len(m.GetTokenTransactionHashes()) < 1 {
+		err := QueryTokenTransactionsByTxHashValidationError{
+			field:  "TokenTransactionHashes",
+			reason: "value must contain at least 1 item(s)",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	for idx, item := range m.GetTokenTransactionHashes() {
+		_, _ = idx, item
+
+		if len(item) != 32 {
+			err := QueryTokenTransactionsByTxHashValidationError{
+				field:  fmt.Sprintf("TokenTransactionHashes[%v]", idx),
+				reason: "value length must be 32 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	if len(errors) > 0 {
+		return QueryTokenTransactionsByTxHashMultiError(errors)
+	}
+
+	return nil
+}
+
+// QueryTokenTransactionsByTxHashMultiError is an error wrapping multiple
+// validation errors returned by QueryTokenTransactionsByTxHash.ValidateAll()
+// if the designated constraints aren't met.
+type QueryTokenTransactionsByTxHashMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m QueryTokenTransactionsByTxHashMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m QueryTokenTransactionsByTxHashMultiError) AllErrors() []error { return m }
+
+// QueryTokenTransactionsByTxHashValidationError is the validation error
+// returned by QueryTokenTransactionsByTxHash.Validate if the designated
+// constraints aren't met.
+type QueryTokenTransactionsByTxHashValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e QueryTokenTransactionsByTxHashValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e QueryTokenTransactionsByTxHashValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e QueryTokenTransactionsByTxHashValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e QueryTokenTransactionsByTxHashValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e QueryTokenTransactionsByTxHashValidationError) ErrorName() string {
+	return "QueryTokenTransactionsByTxHashValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e QueryTokenTransactionsByTxHashValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sQueryTokenTransactionsByTxHash.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = QueryTokenTransactionsByTxHashValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = QueryTokenTransactionsByTxHashValidationError{}
+
+// Validate checks the field values on QueryTokenTransactionsByFilters with the
+// rules defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *QueryTokenTransactionsByFilters) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on QueryTokenTransactionsByFilters with
+// the rules defined in the proto definition for this message. If any rules
+// are violated, the result is a list of violation errors wrapped in
+// QueryTokenTransactionsByFiltersMultiError, or nil if none found.
+func (m *QueryTokenTransactionsByFilters) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *QueryTokenTransactionsByFilters) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	for idx, item := range m.GetOutputIds() {
+		_, _ = idx, item
+
+		if err := m._validateUuid(item); err != nil {
+			err = QueryTokenTransactionsByFiltersValidationError{
+				field:  fmt.Sprintf("OutputIds[%v]", idx),
+				reason: "value must be a valid UUID",
+				cause:  err,
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	for idx, item := range m.GetOwnerPublicKeys() {
+		_, _ = idx, item
+
+		if len(item) != 33 {
+			err := QueryTokenTransactionsByFiltersValidationError{
+				field:  fmt.Sprintf("OwnerPublicKeys[%v]", idx),
+				reason: "value length must be 33 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	for idx, item := range m.GetIssuerPublicKeys() {
+		_, _ = idx, item
+
+		if len(item) != 33 {
+			err := QueryTokenTransactionsByFiltersValidationError{
+				field:  fmt.Sprintf("IssuerPublicKeys[%v]", idx),
+				reason: "value length must be 33 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	for idx, item := range m.GetTokenIdentifiers() {
+		_, _ = idx, item
+
+		if len(item) != 32 {
+			err := QueryTokenTransactionsByFiltersValidationError{
+				field:  fmt.Sprintf("TokenIdentifiers[%v]", idx),
+				reason: "value length must be 32 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	if all {
+		switch v := interface{}(m.GetPageRequest()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, QueryTokenTransactionsByFiltersValidationError{
+					field:  "PageRequest",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, QueryTokenTransactionsByFiltersValidationError{
+					field:  "PageRequest",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetPageRequest()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return QueryTokenTransactionsByFiltersValidationError{
+				field:  "PageRequest",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if len(errors) > 0 {
+		return QueryTokenTransactionsByFiltersMultiError(errors)
+	}
+
+	return nil
+}
+
+func (m *QueryTokenTransactionsByFilters) _validateUuid(uuid string) error {
+	if matched := _spark_token_uuidPattern.MatchString(uuid); !matched {
+		return errors.New("invalid uuid format")
+	}
+
+	return nil
+}
+
+// QueryTokenTransactionsByFiltersMultiError is an error wrapping multiple
+// validation errors returned by QueryTokenTransactionsByFilters.ValidateAll()
+// if the designated constraints aren't met.
+type QueryTokenTransactionsByFiltersMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m QueryTokenTransactionsByFiltersMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m QueryTokenTransactionsByFiltersMultiError) AllErrors() []error { return m }
+
+// QueryTokenTransactionsByFiltersValidationError is the validation error
+// returned by QueryTokenTransactionsByFilters.Validate if the designated
+// constraints aren't met.
+type QueryTokenTransactionsByFiltersValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e QueryTokenTransactionsByFiltersValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e QueryTokenTransactionsByFiltersValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e QueryTokenTransactionsByFiltersValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e QueryTokenTransactionsByFiltersValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e QueryTokenTransactionsByFiltersValidationError) ErrorName() string {
+	return "QueryTokenTransactionsByFiltersValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e QueryTokenTransactionsByFiltersValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sQueryTokenTransactionsByFilters.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = QueryTokenTransactionsByFiltersValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = QueryTokenTransactionsByFiltersValidationError{}
+
 // Validate checks the field values on QueryTokenTransactionsResponse with the
 // rules defined in the proto definition for this message. If any rules are
 // violated, the first error encountered is returned, or nil if there are no violations.
@@ -4729,6 +5192,35 @@ func (m *QueryTokenTransactionsResponse) validate(all bool) error {
 	}
 
 	// no validation rules for Offset
+
+	if all {
+		switch v := interface{}(m.GetPageResponse()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, QueryTokenTransactionsResponseValidationError{
+					field:  "PageResponse",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, QueryTokenTransactionsResponseValidationError{
+					field:  "PageResponse",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetPageResponse()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return QueryTokenTransactionsResponseValidationError{
+				field:  "PageResponse",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
 
 	if len(errors) > 0 {
 		return QueryTokenTransactionsResponseMultiError(errors)
@@ -5565,17 +6057,6 @@ func (m *FreezeTokensPayload) validate(all bool) error {
 
 	// no validation rules for Version
 
-	if len(m.GetOwnerPublicKey()) != 33 {
-		err := FreezeTokensPayloadValidationError{
-			field:  "OwnerPublicKey",
-			reason: "value length must be 33 bytes",
-		}
-		if !all {
-			return err
-		}
-		errors = append(errors, err)
-	}
-
 	// no validation rules for IssuerProvidedTimestamp
 
 	if len(m.GetOperatorIdentityPublicKey()) != 33 {
@@ -5590,6 +6071,21 @@ func (m *FreezeTokensPayload) validate(all bool) error {
 	}
 
 	// no validation rules for ShouldUnfreeze
+
+	if m.OwnerPublicKey != nil {
+
+		if len(m.GetOwnerPublicKey()) != 33 {
+			err := FreezeTokensPayloadValidationError{
+				field:  "OwnerPublicKey",
+				reason: "value length must be 33 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
 
 	if m.TokenPublicKey != nil {
 
@@ -5843,6 +6339,235 @@ var _ interface {
 	ErrorName() string
 } = FreezeTokensRequestValidationError{}
 
+// Validate checks the field values on TokenOutputRef with the rules defined in
+// the proto definition for this message. If any rules are violated, the first
+// error encountered is returned, or nil if there are no violations.
+func (m *TokenOutputRef) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on TokenOutputRef with the rules defined
+// in the proto definition for this message. If any rules are violated, the
+// result is a list of violation errors wrapped in TokenOutputRefMultiError,
+// or nil if none found.
+func (m *TokenOutputRef) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *TokenOutputRef) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if len(m.GetTransactionHash()) != 32 {
+		err := TokenOutputRefValidationError{
+			field:  "TransactionHash",
+			reason: "value length must be 32 bytes",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	// no validation rules for Vout
+
+	if len(errors) > 0 {
+		return TokenOutputRefMultiError(errors)
+	}
+
+	return nil
+}
+
+// TokenOutputRefMultiError is an error wrapping multiple validation errors
+// returned by TokenOutputRef.ValidateAll() if the designated constraints
+// aren't met.
+type TokenOutputRefMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m TokenOutputRefMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m TokenOutputRefMultiError) AllErrors() []error { return m }
+
+// TokenOutputRefValidationError is the validation error returned by
+// TokenOutputRef.Validate if the designated constraints aren't met.
+type TokenOutputRefValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e TokenOutputRefValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e TokenOutputRefValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e TokenOutputRefValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e TokenOutputRefValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e TokenOutputRefValidationError) ErrorName() string { return "TokenOutputRefValidationError" }
+
+// Error satisfies the builtin error interface
+func (e TokenOutputRefValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sTokenOutputRef.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = TokenOutputRefValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = TokenOutputRefValidationError{}
+
+// Validate checks the field values on FreezeProgress with the rules defined in
+// the proto definition for this message. If any rules are violated, the first
+// error encountered is returned, or nil if there are no violations.
+func (m *FreezeProgress) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on FreezeProgress with the rules defined
+// in the proto definition for this message. If any rules are violated, the
+// result is a list of violation errors wrapped in FreezeProgressMultiError,
+// or nil if none found.
+func (m *FreezeProgress) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *FreezeProgress) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	for idx, item := range m.GetAppliedOperatorPublicKeys() {
+		_, _ = idx, item
+
+		if len(item) != 33 {
+			err := FreezeProgressValidationError{
+				field:  fmt.Sprintf("AppliedOperatorPublicKeys[%v]", idx),
+				reason: "value length must be 33 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	if len(errors) > 0 {
+		return FreezeProgressMultiError(errors)
+	}
+
+	return nil
+}
+
+// FreezeProgressMultiError is an error wrapping multiple validation errors
+// returned by FreezeProgress.ValidateAll() if the designated constraints
+// aren't met.
+type FreezeProgressMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m FreezeProgressMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m FreezeProgressMultiError) AllErrors() []error { return m }
+
+// FreezeProgressValidationError is the validation error returned by
+// FreezeProgress.Validate if the designated constraints aren't met.
+type FreezeProgressValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e FreezeProgressValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e FreezeProgressValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e FreezeProgressValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e FreezeProgressValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e FreezeProgressValidationError) ErrorName() string { return "FreezeProgressValidationError" }
+
+// Error satisfies the builtin error interface
+func (e FreezeProgressValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sFreezeProgress.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = FreezeProgressValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = FreezeProgressValidationError{}
+
 // Validate checks the field values on FreezeTokensResponse with the rules
 // defined in the proto definition for this message. If any rules are
 // violated, the first error encountered is returned, or nil if there are no violations.
@@ -5883,6 +6608,69 @@ func (m *FreezeTokensResponse) validate(all bool) error {
 	}
 
 	// no validation rules for ImpactedTokenAmount
+
+	for idx, item := range m.GetImpactedTokenOutputs() {
+		_, _ = idx, item
+
+		if all {
+			switch v := interface{}(item).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, FreezeTokensResponseValidationError{
+						field:  fmt.Sprintf("ImpactedTokenOutputs[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, FreezeTokensResponseValidationError{
+						field:  fmt.Sprintf("ImpactedTokenOutputs[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return FreezeTokensResponseValidationError{
+					field:  fmt.Sprintf("ImpactedTokenOutputs[%v]", idx),
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
+	}
+
+	if all {
+		switch v := interface{}(m.GetFreezeProgress()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, FreezeTokensResponseValidationError{
+					field:  "FreezeProgress",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, FreezeTokensResponseValidationError{
+					field:  "FreezeProgress",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetFreezeProgress()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return FreezeTokensResponseValidationError{
+				field:  "FreezeProgress",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
 
 	if len(errors) > 0 {
 		return FreezeTokensResponseMultiError(errors)

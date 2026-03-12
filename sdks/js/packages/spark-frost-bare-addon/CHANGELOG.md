@@ -1,5 +1,34 @@
 # @buildonspark/spark-frost-bare-addon
 
+## 0.0.9
+
+### Patch Changes
+
+- - Regenerate all prebuilds
+
+## 0.0.8
+
+### Patch Changes
+
+- - Add native VSS (Verifiable Secret Sharing) functions to the bare addon:
+    - splitSecretWithProofs(secret, threshold, numShares) - Split a secret into verifiable shares with commitment proofs
+    - recoverSecret(shares) - Recover a secret from a threshold number of shares
+    - validateShare(share, index, threshold, proofs) - Validate a share against its commitment proofs
+
+## 0.0.7
+
+### Patch Changes
+
+- - Upgrade `@noble/curves` minimum version to `^1.9.7`
+
+## 0.0.6
+
+### Patch Changes
+
+- ### Updated Rust Version Requirement
+
+  Updated minimum Rust version to 1.92.0 to be compatible with new spark-frost-python
+
 ## 0.0.5
 
 ### Patch Changes

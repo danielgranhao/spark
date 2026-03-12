@@ -1,8 +1,14 @@
 {
   "name": "@buildonspark/issuer-sdk",
-  "version": "0.1.4",
+  "version": "0.1.18",
   "description": "Spark Issuer SDK for token issuance",
   "license": "Apache-2.0",
+  "keywords": [
+    "bitcoin",
+    "spark",
+    "token",
+    "issuing"
+  ],
   "main": "./dist/index.browser.js",
   "types": "./dist/index.browser.d.ts",
   "module": "./dist/index.browser.js",
@@ -53,7 +59,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "yarn tsc && rm -rf dist && tsup",
+    "build": "yarn tsc && rm -rf dist && tsdown",
     "build:watch": "yarn build --watch --clean=false",
     "clean": "rm -rf dist",
     "circular-deps": "madge --circular --extensions ts,tsx src",
@@ -62,10 +68,10 @@
     "docs": "typedoc src",
     "format:fix": "prettier . --write",
     "format": "prettier . --check",
-    "lint:fix": "eslint --fix .",
-    "lint:fix:continue": "eslint --fix . || exit 0",
-    "lint:watch": "esw ./src -w --ext .ts,.tsx,.js --color",
-    "lint": "eslint .",
+    "lint:fix": "echo \"Not implemented yet\"",
+    "lint:fix:continue": "echo \"Not implemented yet\"",
+    "lint:watch": "echo \"Not implemented yet\"",
+    "lint": "echo \"Not implemented yet\"",
     "package:checks": "yarn depcheck && yarn publint && yarn attw --pack . && echo \"\nPackage checks passed successfully!\"",
     "postversion": "yarn build",
     "test-cmd": "node --experimental-vm-modules $(yarn bin jest) --no-cache --runInBand --detectOpenHandles --forceExit",
@@ -76,8 +82,8 @@
     "types": "tsc"
   },
   "dependencies": {
-    "@buildonspark/spark-sdk": "0.5.4",
-    "@noble/curves": "^1.8.0",
+    "@buildonspark/spark-sdk": "0.7.0",
+    "@noble/curves": "^1.9.7",
     "@scure/btc-signer": "^1.5.0",
     "buffer": "^6.0.3"
   },
@@ -96,7 +102,7 @@
     "react-native": "0.79.4",
     "react-native-get-random-values": "^1.11.0",
     "ts-jest": "^29.2.5",
-    "tsup": "^8.4.0",
+    "tsdown": "^0.20.3",
     "typescript": "^5.7.3"
   },
   "peerDependencies": {

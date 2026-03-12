@@ -102,6 +102,18 @@ func (f *Faucet) Fund() (FaucetCoin, error) {
 	return coin, nil
 }
 
+// MineBlocks mines the specified number of blocks.
+func (f *Faucet) MineBlocks(numBlocks int64) error {
+	miningAddress, err := common.P2TRRawAddressFromPublicKey(staticMiningKey.Public(), btcnetwork.Regtest)
+	if err != nil {
+		return err
+	}
+
+	_, err = f.client.GenerateToAddress(numBlocks, miningAddress, nil)
+
+	return err
+}
+
 // btcToSats converts a BTC amount (as a decimal string) to satoshis
 func btcToSats(btc json.Number) (int64, error) {
 	f, err := btc.Float64()
@@ -266,7 +278,7 @@ func (f *Faucet) Refill() error {
 		return err
 	}
 
-	for i := int64(0); i < numCoinsToCreate; i++ {
+	for range numCoinsToCreate {
 		splitTx.AddTxOut(wire.NewTxOut(coinAmountSats, faucetScript))
 	}
 
@@ -289,7 +301,7 @@ func (f *Faucet) Refill() error {
 	}
 
 	splitTxid := signedSplitTx.TxHash()
-	for i := 0; i < int(numCoinsToCreate); i++ {
+	for i := range numCoinsToCreate {
 		faucetCoin := FaucetCoin{
 			Key:      staticFaucetKey,
 			OutPoint: wire.NewOutPoint(&splitTxid, uint32(i)),

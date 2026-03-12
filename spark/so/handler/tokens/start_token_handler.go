@@ -121,12 +121,7 @@ func (h *StartTokenTransactionHandler) StartTokenTransaction(ctx context.Context
 		}
 	}
 
-	validitySecs := req.GetValidityDurationSeconds()
-	if validitySecs < 1 || validitySecs > 300 {
-		return nil, sparkerrors.InvalidArgumentOutOfRange(fmt.Errorf("invalid validity duration seconds not in range [1,300]: %d", validitySecs))
-	}
-
-	finalTokenTransaction, keyshareIDStrings, err := h.constructFinalTokenTransaction(ctx, req.PartialTokenTransaction, time.Duration(validitySecs)*time.Second)
+	finalTokenTransaction, keyshareIDStrings, err := h.constructFinalTokenTransaction(ctx, req.PartialTokenTransaction, time.Duration(req.GetValidityDurationSeconds())*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +306,16 @@ func preemptOrRejectTransactionsWithInputEnts(
 				continue
 			}
 
-			// Skip expired transactions (they automatically lose).
+			// REVEALED and FINALIZED are non-preemptable regardless of expiry.
+			// They must always be added to the competing set so that
+			// preemptOrRejectTransaction can reject the new transaction.
+			if competingTx.Status == st.TokenTransactionStatusRevealed ||
+				competingTx.Status == st.TokenTransactionStatusFinalized {
+				competingTransactionIDs[competingTx.ID] = competingTx
+				continue
+			}
+
+			// For all other statuses, expired transactions automatically lose.
 			if err := competingTx.ValidateNotExpired(); err != nil {
 				// Any expiry failure means the existing transaction is expired and should
 				// automatically lose to the new transaction.

@@ -115,6 +115,16 @@ func CreatedTransactionFinalizedHash(v []byte) predicate.TokenOutput {
 	return predicate.TokenOutput(sql.FieldEQ(FieldCreatedTransactionFinalizedHash, v))
 }
 
+// SeFinalizationAdaptorSig applies equality check predicate on the "se_finalization_adaptor_sig" field. It's identical to SeFinalizationAdaptorSigEQ.
+func SeFinalizationAdaptorSig(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldEQ(FieldSeFinalizationAdaptorSig, v))
+}
+
+// SeWithdrawalSignature applies equality check predicate on the "se_withdrawal_signature" field. It's identical to SeWithdrawalSignatureEQ.
+func SeWithdrawalSignature(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldEQ(FieldSeWithdrawalSignature, v))
+}
+
 // SpentOwnershipSignature applies equality check predicate on the "spent_ownership_signature" field. It's identical to SpentOwnershipSignatureEQ.
 func SpentOwnershipSignature(v []byte) predicate.TokenOutput {
 	return predicate.TokenOutput(sql.FieldEQ(FieldSpentOwnershipSignature, v))
@@ -133,11 +143,6 @@ func SpentTransactionInputVout(v int32) predicate.TokenOutput {
 // SpentRevocationSecret applies equality check predicate on the "spent_revocation_secret" field. It's identical to SpentRevocationSecretEQ.
 func SpentRevocationSecret(v keys.Private) predicate.TokenOutput {
 	return predicate.TokenOutput(sql.FieldEQ(FieldSpentRevocationSecret, v))
-}
-
-// ConfirmedWithdrawBlockHash applies equality check predicate on the "confirmed_withdraw_block_hash" field. It's identical to ConfirmedWithdrawBlockHashEQ.
-func ConfirmedWithdrawBlockHash(v []byte) predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldEQ(FieldConfirmedWithdrawBlockHash, v))
 }
 
 // TokenIdentifier applies equality check predicate on the "token_identifier" field. It's identical to TokenIdentifierEQ.
@@ -640,6 +645,106 @@ func CreatedTransactionFinalizedHashLTE(v []byte) predicate.TokenOutput {
 	return predicate.TokenOutput(sql.FieldLTE(FieldCreatedTransactionFinalizedHash, v))
 }
 
+// SeFinalizationAdaptorSigEQ applies the EQ predicate on the "se_finalization_adaptor_sig" field.
+func SeFinalizationAdaptorSigEQ(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldEQ(FieldSeFinalizationAdaptorSig, v))
+}
+
+// SeFinalizationAdaptorSigNEQ applies the NEQ predicate on the "se_finalization_adaptor_sig" field.
+func SeFinalizationAdaptorSigNEQ(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldNEQ(FieldSeFinalizationAdaptorSig, v))
+}
+
+// SeFinalizationAdaptorSigIn applies the In predicate on the "se_finalization_adaptor_sig" field.
+func SeFinalizationAdaptorSigIn(vs ...[]byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldIn(FieldSeFinalizationAdaptorSig, vs...))
+}
+
+// SeFinalizationAdaptorSigNotIn applies the NotIn predicate on the "se_finalization_adaptor_sig" field.
+func SeFinalizationAdaptorSigNotIn(vs ...[]byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldNotIn(FieldSeFinalizationAdaptorSig, vs...))
+}
+
+// SeFinalizationAdaptorSigGT applies the GT predicate on the "se_finalization_adaptor_sig" field.
+func SeFinalizationAdaptorSigGT(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldGT(FieldSeFinalizationAdaptorSig, v))
+}
+
+// SeFinalizationAdaptorSigGTE applies the GTE predicate on the "se_finalization_adaptor_sig" field.
+func SeFinalizationAdaptorSigGTE(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldGTE(FieldSeFinalizationAdaptorSig, v))
+}
+
+// SeFinalizationAdaptorSigLT applies the LT predicate on the "se_finalization_adaptor_sig" field.
+func SeFinalizationAdaptorSigLT(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldLT(FieldSeFinalizationAdaptorSig, v))
+}
+
+// SeFinalizationAdaptorSigLTE applies the LTE predicate on the "se_finalization_adaptor_sig" field.
+func SeFinalizationAdaptorSigLTE(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldLTE(FieldSeFinalizationAdaptorSig, v))
+}
+
+// SeFinalizationAdaptorSigIsNil applies the IsNil predicate on the "se_finalization_adaptor_sig" field.
+func SeFinalizationAdaptorSigIsNil() predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldIsNull(FieldSeFinalizationAdaptorSig))
+}
+
+// SeFinalizationAdaptorSigNotNil applies the NotNil predicate on the "se_finalization_adaptor_sig" field.
+func SeFinalizationAdaptorSigNotNil() predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldNotNull(FieldSeFinalizationAdaptorSig))
+}
+
+// SeWithdrawalSignatureEQ applies the EQ predicate on the "se_withdrawal_signature" field.
+func SeWithdrawalSignatureEQ(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldEQ(FieldSeWithdrawalSignature, v))
+}
+
+// SeWithdrawalSignatureNEQ applies the NEQ predicate on the "se_withdrawal_signature" field.
+func SeWithdrawalSignatureNEQ(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldNEQ(FieldSeWithdrawalSignature, v))
+}
+
+// SeWithdrawalSignatureIn applies the In predicate on the "se_withdrawal_signature" field.
+func SeWithdrawalSignatureIn(vs ...[]byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldIn(FieldSeWithdrawalSignature, vs...))
+}
+
+// SeWithdrawalSignatureNotIn applies the NotIn predicate on the "se_withdrawal_signature" field.
+func SeWithdrawalSignatureNotIn(vs ...[]byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldNotIn(FieldSeWithdrawalSignature, vs...))
+}
+
+// SeWithdrawalSignatureGT applies the GT predicate on the "se_withdrawal_signature" field.
+func SeWithdrawalSignatureGT(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldGT(FieldSeWithdrawalSignature, v))
+}
+
+// SeWithdrawalSignatureGTE applies the GTE predicate on the "se_withdrawal_signature" field.
+func SeWithdrawalSignatureGTE(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldGTE(FieldSeWithdrawalSignature, v))
+}
+
+// SeWithdrawalSignatureLT applies the LT predicate on the "se_withdrawal_signature" field.
+func SeWithdrawalSignatureLT(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldLT(FieldSeWithdrawalSignature, v))
+}
+
+// SeWithdrawalSignatureLTE applies the LTE predicate on the "se_withdrawal_signature" field.
+func SeWithdrawalSignatureLTE(v []byte) predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldLTE(FieldSeWithdrawalSignature, v))
+}
+
+// SeWithdrawalSignatureIsNil applies the IsNil predicate on the "se_withdrawal_signature" field.
+func SeWithdrawalSignatureIsNil() predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldIsNull(FieldSeWithdrawalSignature))
+}
+
+// SeWithdrawalSignatureNotNil applies the NotNil predicate on the "se_withdrawal_signature" field.
+func SeWithdrawalSignatureNotNil() predicate.TokenOutput {
+	return predicate.TokenOutput(sql.FieldNotNull(FieldSeWithdrawalSignature))
+}
+
 // SpentOwnershipSignatureEQ applies the EQ predicate on the "spent_ownership_signature" field.
 func SpentOwnershipSignatureEQ(v []byte) predicate.TokenOutput {
 	return predicate.TokenOutput(sql.FieldEQ(FieldSpentOwnershipSignature, v))
@@ -838,56 +943,6 @@ func SpentRevocationSecretIsNil() predicate.TokenOutput {
 // SpentRevocationSecretNotNil applies the NotNil predicate on the "spent_revocation_secret" field.
 func SpentRevocationSecretNotNil() predicate.TokenOutput {
 	return predicate.TokenOutput(sql.FieldNotNull(FieldSpentRevocationSecret))
-}
-
-// ConfirmedWithdrawBlockHashEQ applies the EQ predicate on the "confirmed_withdraw_block_hash" field.
-func ConfirmedWithdrawBlockHashEQ(v []byte) predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldEQ(FieldConfirmedWithdrawBlockHash, v))
-}
-
-// ConfirmedWithdrawBlockHashNEQ applies the NEQ predicate on the "confirmed_withdraw_block_hash" field.
-func ConfirmedWithdrawBlockHashNEQ(v []byte) predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldNEQ(FieldConfirmedWithdrawBlockHash, v))
-}
-
-// ConfirmedWithdrawBlockHashIn applies the In predicate on the "confirmed_withdraw_block_hash" field.
-func ConfirmedWithdrawBlockHashIn(vs ...[]byte) predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldIn(FieldConfirmedWithdrawBlockHash, vs...))
-}
-
-// ConfirmedWithdrawBlockHashNotIn applies the NotIn predicate on the "confirmed_withdraw_block_hash" field.
-func ConfirmedWithdrawBlockHashNotIn(vs ...[]byte) predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldNotIn(FieldConfirmedWithdrawBlockHash, vs...))
-}
-
-// ConfirmedWithdrawBlockHashGT applies the GT predicate on the "confirmed_withdraw_block_hash" field.
-func ConfirmedWithdrawBlockHashGT(v []byte) predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldGT(FieldConfirmedWithdrawBlockHash, v))
-}
-
-// ConfirmedWithdrawBlockHashGTE applies the GTE predicate on the "confirmed_withdraw_block_hash" field.
-func ConfirmedWithdrawBlockHashGTE(v []byte) predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldGTE(FieldConfirmedWithdrawBlockHash, v))
-}
-
-// ConfirmedWithdrawBlockHashLT applies the LT predicate on the "confirmed_withdraw_block_hash" field.
-func ConfirmedWithdrawBlockHashLT(v []byte) predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldLT(FieldConfirmedWithdrawBlockHash, v))
-}
-
-// ConfirmedWithdrawBlockHashLTE applies the LTE predicate on the "confirmed_withdraw_block_hash" field.
-func ConfirmedWithdrawBlockHashLTE(v []byte) predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldLTE(FieldConfirmedWithdrawBlockHash, v))
-}
-
-// ConfirmedWithdrawBlockHashIsNil applies the IsNil predicate on the "confirmed_withdraw_block_hash" field.
-func ConfirmedWithdrawBlockHashIsNil() predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldIsNull(FieldConfirmedWithdrawBlockHash))
-}
-
-// ConfirmedWithdrawBlockHashNotNil applies the NotNil predicate on the "confirmed_withdraw_block_hash" field.
-func ConfirmedWithdrawBlockHashNotNil() predicate.TokenOutput {
-	return predicate.TokenOutput(sql.FieldNotNull(FieldConfirmedWithdrawBlockHash))
 }
 
 // NetworkEQ applies the EQ predicate on the "network" field.
@@ -1110,6 +1165,52 @@ func HasTokenCreate() predicate.TokenOutput {
 func HasTokenCreateWith(preds ...predicate.TokenCreate) predicate.TokenOutput {
 	return predicate.TokenOutput(func(s *sql.Selector) {
 		step := newTokenCreateStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
+// HasWithdrawal applies the HasEdge predicate on the "withdrawal" edge.
+func HasWithdrawal() predicate.TokenOutput {
+	return predicate.TokenOutput(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, false, WithdrawalTable, WithdrawalColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasWithdrawalWith applies the HasEdge predicate on the "withdrawal" edge with a given conditions (other predicates).
+func HasWithdrawalWith(preds ...predicate.L1TokenOutputWithdrawal) predicate.TokenOutput {
+	return predicate.TokenOutput(func(s *sql.Selector) {
+		step := newWithdrawalStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
+// HasJusticeTx applies the HasEdge predicate on the "justice_tx" edge.
+func HasJusticeTx() predicate.TokenOutput {
+	return predicate.TokenOutput(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, false, JusticeTxTable, JusticeTxColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasJusticeTxWith applies the HasEdge predicate on the "justice_tx" edge with a given conditions (other predicates).
+func HasJusticeTxWith(preds ...predicate.L1TokenJusticeTransaction) predicate.TokenOutput {
+	return predicate.TokenOutput(func(s *sql.Selector) {
+		step := newJusticeTxStep()
 		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
 			for _, p := range preds {
 				p(s)

@@ -8,6 +8,7 @@ import type { SparkSigner } from "../signer/signer.js";
 import { KeyDerivation } from "../signer/types.js";
 import { CoopExitFeeQuote, ExitSpeed, WalletTransfer } from "../types/index.js";
 import { SparkAddressFormat } from "../utils/address.js";
+import { type IdempotencyOptions } from "../utils/idempotency.js";
 import { Bech32mTokenIdentifier } from "../utils/token-identifier.js";
 import type { SparkWallet } from "./spark-wallet.js";
 
@@ -29,6 +30,18 @@ export type CreateLightningInvoiceParams = {
   memo?: string;
   expirySeconds?: number;
   includeSparkAddress?: boolean;
+  includeSparkInvoice?: boolean;
+  receiverIdentityPubkey?: string;
+  descriptionHash?: string;
+};
+
+export type CreateLightningHodlInvoiceParams = {
+  amountSats: number;
+  paymentHash: string;
+  memo?: string;
+  expirySeconds?: number;
+  includeSparkAddress?: boolean;
+  includeSparkInvoice?: boolean;
   receiverIdentityPubkey?: string;
   descriptionHash?: string;
 };
@@ -38,7 +51,7 @@ export type PayLightningInvoiceParams = {
   maxFeeSats: number;
   preferSpark?: boolean;
   amountSatsToSend?: number;
-};
+} & IdempotencyOptions;
 
 export type TransferParams = {
   amountSats: number;
@@ -141,7 +154,8 @@ export type UserTokenMetadata = {
 export type TokenBalanceMap = Map<
   Bech32mTokenIdentifier,
   {
-    balance: bigint;
+    ownedBalance: bigint;
+    availableToSendBalance: bigint;
     tokenMetadata: UserTokenMetadata;
   }
 >;
@@ -154,6 +168,8 @@ export type TokenOutputsMap = Map<
   Bech32mTokenIdentifier,
   OutputWithPreviousTransactionData[]
 >;
+
+export type { TokenOutputLock } from "../services/tokens/output-manager.js";
 
 export type TokenMetadataMap = Map<Bech32mTokenIdentifier, TokenMetadata>;
 
@@ -175,6 +191,7 @@ export type HandlePublicMethodErrorParams = {
 
 export const SparkWalletEvent = {
   All: "*",
+  BalanceUpdate: "balance:update",
   TransferClaimed: "transfer:claimed",
   DepositConfirmed: "deposit:confirmed",
   StreamConnected: "stream:connected",
@@ -187,6 +204,12 @@ export type SparkWalletEventType =
 
 export interface SparkWalletEvents {
   [SparkWalletEvent.All]: (eventName: string, ...args: unknown[]) => void;
+  /** Emitted whenever the balance changes (deposits, transfers, swaps, claims). */
+  [SparkWalletEvent.BalanceUpdate]: (balance: {
+    available: bigint;
+    owned: bigint;
+    incoming: bigint;
+  }) => void;
   /** Emitted when an incoming transfer is successfully claimed. Includes the transfer ID and new total balance. */
   [SparkWalletEvent.TransferClaimed]: (
     transferId: string,
