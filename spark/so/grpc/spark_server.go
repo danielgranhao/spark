@@ -6,6 +6,7 @@ import (
 
 	"github.com/lightsparkdev/spark/common/keys"
 
+	"github.com/lightsparkdev/spark/so/authz"
 	"github.com/lightsparkdev/spark/so/errors"
 
 	pb "github.com/lightsparkdev/spark/proto/spark"
@@ -295,6 +296,10 @@ func (s *SparkServer) SubscribeToEvents(req *pb.SubscribeToEventsRequest, st pb.
 		return fmt.Errorf("invalid identity public key: %w", err)
 	}
 
+	if err := authz.EnforceSessionIdentityPublicKeyMatches(st.Context(), s.config, idPubKey); err != nil {
+		return err
+	}
+
 	return s.eventsRouter.SubscribeToEvents(idPubKey, st)
 }
 
@@ -325,9 +330,9 @@ func (s *SparkServer) GetUtxosForAddress(ctx context.Context, req *pb.GetUtxosFo
 	return depositHandler.GetUtxosForAddress(ctx, req)
 }
 
-func (s *SparkServer) GetUtxosForAddresses(ctx context.Context, req *pb.GetUtxosForAddressesRequest) (*pb.GetUtxosForAddressesResponse, error) {
+func (s *SparkServer) GetUtxosForIdentity(ctx context.Context, req *pb.GetUtxosForIdentityRequest) (*pb.GetUtxosForIdentityResponse, error) {
 	depositHandler := handler.NewDepositHandler(s.config)
-	return depositHandler.GetUtxosForAddresses(ctx, req)
+	return depositHandler.GetUtxosForIdentity(ctx, req)
 }
 
 func (s *SparkServer) QuerySparkInvoices(ctx context.Context, req *pb.QuerySparkInvoicesRequest) (*pb.QuerySparkInvoicesResponse, error) {

@@ -82,8 +82,12 @@ type Config struct {
 	SignerAddress string
 	// DatabasePath is the path to the database.
 	DatabasePath string
-	// IsRDS indicates if the database is an RDS instance.
+	// EphemeralDatabasePath is the path to the ephemeral database.
+	EphemeralDatabasePath string
+	// IsRDS indicates if the main database is an RDS instance.
 	IsRDS bool
+	// EphemeralIsRDS indicates if the ephemeral database is an RDS instance.
+	EphemeralIsRDS bool
 	// AuthzEnforced determines if client authorization checks are enforced
 	AuthzEnforced bool
 	// DKGConfig
@@ -135,7 +139,18 @@ type Config struct {
 
 // DatabaseDriver returns the database driver based on the database path.
 func (c *Config) DatabaseDriver() string {
-	normalizedPath := strings.ToLower(c.DatabasePath)
+	return databaseDriverFromPath(c.DatabasePath)
+}
+
+func (c *Config) EphemeralDatabaseDriver() string {
+	if c.EphemeralDatabasePath == "" {
+		return ""
+	}
+	return databaseDriverFromPath(c.EphemeralDatabasePath)
+}
+
+func databaseDriverFromPath(databasePath string) string {
+	normalizedPath := strings.ToLower(databasePath)
 	if strings.HasPrefix(normalizedPath, "postgres://") || strings.HasPrefix(normalizedPath, "postgresql://") {
 		return "postgres"
 	}
@@ -298,7 +313,9 @@ func NewConfig(
 	threshold uint64,
 	signerAddress string,
 	databasePath string,
+	ephemeralDatabasePath string,
 	isRDS bool,
+	ephemeralIsRDS bool,
 	authzEnforced bool,
 	supportedNetworks []btcnetwork.Network,
 	serverCertPath string,
@@ -383,7 +400,9 @@ func NewConfig(
 		Threshold:                  threshold,
 		SignerAddress:              signerAddress,
 		DatabasePath:               databasePath,
+		EphemeralDatabasePath:      ephemeralDatabasePath,
 		IsRDS:                      isRDS,
+		EphemeralIsRDS:             ephemeralIsRDS,
 		AuthzEnforced:              authzEnforced,
 		DKGConfig:                  operatorConfig.Dkg,
 		SupportedNetworks:          supportedNetworks,
@@ -519,7 +538,18 @@ func getDatabaseLockTimeoutMs(k knobs.Knobs) uint64 {
 }
 
 func NewDBConnector(ctx context.Context, soConfig *Config, knobsService knobs.Knobs) (*DBConnector, error) {
-	uri, err := url.Parse(soConfig.DatabasePath)
+	return newDBConnector(ctx, soConfig.DatabasePath, soConfig.IsRDS, knobsService)
+}
+
+func NewEphemeralDBConnector(ctx context.Context, soConfig *Config, knobsService knobs.Knobs) (*DBConnector, error) {
+	if soConfig.EphemeralDatabasePath == "" {
+		return nil, fmt.Errorf("EphemeralDatabasePath is not configured")
+	}
+	return newDBConnector(ctx, soConfig.EphemeralDatabasePath, soConfig.EphemeralIsRDS, knobsService)
+}
+
+func newDBConnector(ctx context.Context, databasePath string, isRDS bool, knobsService knobs.Knobs) (*DBConnector, error) {
+	uri, err := url.Parse(databasePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse database path: %w", err)
 	}
@@ -530,20 +560,20 @@ func NewDBConnector(ctx context.Context, soConfig *Config, knobsService knobs.Kn
 	)
 
 	var tokenProvider *cachedRDSTokenProvider
-	if soConfig.IsRDS {
+	if isRDS {
 		tokenProvider = newCachedRDSTokenProvider(uri)
 	}
 
 	connector := &DBConnector{
 		uri:              uri,
-		isRDS:            soConfig.IsRDS,
+		isRDS:            isRDS,
 		driver:           otelWrappedDriver,
 		rdsTokenProvider: tokenProvider,
 	}
 
 	// Only create pool for PostgreSQL
-	if strings.HasPrefix(soConfig.DatabasePath, "postgres") {
-		conf, err := pgxpool.ParseConfig(soConfig.DatabasePath)
+	if databaseDriverFromPath(databasePath) == "postgres" {
+		conf, err := pgxpool.ParseConfig(databasePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse pool config: %w", err)
 		}
@@ -568,7 +598,7 @@ func NewDBConnector(ctx context.Context, soConfig *Config, knobsService knobs.Kn
 			defaultPoolMaxConnLifetimeJitter,
 		)
 
-		if soConfig.IsRDS {
+		if isRDS {
 			conf.BeforeConnect = func(ctx context.Context, cfg *pgx.ConnConfig) error {
 				token, err := tokenProvider.Token(ctx)
 				if err != nil {

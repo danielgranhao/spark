@@ -1,5 +1,11 @@
 # @buildonspark/spark-sdk
 
+## 0.7.1
+
+### Patch Changes
+
+- Improve getLightningSendFeeEstimate unit handling
+
 ## 0.7.0
 
 ### Minor Changes
@@ -7,7 +13,7 @@
 - Fix gRPC connection leak
 - Default network in unilateral exit helper to regtest instead of local when no network is provided
 - Two new public methods for deposit monitoring:
-  - getUtxosForDepositAddresses() — batch query confirmed UTXOs across multiple deposit addresses with pagination
+  - getUtxosForIdentity() — query static deposit UTXOs for an identity with pagination
   - queryStaticDepositAddresses() — fetch all static deposit addresses registered for the wallet
 - Bitcoin transaction construction for node and refund transactions now delegates to the Rust WASM library instead of TypeScript.
 - Implement one call cooperative exit flow
